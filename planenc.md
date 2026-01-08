@@ -10,6 +10,10 @@ Design philosophy (same as the decoder work):
 - One eye on oracle behavior: libwebp tools (`cwebp`, `dwebp`, `webpinfo`)
 - **Incremental steps** with **gated tests**; no “big bang” encoder.
 
+Implementation constraint:
+
+- **C (C11)**, **no external libraries**. Using the standard C library is fine for now.
+
 Important note up front: a practical encoder will not be bit-identical to libwebp unless we intentionally clone libwebp’s heuristics. Our oracle strategy is therefore:
 
 - **Validity/conformance**: output must parse (`webpinfo`) and decode (`dwebp`, our decoder).
@@ -38,6 +42,17 @@ Out of scope for v0:
 - Animation
 - Lossless (`VP8L`)
 - Inter frames
+
+---
+
+## Testing philosophy and scripts
+
+This project is intentionally “oracle-driven” and test-gated.
+
+- Prefer **shell scripts** under `scripts/` (matching the decoder workflow).
+- If we need small helpers, prefer **C** (tiny deterministic tools).
+- **Python is allowed** for minor test glue when it materially reduces friction, but keep it minimal.
+- We are free to add **test vectors at any time** under `images/` (e.g. tiny synthetic PNGs/WebPs) when a milestone needs a stable, focused input.
 
 ---
 
@@ -112,6 +127,7 @@ Use existing data folders:
 - Add new folder(s) if needed:
   - `images/webp-enc/` for our encoder outputs
   - `images/metrics/` for PSNR/SSIM manifests
+  - `images/testvectors/` for small hand-picked encoder regression vectors (optional)
 
 ---
 
