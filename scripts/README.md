@@ -68,3 +68,26 @@ Conventions:
 - `m6_compare_yuv_with_dwebp.sh`
   - Runs `./decoder -yuv` over the corpora and compares the raw I420 output against `dwebp -yuv -nofilter`.
   - Uses `-nofilter` so the oracle output is pre-loopfilter (we implement the in-loop filter in Milestone 7).
+
+---
+
+## Encoder milestone helpers
+
+These scripts gate the incremental encoder work described in [planenc.md](../planenc.md).
+
+### Encoder M9 (I16 mode decisions + in-loop recon)
+
+- `enc_m09_dcenc_check.sh`
+  - Baseline: DC_PRED (Y+UV) with in-loop reconstruction.
+  - Gates decoded RGB hashes for `images/png-in/*.png` across a small quality set.
+
+- `enc_m09_modeenc_check.sh`
+  - Adds per-macroblock I16 (luma) + UV (chroma) mode selection among DC/V/H/TM using SAD.
+  - Gates both decoded RGB hashes and a raw mode-map hash (file contains y_modes then uv_modes).
+
+### Encoder M9 (B_PRED 4x4 luma)
+
+- `enc_m09_bpredenc_check.sh`
+  - Encodes all macroblocks with `ymode=B_PRED` (4x4 luma intra), choosing per-subblock b_modes by SAD.
+  - Chooses UV per macroblock among DC/V/H/TM by SAD.
+  - Gates decoded RGB hashes and a raw mode-map hash (file contains y_modes then uv_modes then b_modes).

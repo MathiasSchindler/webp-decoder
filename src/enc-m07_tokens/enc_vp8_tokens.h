@@ -1,0 +1,143 @@
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "../enc-m08_filter/enc_loopfilter.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Build a VP8 keyframe payload (not RIFF/WebP wrapper) for arbitrary dimensions,
+// with all macroblocks using DC_PRED (Y and UV), and coefficient tokens encoded
+// from the provided quantized coefficient buffers.
+//
+// Layout for coeffs_per_mb, per macroblock:
+// - Y2: 1 block  (16 coeffs)
+// - Y:  16 blocks (16 coeffs each)
+// - U:  4 blocks  (16 coeffs each)
+// - V:  4 blocks  (16 coeffs each)
+//
+// Coefficients are in natural order (not zigzag), matching Vp8DecodedFrame.
+//
+// q_index and deltas are written into the frame header (purely indicative for
+// coefficient decoding, but required for a coherent bitstream).
+int enc_vp8_build_keyframe_dc_coeffs(uint32_t width,
+                                    uint32_t height,
+                                    uint8_t q_index,
+                                    int8_t y1_dc_delta_q,
+                                    int8_t y2_dc_delta_q,
+                                    int8_t y2_ac_delta_q,
+                                    int8_t uv_dc_delta_q,
+                                    int8_t uv_ac_delta_q,
+	                            const int16_t* coeffs,
+	                            size_t coeffs_count,
+                                    uint8_t** out_payload,
+                                    size_t* out_size);
+
+// Like enc_vp8_build_keyframe_dc_coeffs(), but allows setting loopfilter params.
+// If lf is NULL, defaults to {use_simple=0, level=0, sharpness=0, use_lf_delta=0}.
+int enc_vp8_build_keyframe_dc_coeffs_ex(uint32_t width,
+                                       uint32_t height,
+                                       uint8_t q_index,
+                                       int8_t y1_dc_delta_q,
+                                       int8_t y2_dc_delta_q,
+                                       int8_t y2_ac_delta_q,
+                                       int8_t uv_dc_delta_q,
+                                       int8_t uv_ac_delta_q,
+                                       const EncVp8LoopFilterParams* lf,
+                                       const int16_t* coeffs,
+                                       size_t coeffs_count,
+                                       uint8_t** out_payload,
+                                       size_t* out_size);
+
+// Build a VP8 keyframe payload like enc_vp8_build_keyframe_dc_coeffs(), but with
+// per-macroblock intra modes signaled in partition 0.
+//
+// y_modes/uv_modes are arrays of length mb_total (mb_cols*mb_rows). Values are
+// VP8 intra_mbmode: DC=0, V=1, H=2, TM=3. (B_PRED not supported here.)
+// Passing NULL for either array defaults that plane to DC for all macroblocks.
+int enc_vp8_build_keyframe_i16_coeffs(uint32_t width,
+                                     uint32_t height,
+                                     uint8_t q_index,
+                                     int8_t y1_dc_delta_q,
+                                     int8_t y2_dc_delta_q,
+                                     int8_t y2_ac_delta_q,
+                                     int8_t uv_dc_delta_q,
+                                     int8_t uv_ac_delta_q,
+                                     const uint8_t* y_modes,
+                                     const uint8_t* uv_modes,
+                                     const int16_t* coeffs,
+                                     size_t coeffs_count,
+                                     uint8_t** out_payload,
+                                     size_t* out_size);
+
+// Like enc_vp8_build_keyframe_i16_coeffs(), but allows setting loopfilter params.
+// If lf is NULL, defaults to {use_simple=0, level=0, sharpness=0, use_lf_delta=0}.
+int enc_vp8_build_keyframe_i16_coeffs_ex(uint32_t width,
+                                        uint32_t height,
+                                        uint8_t q_index,
+                                        int8_t y1_dc_delta_q,
+                                        int8_t y2_dc_delta_q,
+                                        int8_t y2_ac_delta_q,
+                                        int8_t uv_dc_delta_q,
+                                        int8_t uv_ac_delta_q,
+                                        const uint8_t* y_modes,
+                                        const uint8_t* uv_modes,
+                                        const EncVp8LoopFilterParams* lf,
+                                        const int16_t* coeffs,
+                                        size_t coeffs_count,
+                                        uint8_t** out_payload,
+                                        size_t* out_size);
+
+// Build a VP8 keyframe payload like enc_vp8_build_keyframe_i16_coeffs(), but
+// also supports B_PRED (4x4 luma intra) and its per-subblock b_modes.
+//
+// y_modes values are VP8 intra_mbmode: DC=0, V=1, H=2, TM=3, B_PRED=4.
+//
+// If ymode==B_PRED for a macroblock, then:
+// - has_y2 is false (no Y2 tokens are coded)
+// - b_modes must provide 16 subblock intra modes for that macroblock.
+//
+// b_modes layout: mb_total*16 bytes, subblock order rr-major (rr 0..3, cc 0..3).
+// Values are VP8 intra_bmode: 0..9.
+// Passing NULL for b_modes defaults all subblocks to B_DC_PRED.
+int enc_vp8_build_keyframe_intra_coeffs(uint32_t width,
+                                       uint32_t height,
+                                       uint8_t q_index,
+                                       int8_t y1_dc_delta_q,
+                                       int8_t y2_dc_delta_q,
+                                       int8_t y2_ac_delta_q,
+                                       int8_t uv_dc_delta_q,
+                                       int8_t uv_ac_delta_q,
+                                       const uint8_t* y_modes,
+                                       const uint8_t* uv_modes,
+                                       const uint8_t* b_modes,
+                                       const int16_t* coeffs,
+                                       size_t coeffs_count,
+                                       uint8_t** out_payload,
+                                       size_t* out_size);
+
+// Like enc_vp8_build_keyframe_intra_coeffs(), but allows setting loopfilter params.
+// If lf is NULL, defaults to {use_simple=0, level=0, sharpness=0, use_lf_delta=0}.
+int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
+                                          uint32_t height,
+                                          uint8_t q_index,
+                                          int8_t y1_dc_delta_q,
+                                          int8_t y2_dc_delta_q,
+                                          int8_t y2_ac_delta_q,
+                                          int8_t uv_dc_delta_q,
+                                          int8_t uv_ac_delta_q,
+                                          const uint8_t* y_modes,
+                                          const uint8_t* uv_modes,
+                                          const uint8_t* b_modes,
+                                          const EncVp8LoopFilterParams* lf,
+                                          const int16_t* coeffs,
+                                          size_t coeffs_count,
+                                          uint8_t** out_payload,
+                                          size_t* out_size);
+
+#ifdef __cplusplus
+}
+#endif

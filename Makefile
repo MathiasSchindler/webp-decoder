@@ -9,6 +9,11 @@ ENC_M03_MINIFRAME_BIN := build/enc_m03_miniframe
 ENC_M04_MINIFRAME_BIN := build/enc_m04_miniframe
 ENC_M05_YUVDUMP_BIN := build/enc_m05_yuvdump
 ENC_M06_INTRADUMP_BIN := build/enc_m06_intradump
+ENC_M07_QUANTDUMP_BIN := build/enc_m07_quantdump
+ENC_M08_TOKENTEST_BIN := build/enc_m08_tokentest
+ENC_M09_DCENC_BIN := build/enc_m09_dcenc
+ENC_M09_MODEENC_BIN := build/enc_m09_modeenc
+ENC_M09_BPREDENC_BIN := build/enc_m09_bpredenc
 NOLIBC_BUILD_DIR := build/nolibc
 NOLIBC_BIN := decoder_nolibc
 NOLIBC_TINY_BUILD_DIR := build/nolibc_tiny
@@ -47,6 +52,11 @@ LDFLAGS_COMMON := -flto
 .PHONY: enc_m04_miniframe
 .PHONY: enc_m05_yuvdump
 .PHONY: enc_m06_intradump
+.PHONY: enc_m07_quantdump
+.PHONY: enc_m08_tokentest
+.PHONY: enc_m09_dcenc
+.PHONY: enc_m09_modeenc
+.PHONY: enc_m09_bpredenc
 
 all: $(BIN)
 
@@ -64,6 +74,16 @@ enc_m04_miniframe: $(ENC_M04_MINIFRAME_BIN)
 enc_m05_yuvdump: $(ENC_M05_YUVDUMP_BIN)
 
 enc_m06_intradump: $(ENC_M06_INTRADUMP_BIN)
+
+enc_m07_quantdump: $(ENC_M07_QUANTDUMP_BIN)
+
+enc_m08_tokentest: $(ENC_M08_TOKENTEST_BIN)
+
+enc_m09_dcenc: $(ENC_M09_DCENC_BIN)
+
+enc_m09_modeenc: $(ENC_M09_MODEENC_BIN)
+
+enc_m09_bpredenc: $(ENC_M09_BPREDENC_BIN)
 
 nolibc: $(NOLIBC_BIN)
 
@@ -158,6 +178,115 @@ $(ENC_M06_INTRADUMP_BIN): $(ENC_M06_INTRADUMP_SRC) \
 	src/enc-m05_intra/enc_intra_dc.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M06_INTRADUMP_SRC) -lm
+
+ENC_M07_QUANTDUMP_SRC := \
+	tools/enc_m07_quantdump.c \
+	src/enc-m00_png/enc_png.c \
+	src/enc-m04_yuv/enc_rgb_to_yuv.c \
+	src/enc-m05_intra/enc_transform.c \
+	src/enc-m05_intra/enc_intra_dc.c \
+	src/enc-m06_quant/enc_quant.c
+
+$(ENC_M07_QUANTDUMP_BIN): $(ENC_M07_QUANTDUMP_SRC) \
+	src/enc-m00_png/enc_png.h \
+	src/enc-m04_yuv/enc_rgb_to_yuv.h \
+	src/enc-m05_intra/enc_transform.h \
+	src/enc-m05_intra/enc_intra_dc.h \
+	src/enc-m06_quant/enc_quant.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M07_QUANTDUMP_SRC) -lm
+
+ENC_M08_TOKENTEST_SRC := \
+	tools/enc_m08_tokentest.c \
+	src/common/os.c \
+	src/m02_vp8_header/vp8_header.c \
+	src/m03_bool_decoder/bool_decoder.c \
+	src/m05_tokens/vp8_tree.c \
+	src/m05_tokens/vp8_tokens.c \
+	src/enc-m00_png/enc_png.c \
+	src/enc-m04_yuv/enc_rgb_to_yuv.c \
+	src/enc-m04_yuv/enc_pad.c \
+	src/enc-m05_intra/enc_transform.c \
+	src/enc-m05_intra/enc_intra_dc.c \
+	src/enc-m06_quant/enc_quant.c \
+	src/enc-m07_tokens/enc_vp8_tokens.c \
+	src/enc-m02_vp8_bitwriter/enc_bool.c
+
+$(ENC_M08_TOKENTEST_BIN): $(ENC_M08_TOKENTEST_SRC) \
+	src/m05_tokens/vp8_tokens.h \
+	src/enc-m00_png/enc_png.h \
+	src/enc-m04_yuv/enc_rgb_to_yuv.h \
+	src/enc-m05_intra/enc_intra_dc.h \
+	src/enc-m06_quant/enc_quant.h \
+	src/enc-m07_tokens/enc_vp8_tokens.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M08_TOKENTEST_SRC) -lm
+
+ENC_M09_DCENC_SRC := \
+	tools/enc_m09_dcenc.c \
+	src/enc-m00_png/enc_png.c \
+	src/enc-m04_yuv/enc_rgb_to_yuv.c \
+	src/enc-m04_yuv/enc_pad.c \
+	src/enc-m05_intra/enc_transform.c \
+	src/enc-m06_quant/enc_quant.c \
+	src/enc-m07_tokens/enc_vp8_tokens.c \
+	src/enc-m08_recon/enc_recon.c \
+	src/enc-m02_vp8_bitwriter/enc_bool.c \
+	src/enc-m01_riff/enc_riff.c
+
+$(ENC_M09_DCENC_BIN): $(ENC_M09_DCENC_SRC) \
+	src/enc-m00_png/enc_png.h \
+	src/enc-m04_yuv/enc_rgb_to_yuv.h \
+	src/enc-m04_yuv/enc_pad.h \
+	src/enc-m07_tokens/enc_vp8_tokens.h \
+	src/enc-m08_recon/enc_recon.h \
+	src/enc-m01_riff/enc_riff.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M09_DCENC_SRC) -lm
+
+ENC_M09_MODEENC_SRC := \
+	tools/enc_m09_modeenc.c \
+	src/enc-m00_png/enc_png.c \
+	src/enc-m04_yuv/enc_rgb_to_yuv.c \
+	src/enc-m04_yuv/enc_pad.c \
+	src/enc-m05_intra/enc_transform.c \
+	src/enc-m06_quant/enc_quant.c \
+	src/enc-m07_tokens/enc_vp8_tokens.c \
+	src/enc-m08_recon/enc_recon.c \
+	src/enc-m02_vp8_bitwriter/enc_bool.c \
+	src/enc-m01_riff/enc_riff.c
+
+$(ENC_M09_MODEENC_BIN): $(ENC_M09_MODEENC_SRC) \
+	src/enc-m00_png/enc_png.h \
+	src/enc-m04_yuv/enc_rgb_to_yuv.h \
+	src/enc-m04_yuv/enc_pad.h \
+	src/enc-m07_tokens/enc_vp8_tokens.h \
+	src/enc-m08_recon/enc_recon.h \
+	src/enc-m01_riff/enc_riff.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M09_MODEENC_SRC) -lm
+
+ENC_M09_BPREDENC_SRC := \
+	tools/enc_m09_bpredenc.c \
+	src/enc-m00_png/enc_png.c \
+	src/enc-m04_yuv/enc_rgb_to_yuv.c \
+	src/enc-m04_yuv/enc_pad.c \
+	src/enc-m05_intra/enc_transform.c \
+	src/enc-m06_quant/enc_quant.c \
+	src/enc-m07_tokens/enc_vp8_tokens.c \
+	src/enc-m08_recon/enc_recon.c \
+	src/enc-m02_vp8_bitwriter/enc_bool.c \
+	src/enc-m01_riff/enc_riff.c
+
+$(ENC_M09_BPREDENC_BIN): $(ENC_M09_BPREDENC_SRC) \
+	src/enc-m00_png/enc_png.h \
+	src/enc-m04_yuv/enc_rgb_to_yuv.h \
+	src/enc-m04_yuv/enc_pad.h \
+	src/enc-m07_tokens/enc_vp8_tokens.h \
+	src/enc-m08_recon/enc_recon.h \
+	src/enc-m01_riff/enc_riff.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M09_BPREDENC_SRC) -lm
 
 NOLIBC_SRC := $(SRC) \
 	src/nolibc/syscall_glue.c

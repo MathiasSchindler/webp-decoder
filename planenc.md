@@ -107,9 +107,9 @@ Shared helpers can still live in `src/common/` (endian helpers, small alloc, etc
 | 4 | Arbitrary dimensions + padding/cropping | Done | `src/enc-m04_yuv/` |
 | 5 | RGB→YUV420 (deterministic) | Done | `src/enc-m04_yuv/` |
 | 6 | Intra predict (DC only) + forward transform | Done | `src/enc-m05_intra/` |
-| 7 | Quantization + `-q` mapping | Not started | `src/enc-m06_quant/` |
-| 8 | Token encoding (non-zero coeffs) | Not started | `src/enc-m07_tokens/` |
-| 9 | Mode decisions (simple SAD chooser) | Not started | `src/enc-m05_intra/` |
+| 7 | Quantization + `-q` mapping | Done | `src/enc-m06_quant/` |
+| 8 | Token encoding (non-zero coeffs) | Done | `src/enc-m07_tokens/` |
+| 9 | Mode decisions (SAD chooser) + in-loop recon groundwork | In progress (I16 DC/V/H/TM done) | `src/enc-m05_intra/` |
 | 10 | Loopfilter params | Not started | `src/enc-m08_filter/` |
 | 11 | Segmentation (optional) | Not started | `src/enc-m09_seg/` |
 | 12 | Token partitions > 1 | Not started | `src/enc-m07_tokens/` |
@@ -309,10 +309,14 @@ Implement:
 - A simple, explicit mapping from `-q` to VP8 quant indices
 - Start with a single global quant (no segmentation, no deltas)
 
+This milestone also locks down the quality→qindex mapping and scalar quantization math
+deterministically, via a manifest of quantized coefficient dumps (no token encoding yet).
+
 Tests:
 
-- Monotonic behavior: lowering `-q` should not increase output size
-- Add PSNR calculation and enforce a lower bound for a small curated corpus
+- `scripts/enc_m07_quant_check.sh` (hash-gates quantized coefficient dumps for `images/png-in/*.png` across a small set of q values)
+- Manual spot check:
+  - `make enc_m07_quantdump && ./build/enc_m07_quantdump --q 75 images/png-in/solid_rgb_16x16_255_000_000.png out.bin`
 
 ### M8 — Token encoding for non-zero coeffs
 
@@ -325,9 +329,19 @@ Implement:
 - Tokenization and entropy coding for coefficient blocks
 - Still keep `Total partitions: 1`
 
+This milestone is validated by round-tripping our encoded token partition through the
+existing decoder token parser and requiring the decoded coefficient hash to match the
+coefficients we encoded.
+
 Tests:
 
 - Round-trip: encode → decode works across a curated subset of `images/png-in/`
+
+Deterministic gate:
+
+- `scripts/enc_m08_tokens_check.sh` (hash-gates VP8 payload bytes for `images/png-in/*.png` across a small set of q values; tool verifies coeff round-trip)
+- Manual spot check:
+  - `make enc_m08_tokentest && ./build/enc_m08_tokentest --q 75 images/png-in/solid_rgb_16x16_255_000_000.png out.vp8`
 
 ### M9 — Mode decisions (still simple, deterministic)
 
@@ -335,17 +349,24 @@ Primary module: `src/enc-m05_intra/`
 
 Goal: improve quality without exploding complexity.
 
-Implement (incremental):
+Implemented (current slice):
 
-- Add additional luma modes (V_PRED, H_PRED, TM_PRED, then B_PRED)
-- Use simple heuristics:
-  - choose best mode by SAD on predictor
-  - optionally include a rate proxy (estimated token cost)
+- Per-macroblock **I16** luma mode decision among `DC_PRED`, `V_PRED`, `H_PRED`, `TM_PRED` using SAD on predictors built from **reconstructed neighbors**.
+- Per-macroblock **UV (8x8)** mode decision among `DC_PRED`, `V_PRED`, `H_PRED`, `TM_PRED` using SAD on predictors built from **reconstructed neighbors**.
+- Signal chosen `ymode` per macroblock in partition 0 (keyframe ymode tree/probs).
+- Signal chosen `uv_mode` per macroblock in partition 0 (keyframe uv tree/probs).
+- Add `B_PRED` (4x4 luma intra) with per-subblock mode decisions by SAD, signaled in partition 0 (keyframe bmode tree/probs).
+
+Next incremental improvements (later):
+
+- Consider adding a lightweight rate proxy (token cost estimate) to the mode decision.
 
 Tests:
 
-- Deterministic mode dump (`-dump_frame`) for a fixed corpus
-- PSNR/SSIM improves or at least does not regress compared to “always DC_PRED” baseline
+- Deterministic encode→decode gate over `images/png-in/*.png` and a small quality set.
+  - RGB hash + mode-map hash: `scripts/enc_m09_modeenc_check.sh`
+	- RGB hash + mode-map hash (includes b_modes): `scripts/enc_m09_bpredenc_check.sh`
+- (Future) PSNR/SSIM improves or at least does not regress compared to “always DC_PRED” baseline
 
 ### M10 — Loop filter parameter selection
 
