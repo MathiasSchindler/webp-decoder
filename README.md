@@ -41,6 +41,20 @@ make
 
 This produces the `decoder` binary.
 
+### Ultra (tiny, syscall-only)
+
+On Linux x86_64 you can also build a very small, static, syscall-only binary that writes PNG by default:
+
+```sh
+make ultra
+```
+
+This produces `decoder_nolibc_ultra`, intended to be run as:
+
+```sh
+./decoder_nolibc_ultra input.webp out.png
+```
+
 ## Usage
 
 ```sh

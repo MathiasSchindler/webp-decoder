@@ -32,7 +32,7 @@ CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Werror \
 
 LDFLAGS_COMMON := -flto
 
-.PHONY: all clean nolibc nolibc_tiny nolibc_ultra
+.PHONY: all clean nolibc nolibc_tiny nolibc_ultra ultra
 
 all: $(BIN)
 
@@ -41,6 +41,9 @@ nolibc: $(NOLIBC_BIN)
 nolibc_tiny: $(NOLIBC_TINY_BIN)
 
 nolibc_ultra: $(NOLIBC_ULTRA_BIN)
+
+# Friendly alias: `make ultra` builds the tiny PNG-by-default syscall-only binary.
+ultra: nolibc_ultra
 
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS_COMMON) -o $@ $(OBJ) $(LDFLAGS_COMMON)
@@ -135,4 +138,4 @@ $(BUILD_DIR)/%.o: src/%.c
 	$(CC) $(CFLAGS_COMMON) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(BIN) $(NOLIBC_BIN) $(NOLIBC_TINY_BIN)
+	rm -rf $(BUILD_DIR) $(BIN) $(NOLIBC_BIN) $(NOLIBC_TINY_BIN) $(NOLIBC_ULTRA_BIN)
