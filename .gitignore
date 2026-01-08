@@ -1,6 +1,7 @@
 # Build outputs
 /build/
 /decoder
+/decoder_nolibc*
 
 # Images / corpora (large, often local)
 /images/

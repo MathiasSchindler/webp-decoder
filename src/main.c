@@ -5,8 +5,11 @@
 #include "m04_frame_header_full/vp8_frame_header_basic.h"
 #include "m05_tokens/vp8_tokens.h"
 #include "m06_recon/vp8_recon.h"
+
+#ifndef DECODER_TINY
 #include "m08_yuv2rgb_ppm/yuv2rgb_ppm.h"
 #include "m09_png/yuv2rgb_png.h"
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -17,15 +20,19 @@
 static void usage(void) {
 	fmt_write_str(2, "Usage:\n");
 	fmt_write_str(2, "  decoder -info <file.webp>\n");
-	fmt_write_str(2, "  decoder -probe <file.webp>\n");
-	fmt_write_str(2, "  decoder -dump_mb <file.webp> [mb_index]\n");
 	fmt_write_str(2, "  decoder -yuv <file.webp> <out.i420>\n");
 	fmt_write_str(2, "  decoder -yuvf <file.webp> <out.i420>\n");
+
+#ifndef DECODER_TINY
+	fmt_write_str(2, "  decoder -probe <file.webp>\n");
+	fmt_write_str(2, "  decoder -dump_mb <file.webp> [mb_index]\n");
 	fmt_write_str(2, "  decoder -ppm <file.webp> <out.ppm>\n");
 	fmt_write_str(2, "  decoder -png <file.webp> <out.png>\n");
 	fmt_write_str(2, "  decoder -diff_mb <file.webp> <oracle.i420>\n");
+#endif
 }
 
+#ifndef DECODER_TINY
 static void print_mb_mode_u8(uint8_t v, const char* const* names, uint32_t n) {
 	if ((uint32_t)v < n && names[v]) {
 		fmt_write_str(1, names[v]);
@@ -60,6 +67,9 @@ static void print_coeff_stats(const Vp8CoeffStats* cs) {
 	fmt_write_nl(1);
 }
 
+#endif
+
+#ifndef DECODER_TINY
 static int cmd_probe(const char* path) {
 	ByteSpan file;
 	if (os_map_file_readonly(path, &file) != 0) {
@@ -295,6 +305,7 @@ static int cmd_dump_mb(const char* path, uint32_t mb_index) {
 	os_unmap_file(file);
 	return 0;
 }
+#endif
 
 static int cmd_info(const char* path) {
 	ByteSpan file;
@@ -434,6 +445,8 @@ static int cmd_info(const char* path) {
 			fmt_write_nl(1);
 		}
 
+
+#ifndef DECODER_TINY
 		Vp8CoeffStats cs;
 		if (vp8_decode_coeff_stats(vp8_payload, &cs) != 0) {
 			fmt_write_str(2, "error: VP8 macroblock/token decode failed\n");
@@ -514,6 +527,7 @@ static int cmd_info(const char* path) {
 			fmt_write_u32(1, cs.blocks_total_v);
 			fmt_write_nl(1);
 		}
+#endif
 	}
 
 	os_unmap_file(file);
@@ -667,6 +681,8 @@ static int cmd_yuvf(const char* in_path, const char* out_path) {
 	os_unmap_file(file);
 	return 0;
 }
+
+#ifndef DECODER_TINY
 
 static int cmd_ppm(const char* in_path, const char* out_path) {
 	ByteSpan file;
@@ -981,6 +997,8 @@ static int cmd_diff_mb(const char* webp_path, const char* oracle_i420_path) {
 	return 0;
 }
 
+#endif
+
 int main(int argc, char** argv) {
 	if (argc < 3) {
 		usage();
@@ -994,6 +1012,8 @@ int main(int argc, char** argv) {
 		}
 		return cmd_info(argv[2]);
 	}
+
+#ifndef DECODER_TINY
 	if (argv[1][0] == '-' && argv[1][1] == 'p' && argv[1][2] == 'r' && argv[1][3] == 'o' &&
 	    argv[1][4] == 'b' && argv[1][5] == 'e' && argv[1][6] == '\0') {
 		if (argc != 3) {
@@ -1014,6 +1034,7 @@ int main(int argc, char** argv) {
 		}
 		return cmd_dump_mb(argv[2], mb_index);
 	}
+#endif
 	if (argv[1][0] == '-' && argv[1][1] == 'y' && argv[1][2] == 'u' && argv[1][3] == 'v' && argv[1][4] == '\0') {
 		if (argc != 4) {
 			usage();
@@ -1029,6 +1050,8 @@ int main(int argc, char** argv) {
 		}
 		return cmd_yuvf(argv[2], argv[3]);
 	}
+
+#ifndef DECODER_TINY
 	if (argv[1][0] == '-' && argv[1][1] == 'p' && argv[1][2] == 'p' && argv[1][3] == 'm' && argv[1][4] == '\0') {
 		if (argc != 4) {
 			usage();
@@ -1051,6 +1074,7 @@ int main(int argc, char** argv) {
 		}
 		return cmd_diff_mb(argv[2], argv[3]);
 	}
+#endif
 	(void)errno;
 	usage();
 	return 2;
