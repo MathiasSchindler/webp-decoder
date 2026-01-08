@@ -1,10 +1,11 @@
 #include "yuv2rgb_png.h"
 
-#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <errno.h>
 
 #include "../common/os.h"
 
@@ -12,6 +13,12 @@ enum {
 	YUV_FIX2 = 6,
 	YUV_MASK2 = (256 << YUV_FIX2) - 1
 };
+
+#ifdef DECODER_ULTRA
+#define PNG_SET_ERRNO(e) ((void)0)
+#else
+#define PNG_SET_ERRNO(e) (errno = (e))
+#endif
 
 static inline int mult_hi(int v, int coeff) {
 	return (v * coeff) >> 8;
@@ -200,11 +207,11 @@ static int png_fill_scanline(PngRgbGen* g) {
 
 int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 	if (fd < 0 || !img || !img->y || !img->u || !img->v) {
-		errno = EINVAL;
+		PNG_SET_ERRNO(EINVAL);
 		return -1;
 	}
 	if (img->width == 0 || img->height == 0) {
-		errno = EINVAL;
+		PNG_SET_ERRNO(EINVAL);
 		return -1;
 	}
 
@@ -230,19 +237,19 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 	const uint32_t scanline_bytes = 1u + row_bytes; // filter byte + RGB
 	const uint64_t raw_size64 = (uint64_t)img->height * (uint64_t)(1u + row_bytes);
 	if (raw_size64 > 0x7FFFFFFFu) {
-		errno = EFBIG;
+		PNG_SET_ERRNO(EFBIG);
 		return -1;
 	}
 	const uint32_t raw_size = (uint32_t)raw_size64;
 	const uint32_t blocks = (raw_size + 65535u - 1u) / 65535u;
 	const uint64_t zsize64 = 2u + (uint64_t)raw_size + (uint64_t)blocks * 5u + 4u;
 	if (zsize64 > SIZE_MAX) {
-		errno = ENOMEM;
+		PNG_SET_ERRNO(ENOMEM);
 		return -1;
 	}
 	uint8_t* z = (uint8_t*)malloc((size_t)zsize64);
 	if (!z) {
-		errno = ENOMEM;
+		PNG_SET_ERRNO(ENOMEM);
 		return -1;
 	}
 
@@ -262,7 +269,7 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 		free(bottom_row);
 		free(scanline);
 		free(z);
-		errno = ENOMEM;
+		PNG_SET_ERRNO(ENOMEM);
 		return -1;
 	}
 
@@ -298,7 +305,7 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 				free(bottom_row);
 				free(scanline);
 				free(z);
-				errno = EINVAL;
+				PNG_SET_ERRNO(EINVAL);
 				return -1;
 			}
 
@@ -308,7 +315,7 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 					free(bottom_row);
 					free(scanline);
 					free(z);
-					errno = EINVAL;
+					PNG_SET_ERRNO(EINVAL);
 					return -1;
 				}
 			}
@@ -342,7 +349,7 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 	// IDAT (single chunk for simplicity).
 	if (zp > 0xFFFFFFFFu) {
 		free(z);
-		errno = EFBIG;
+		PNG_SET_ERRNO(EFBIG);
 		return -1;
 	}
 	if (write_chunk(fd, "IDAT", z, (uint32_t)zp) != 0) {

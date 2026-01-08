@@ -79,7 +79,9 @@ NOLIBC_TINY_OBJ := $(patsubst src/%.c,$(NOLIBC_TINY_BUILD_DIR)/%.o,$(filter %.c,
 NOLIBC_TINY_CFLAGS := $(NOLIBC_CFLAGS) -DDECODER_TINY
 
 # Ultra is a very small, PNG-by-default, nolibc build. Allow extra size-tuning flags here.
-NOLIBC_ULTRA_CFLAGS := $(NOLIBC_CFLAGS) -fno-inline
+# You can pass additional flags at build time, e.g.
+#   make nolibc_ultra ULTRA_EXTRA_CFLAGS='-fno-ipa-cp'
+NOLIBC_ULTRA_CFLAGS := $(NOLIBC_CFLAGS) -DDECODER_ULTRA -fno-inline $(ULTRA_EXTRA_CFLAGS)
 
 $(NOLIBC_TINY_BIN): $(NOLIBC_TINY_OBJ)
 	$(CC) $(NOLIBC_LTO) -o $@ $(NOLIBC_TINY_OBJ) $(NOLIBC_LDFLAGS) -lgcc
