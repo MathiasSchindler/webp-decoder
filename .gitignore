@@ -2,6 +2,7 @@
 /build/
 /decoder
 /decoder_nolibc*
+/decoder_nolibc_ultra
 
 # Images / corpora (large, often local)
 /images/

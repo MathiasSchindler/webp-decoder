@@ -1,12 +1,14 @@
+
 #include "common/os.h"
 #include "m01_container/webp_container.h"
 #include "m02_vp8_header/vp8_header.h"
 #include "m06_recon/vp8_recon.h"
+#include "m09_png/yuv2rgb_png.h"
 
 #include <fcntl.h>
 #include <unistd.h>
 
-static int cmd_yuv_common(const char* in_path, const char* out_path, int filtered) {
+static int cmd_png(const char* in_path, const char* out_path) {
 	ByteSpan file;
 	if (os_map_file_readonly(in_path, &file) != 0) {
 		return 1;
@@ -37,11 +39,8 @@ static int cmd_yuv_common(const char* in_path, const char* out_path, int filtere
 	}
 
 	Yuv420Image img;
-	if (!filtered) {
-		rc = vp8_reconstruct_keyframe_yuv(&kf, &decoded, &img);
-	} else {
-		rc = vp8_reconstruct_keyframe_yuv_filtered(&kf, &decoded, &img);
-	}
+	// Match dwebp default output: filtered reconstruction.
+	rc = vp8_reconstruct_keyframe_yuv_filtered(&kf, &decoded, &img);
 	if (rc != 0) {
 		vp8_decoded_frame_free(&decoded);
 		os_unmap_file(file);
@@ -56,13 +55,7 @@ static int cmd_yuv_common(const char* in_path, const char* out_path, int filtere
 		return 1;
 	}
 
-	size_t ysz = (size_t)img.stride_y * (size_t)img.height;
-	size_t uvh = (size_t)((img.height + 1u) / 2u);
-	size_t uvsz = (size_t)img.stride_uv * uvh;
-	int wrc = 0;
-	wrc |= os_write_all(fd, img.y, ysz);
-	wrc |= os_write_all(fd, img.u, uvsz);
-	wrc |= os_write_all(fd, img.v, uvsz);
+	int wrc = yuv420_write_png_fd(fd, &img);
 	(void)close(fd);
 
 	yuv420_free(&img);
@@ -72,14 +65,6 @@ static int cmd_yuv_common(const char* in_path, const char* out_path, int filtere
 }
 
 int main(int argc, char** argv) {
-	if (argc != 4) return 2;
-
-	if (argv[1][0] == '-' && argv[1][1] == 'y' && argv[1][2] == 'u' && argv[1][3] == 'v' && argv[1][4] == '\0') {
-		return cmd_yuv_common(argv[2], argv[3], 0);
-	}
-	if (argv[1][0] == '-' && argv[1][1] == 'y' && argv[1][2] == 'u' && argv[1][3] == 'v' && argv[1][4] == 'f' &&
-	    argv[1][5] == '\0') {
-		return cmd_yuv_common(argv[2], argv[3], 1);
-	}
-	return 2;
+	if (argc != 3) return 2;
+	return cmd_png(argv[1], argv[2]);
 }

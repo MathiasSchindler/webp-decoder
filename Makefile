@@ -83,7 +83,7 @@ $(NOLIBC_TINY_BIN): $(NOLIBC_TINY_OBJ)
 
 NOLIBC_ULTRA_SRC := \
 	src/main_ultra.c \
-	src/common/os.c \
+	src/common/os_readall.c \
 	src/m01_container/webp_container.c \
 	src/m02_vp8_header/vp8_header.c \
 	src/m03_bool_decoder/bool_decoder.c \
@@ -92,6 +92,7 @@ NOLIBC_ULTRA_SRC := \
 	src/m05_tokens/vp8_tokens.c \
 	src/m06_recon/vp8_recon.c \
 	src/m07_loopfilter/vp8_loopfilter.c \
+	src/m09_png/yuv2rgb_png.c \
 	src/nolibc/syscall_glue.c
 
 NOLIBC_ULTRA_OBJ := $(patsubst src/%.c,$(NOLIBC_ULTRA_BUILD_DIR)/%.o,$(filter %.c,$(NOLIBC_ULTRA_SRC))) \
