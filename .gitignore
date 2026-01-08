@@ -1,6 +1,7 @@
 # Build outputs
 /build/
 /decoder
+/encoder
 /decoder_nolibc*
 /decoder_nolibc_ultra
 

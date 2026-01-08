@@ -11,10 +11,11 @@
 
 static void usage(const char* argv0) {
 	fprintf(stderr,
-	        "Usage: %s [--q <0..100>] <in.png> <out.webp>\n"
+	        "Usage: %s [--q <0..100>] [--loopfilter] <in.png> <out.webp>\n"
 	        "\n"
 	        "Encodes a VP8 keyframe (lossy) into a simple WebP container.\n"
-	        "Current mode: DC_PRED (Y+UV) with in-loop reconstruction.\n",
+	        "Current mode: DC_PRED (Y+UV) with in-loop reconstruction.\n"
+	        "--loopfilter enables deterministic loopfilter header params derived from the chosen qindex.\n",
 	        argv0);
 }
 
@@ -29,13 +30,24 @@ static int parse_int(const char* s, int* out) {
 
 int main(int argc, char** argv) {
 	int quality = 75;
+	int enable_loopfilter = 0;
+
 	int argi = 1;
-	if (argi + 1 < argc && strcmp(argv[argi], "--q") == 0) {
-		if (parse_int(argv[argi + 1], &quality) != 0) {
-			usage(argv[0]);
-			return 2;
+	while (argi < argc) {
+		if (argi + 1 < argc && strcmp(argv[argi], "--q") == 0) {
+			if (parse_int(argv[argi + 1], &quality) != 0) {
+				usage(argv[0]);
+				return 2;
+			}
+			argi += 2;
+			continue;
 		}
-		argi += 2;
+		if (strcmp(argv[argi], "--loopfilter") == 0 || strcmp(argv[argi], "--lf") == 0) {
+			enable_loopfilter = 1;
+			argi += 1;
+			continue;
+		}
+		break;
 	}
 	if (argc - argi != 2) {
 		usage(argv[0]);
@@ -75,19 +87,51 @@ int main(int argc, char** argv) {
 
 	uint8_t* vp8 = NULL;
 	size_t vp8_size = 0;
-	if (enc_vp8_build_keyframe_dc_coeffs(img.width,
-	                                    img.height,
-	                                    qindex,
-	                                    0,
-	                                    0,
-	                                    0,
-	                                    0,
-	                                    0,
-	                                    coeffs,
-	                                    coeffs_count,
-	                                    &vp8,
-	                                    &vp8_size) != 0) {
-		fprintf(stderr, "%s: enc_vp8_build_keyframe_dc_coeffs failed (errno=%d)\n", in_path, errno);
+	if (enable_loopfilter) {
+		EncVp8LoopFilterParams lf;
+		enc_vp8_loopfilter_from_qindex(qindex, &lf);
+		if (enc_vp8_build_keyframe_dc_coeffs_ex(img.width,
+		                                      img.height,
+		                                      qindex,
+		                                      0,
+		                                      0,
+		                                      0,
+		                                      0,
+		                                      0,
+		                                      &lf,
+		                                      coeffs,
+		                                      coeffs_count,
+		                                      &vp8,
+		                                      &vp8_size) != 0) {
+			fprintf(stderr, "%s: enc_vp8_build_keyframe_dc_coeffs_ex failed (errno=%d)\n", in_path, errno);
+			free(coeffs);
+			enc_yuv420_free(&yuv);
+			enc_png_free(&img);
+			return 1;
+		}
+	} else {
+		if (enc_vp8_build_keyframe_dc_coeffs(img.width,
+		                                    img.height,
+		                                    qindex,
+		                                    0,
+		                                    0,
+		                                    0,
+		                                    0,
+		                                    0,
+		                                    coeffs,
+		                                    coeffs_count,
+		                                    &vp8,
+		                                    &vp8_size) != 0) {
+			fprintf(stderr, "%s: enc_vp8_build_keyframe_dc_coeffs failed (errno=%d)\n", in_path, errno);
+			free(coeffs);
+			enc_yuv420_free(&yuv);
+			enc_png_free(&img);
+			return 1;
+		}
+	}
+
+	if (!vp8 || vp8_size == 0) {
+		fprintf(stderr, "%s: VP8 payload build failed (empty output)\n", in_path);
 		free(coeffs);
 		enc_yuv420_free(&yuv);
 		enc_png_free(&img);

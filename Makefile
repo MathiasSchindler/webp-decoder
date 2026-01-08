@@ -1,6 +1,7 @@
 CC ?= cc
 
 BIN := decoder
+ENCODER := encoder
 BUILD_DIR := build
 ENC_PNGDUMP_BIN := build/enc_pngdump
 ENC_WEBPWRAP_BIN := build/enc_webpwrap
@@ -58,7 +59,7 @@ LDFLAGS_COMMON := -flto
 .PHONY: enc_m09_modeenc
 .PHONY: enc_m09_bpredenc
 
-all: $(BIN)
+all: $(BIN) $(ENCODER)
 
 # Encoder Milestone 0 helper: tiny PNG reader driver
 enc_pngdump: $(ENC_PNGDUMP_BIN)
@@ -96,6 +97,29 @@ ultra: nolibc_ultra
 
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS_COMMON) -o $@ $(OBJ) $(LDFLAGS_COMMON)
+
+ENCODER_SRC := \
+	src/encoder_main.c \
+	src/enc-m00_png/enc_png.c \
+	src/enc-m04_yuv/enc_rgb_to_yuv.c \
+	src/enc-m04_yuv/enc_pad.c \
+	src/enc-m05_intra/enc_transform.c \
+	src/enc-m06_quant/enc_quant.c \
+	src/enc-m07_tokens/enc_vp8_tokens.c \
+	src/enc-m08_filter/enc_loopfilter.c \
+	src/enc-m08_recon/enc_recon.c \
+	src/enc-m02_vp8_bitwriter/enc_bool.c \
+	src/enc-m01_riff/enc_riff.c
+
+$(ENCODER): $(ENCODER_SRC) \
+	src/enc-m00_png/enc_png.h \
+	src/enc-m04_yuv/enc_rgb_to_yuv.h \
+	src/enc-m04_yuv/enc_pad.h \
+	src/enc-m07_tokens/enc_vp8_tokens.h \
+	src/enc-m08_filter/enc_loopfilter.h \
+	src/enc-m08_recon/enc_recon.h \
+	src/enc-m01_riff/enc_riff.h
+	$(CC) $(CFLAGS_COMMON) -o $@ $(ENCODER_SRC) $(LDFLAGS_COMMON) -lm
 
 ENC_PNGDUMP_SRC := \
 	tools/enc_pngdump.c \
@@ -230,6 +254,7 @@ ENC_M09_DCENC_SRC := \
 	src/enc-m05_intra/enc_transform.c \
 	src/enc-m06_quant/enc_quant.c \
 	src/enc-m07_tokens/enc_vp8_tokens.c \
+	src/enc-m08_filter/enc_loopfilter.c \
 	src/enc-m08_recon/enc_recon.c \
 	src/enc-m02_vp8_bitwriter/enc_bool.c \
 	src/enc-m01_riff/enc_riff.c
@@ -252,6 +277,7 @@ ENC_M09_MODEENC_SRC := \
 	src/enc-m05_intra/enc_transform.c \
 	src/enc-m06_quant/enc_quant.c \
 	src/enc-m07_tokens/enc_vp8_tokens.c \
+	src/enc-m08_filter/enc_loopfilter.c \
 	src/enc-m08_recon/enc_recon.c \
 	src/enc-m02_vp8_bitwriter/enc_bool.c \
 	src/enc-m01_riff/enc_riff.c
@@ -274,6 +300,7 @@ ENC_M09_BPREDENC_SRC := \
 	src/enc-m05_intra/enc_transform.c \
 	src/enc-m06_quant/enc_quant.c \
 	src/enc-m07_tokens/enc_vp8_tokens.c \
+	src/enc-m08_filter/enc_loopfilter.c \
 	src/enc-m08_recon/enc_recon.c \
 	src/enc-m02_vp8_bitwriter/enc_bool.c \
 	src/enc-m01_riff/enc_riff.c
@@ -378,4 +405,4 @@ $(BUILD_DIR)/%.o: src/%.c
 	$(CC) $(CFLAGS_COMMON) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(BIN) $(NOLIBC_BIN) $(NOLIBC_TINY_BIN) $(NOLIBC_ULTRA_BIN)
+	rm -rf $(BUILD_DIR) $(BIN) $(ENCODER) $(NOLIBC_BIN) $(NOLIBC_TINY_BIN) $(NOLIBC_ULTRA_BIN)

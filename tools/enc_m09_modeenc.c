@@ -11,13 +11,14 @@
 
 static void usage(const char* argv0) {
 	fprintf(stderr,
-	        "Usage: %s [--q <0..100>] [--dump-modes <out.bin>] <in.png> <out.webp>\n"
+	        "Usage: %s [--q <0..100>] [--loopfilter] [--dump-modes <out.bin>] <in.png> <out.webp>\n"
 	        "\n"
 	        "Encodes a VP8 keyframe (lossy) into a simple WebP container.\n"
 	        "Luma mode: per-macroblock I16 (DC/V/H/TM) chosen by SAD against predictors\n"
 	        "built from reconstructed neighbors.\n"
 	        "Chroma mode: per-macroblock UV (DC/V/H/TM) chosen by SAD against predictors\n"
 	        "built from reconstructed neighbors.\n"
+	        "--loopfilter enables deterministic loopfilter header params derived from the chosen qindex.\n"
 	        "--dump-modes writes [y_modes][uv_modes] as raw bytes, each length mb_total.\n",
 	        argv0);
 }
@@ -48,6 +49,7 @@ static int write_file(const char* path, const void* data, size_t size) {
 int main(int argc, char** argv) {
 	int quality = 75;
 	const char* dump_modes_path = NULL;
+	int enable_loopfilter = 0;
 
 	int argi = 1;
 	while (argi < argc) {
@@ -57,6 +59,11 @@ int main(int argc, char** argv) {
 				return 2;
 			}
 			argi += 2;
+			continue;
+		}
+		if (strcmp(argv[argi], "--loopfilter") == 0 || strcmp(argv[argi], "--lf") == 0) {
+			enable_loopfilter = 1;
+			argi += 1;
 			continue;
 		}
 		if (argi + 1 < argc && strcmp(argv[argi], "--dump-modes") == 0) {
@@ -138,32 +145,61 @@ int main(int argc, char** argv) {
 
 	uint8_t* vp8 = NULL;
 	size_t vp8_size = 0;
-	if (enc_vp8_build_keyframe_i16_coeffs(img.width,
-	                                     img.height,
-	                                     qindex,
-	                                     0,
-	                                     0,
-	                                     0,
-	                                     0,
-	                                     0,
-	                                     y_modes,
-	                                     uv_modes,
-	                                     coeffs,
-	                                     coeffs_count,
-	                                     &vp8,
-	                                     &vp8_size) != 0) {
-		fprintf(stderr, "%s: enc_vp8_build_keyframe_i16_coeffs failed (errno=%d)\n", in_path, errno);
-		free(uv_modes);
-		free(coeffs);
-		free(y_modes);
-		enc_yuv420_free(&yuv);
-		enc_png_free(&img);
-		return 1;
+	if (enable_loopfilter) {
+		EncVp8LoopFilterParams lf;
+		enc_vp8_loopfilter_from_qindex(qindex, &lf);
+		if (enc_vp8_build_keyframe_i16_coeffs_ex(img.width,
+		                                        img.height,
+		                                        qindex,
+		                                        0,
+		                                        0,
+		                                        0,
+		                                        0,
+		                                        0,
+		                                        y_modes,
+		                                        uv_modes,
+		                                        &lf,
+		                                        coeffs,
+		                                        coeffs_count,
+		                                        &vp8,
+		                                        &vp8_size) != 0) {
+			fprintf(stderr, "%s: enc_vp8_build_keyframe_i16_coeffs_ex failed (errno=%d)\n", in_path, errno);
+			free(uv_modes);
+			free(coeffs);
+			free(y_modes);
+			enc_yuv420_free(&yuv);
+			enc_png_free(&img);
+			return 1;
+		}
+	} else {
+		if (enc_vp8_build_keyframe_i16_coeffs(img.width,
+		                                     img.height,
+		                                     qindex,
+		                                     0,
+		                                     0,
+		                                     0,
+		                                     0,
+		                                     0,
+		                                     y_modes,
+		                                     uv_modes,
+		                                     coeffs,
+		                                     coeffs_count,
+		                                     &vp8,
+		                                     &vp8_size) != 0) {
+			fprintf(stderr, "%s: enc_vp8_build_keyframe_i16_coeffs failed (errno=%d)\n", in_path, errno);
+			free(uv_modes);
+			free(coeffs);
+			free(y_modes);
+			enc_yuv420_free(&yuv);
+			enc_png_free(&img);
+			return 1;
+		}
 	}
 
 	if (enc_webp_write_vp8_file(out_path, vp8, vp8_size) != 0) {
 		fprintf(stderr, "%s: enc_webp_write_vp8_file failed (errno=%d)\n", out_path, errno);
 		free(vp8);
+		free(uv_modes);
 		free(coeffs);
 		free(y_modes);
 		enc_yuv420_free(&yuv);
