@@ -72,7 +72,7 @@ Examples:
 - PNG validation by comparing decoded PNG bytes to the already-validated PPM path:
   - [scripts/m8_compare_png_with_ppm.sh](scripts/m8_compare_png_with_ppm.sh)
 
-These scripts assume you have libwebp’s tools available (often at `~/libwebp/examples/` as described in [plan.md](plan.md)).
+These scripts assume you have libwebp’s tools available (commonly at `../../libwebp/examples/` or `~/libwebp/examples/` as described in [plan.md](plan.md)).
 
 ## Repo layout
 
