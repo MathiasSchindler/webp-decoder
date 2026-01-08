@@ -29,7 +29,7 @@ Scope is intentionally narrow.
 - VP8 features: key frames only (no inter frames)
 - Token partitions: currently expects `Total partitions: 1` for coefficient data
 
-See [plan.md](plan.md) for current milestone status and verification notes.
+See [plandec.md](plandec.md) for current status and verification notes.
 
 ## Build
 
@@ -106,7 +106,7 @@ Examples:
 - PNG validation by comparing decoded PNG bytes to the already-validated PPM path:
   - [scripts/m8_compare_png_with_ppm.sh](scripts/m8_compare_png_with_ppm.sh)
 
-These scripts assume you have libwebp’s tools available (commonly at `~/libwebp/examples/` as described in [plan.md](plan.md)).
+These scripts assume you have libwebp’s tools available (commonly at `~/libwebp/examples/` as described in [plandec.md](plandec.md)).
 
 ## Repo layout
 

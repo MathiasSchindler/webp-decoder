@@ -4,7 +4,7 @@ Milestone helper scripts used to validate our implementation against the libwebp
 
 Conventions:
 
-- Script names start with `m<N>_` where `<N>` is the milestone number from [plan.md](../plan.md).
+- Script names start with `m<N>_` where `<N>` is the milestone number from [plandec.md](../plandec.md).
 - Scripts should be runnable from the repo root: `/home/mathias/webp-stuff/decoder`.
 - Scripts intentionally avoid extra dependencies; they use POSIX-ish shell tools (`sh`, `awk`, `sed`, `grep`, `sha256sum`).
 
