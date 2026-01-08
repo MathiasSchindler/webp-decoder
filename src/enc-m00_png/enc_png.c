@@ -42,6 +42,7 @@ static int read_entire_file(const char* path, uint8_t** out_buf, size_t* out_siz
 	fclose(f);
 	if (n != (size_t)sz) {
 		free(buf);
+		errno = EIO;
 		return -1;
 	}
 
@@ -140,7 +141,8 @@ static int huff_decode(BitReader* br, const Huff* h, int* out_sym) {
 		uint16_t bl_count[16] = {0};
 		for (int i = 0; i < h->count; i++) {
 			uint8_t l = h->len[i];
-			if (l <= 15) bl_count[l]++;
+			// Length 0 means "symbol absent" and must not participate in canonical code generation.
+			if (l >= 1 && l <= 15) bl_count[l]++;
 		}
 		uint16_t next_code[16] = {0};
 		uint16_t c = 0;
@@ -407,6 +409,7 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 	static const uint8_t SIG[8] = {137, 80, 78, 71, 13, 10, 26, 10};
 	if (file_size < 8 || memcmp(file, SIG, 8) != 0) {
 		free(file);
+		errno = EINVAL;
 		return -1;
 	}
 
@@ -425,6 +428,7 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 		if (off + len + 4 > file_size) {
 			free(idat);
 			free(file);
+			errno = EINVAL;
 			return -1;
 		}
 		const uint8_t* data = file + off;
@@ -436,6 +440,7 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 			if (len != 13 || saw_ihdr) {
 				free(idat);
 				free(file);
+				errno = EINVAL;
 				return -1;
 			}
 			width = be32(data);
@@ -451,6 +456,7 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 		if (!saw_ihdr) {
 			free(idat);
 			free(file);
+			errno = EINVAL;
 			return -1;
 		}
 
@@ -478,22 +484,27 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 
 	if (!saw_ihdr || !saw_iend || idat_size == 0) {
 		free(idat);
+		errno = EINVAL;
 		return -1;
 	}
 	if (width == 0 || height == 0) {
 		free(idat);
+		errno = EINVAL;
 		return -1;
 	}
 	if (bit_depth != 8) {
 		free(idat);
+		errno = ENOTSUP;
 		return -1;
 	}
 	if (!(color_type == 2 || color_type == 6)) {
 		free(idat);
+		errno = ENOTSUP;
 		return -1;
 	}
 	if (comp != 0 || filt != 0 || interlace != 0) {
 		free(idat);
+		errno = ENOTSUP;
 		return -1;
 	}
 
@@ -516,6 +527,7 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 	if (inflate_zlib(idat, idat_size, inflated, inflated_size) != 0) {
 		free(inflated);
 		free(idat);
+		errno = EINVAL;
 		return -1;
 	}
 	free(idat);
@@ -529,6 +541,7 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 	if (unfilter(pix, inflated, width, height, channels) != 0) {
 		free(pix);
 		free(inflated);
+		errno = EINVAL;
 		return -1;
 	}
 	free(inflated);

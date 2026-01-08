@@ -94,7 +94,11 @@ int main(int argc, char** argv) {
 
 	EncPngImage img;
 	if (enc_png_read_file(in_path, &img) != 0) {
-		fprintf(stderr, "enc_png_read_file failed for %s (errno=%d)\n", in_path, errno);
+		fprintf(stderr,
+		        "enc_png_read_file failed for %s (errno=%d: %s)\n",
+		        in_path,
+		        errno,
+		        (errno != 0) ? strerror(errno) : "unknown");
 		return 1;
 	}
 	if (!(img.channels == 3 || img.channels == 4)) {
