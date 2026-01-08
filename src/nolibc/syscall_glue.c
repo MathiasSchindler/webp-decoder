@@ -241,3 +241,23 @@ void* calloc(size_t nmemb, size_t size) {
 	memset(p, 0, total);
 	return p;
 }
+
+void* realloc(void* ptr, size_t size) {
+	if (!ptr) return malloc(size);
+	if (size == 0) {
+		free(ptr);
+		return NULL;
+	}
+
+	uint8_t* base = (uint8_t*)ptr - sizeof(size_t);
+	size_t old_total = *(size_t*)base;
+	size_t old_payload = (old_total > sizeof(size_t)) ? (old_total - sizeof(size_t)) : 0;
+
+	void* out = malloc(size);
+	if (!out) return NULL;
+
+	size_t n = (old_payload < size) ? old_payload : size;
+	memcpy(out, ptr, n);
+	free(ptr);
+	return out;
+}

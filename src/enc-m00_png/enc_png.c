@@ -1,9 +1,10 @@
 #include "enc_png.h"
 
 #include <errno.h>
-#include <stdio.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // --- tiny helpers ---
 
@@ -15,39 +16,60 @@ static int read_entire_file(const char* path, uint8_t** out_buf, size_t* out_siz
 	*out_buf = NULL;
 	*out_size = 0;
 
-	FILE* f = fopen(path, "rb");
-	if (!f) return -1;
-	if (fseek(f, 0, SEEK_END) != 0) {
-		fclose(f);
+	int fd = open(path, O_RDONLY);
+	if (fd < 0) return -1;
+
+	off_t end = lseek(fd, 0, SEEK_END);
+	if (end < 0) {
+		(void)close(fd);
 		return -1;
 	}
-	long sz = ftell(f);
-	if (sz < 0) {
-		fclose(f);
-		return -1;
-	}
-	if (fseek(f, 0, SEEK_SET) != 0) {
-		fclose(f);
+	if (lseek(fd, 0, SEEK_SET) < 0) {
+		(void)close(fd);
 		return -1;
 	}
 
-	uint8_t* buf = (uint8_t*)malloc((size_t)sz);
+	if (end == 0) {
+		(void)close(fd);
+		errno = EINVAL;
+		return -1;
+	}
+	if ((uint64_t)end > (uint64_t)SIZE_MAX) {
+		(void)close(fd);
+		errno = EOVERFLOW;
+		return -1;
+	}
+
+	uint8_t* buf = (uint8_t*)malloc((size_t)end);
 	if (!buf) {
-		fclose(f);
+		(void)close(fd);
 		errno = ENOMEM;
 		return -1;
 	}
 
-	size_t n = fread(buf, 1, (size_t)sz, f);
-	fclose(f);
-	if (n != (size_t)sz) {
+	size_t want = (size_t)end;
+	size_t got = 0;
+	while (got < want) {
+		ssize_t n = read(fd, buf + got, want - got);
+		if (n < 0) {
+			int saved = errno;
+			(void)close(fd);
+			free(buf);
+			errno = saved;
+			return -1;
+		}
+		if (n == 0) break;
+		got += (size_t)n;
+	}
+	(void)close(fd);
+	if (got != want) {
 		free(buf);
 		errno = EIO;
 		return -1;
 	}
 
 	*out_buf = buf;
-	*out_size = n;
+	*out_size = got;
 	return 0;
 }
 
@@ -342,11 +364,15 @@ static int inflate_zlib(const uint8_t* in, size_t in_len, uint8_t* out, size_t o
 	return (out_pos == out_len) ? 0 : -1;
 }
 
+static inline int iabs_i32(int v) {
+	return (v < 0) ? -v : v;
+}
+
 static uint8_t paeth(uint8_t a, uint8_t b, uint8_t c) {
 	int p = (int)a + (int)b - (int)c;
-	int pa = abs(p - (int)a);
-	int pb = abs(p - (int)b);
-	int pc = abs(p - (int)c);
+	int pa = iabs_i32(p - (int)a);
+	int pb = iabs_i32(p - (int)b);
+	int pc = iabs_i32(p - (int)c);
 	if (pa <= pb && pa <= pc) return a;
 	if (pb <= pc) return b;
 	return c;

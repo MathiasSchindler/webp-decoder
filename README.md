@@ -39,7 +39,10 @@ Requirements: a reasonably recent C toolchain on Linux/macOS.
 make
 ```
 
-This produces the `decoder` binary.
+This produces two binaries:
+
+- `decoder`
+- `encoder`
 
 ### NOLIBC (syscall-only)
 
@@ -69,7 +72,7 @@ On Linux x86_64 you can also build a very small, static, syscall-only binary tha
 make ultra
 ```
 
-This produces `decoder_nolibc_ultra`, intended to be run as:
+This produces `decoder_nolibc_ultra` (and also builds the normal `encoder`), intended to be run as:
 
 ```sh
 ./decoder_nolibc_ultra input.webp out.png
@@ -87,6 +90,29 @@ This produces `decoder_nolibc_ultra`, intended to be run as:
 # RGB outputs
 ./decoder -ppm input.webp out.ppm
 ./decoder -png input.webp out.png
+```
+
+## Encoder (PNG -> WebP)
+
+The repository also contains a from-scratch **lossy WebP (VP8 keyframe) encoder**.
+It is intentionally not expected to match libwebp (`cwebp`) in quality/speed yet; the
+primary goals are **spec-correctness**, **determinism**, and **incremental test-gated
+progress**.
+
+Basic usage:
+
+```sh
+# Encode PNG -> WebP (default: --mode bpred, --q 75)
+./encoder input.png out.webp
+
+# Choose quality and intra mode
+./encoder --q 90 --mode i16 input.png out.webp
+
+# Opt-in: write loopfilter header params
+./encoder --loopfilter --q 75 input.png out.webp
+
+# Inspect using our decoder
+./decoder -info out.webp
 ```
 
 Notes:
@@ -107,6 +133,9 @@ Examples:
   - [scripts/m8_compare_png_with_ppm.sh](scripts/m8_compare_png_with_ppm.sh)
 
 These scripts assume you have libwebp’s tools available (commonly at `~/libwebp/examples/` as described in [plandec.md](plandec.md)).
+
+Encoder regression gates live alongside the decoder ones under [scripts/](scripts/) and
+are named `enc_mXX_*.sh`. See [planenc.md](planenc.md) for the encoder milestone plan.
 
 ## Repo layout
 

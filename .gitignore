@@ -4,6 +4,8 @@
 /encoder
 /decoder_nolibc*
 /decoder_nolibc_ultra
+/encoder_nolibc*
+/encoder_nolibc_ultra
 
 # Images / corpora (large, often local)
 /images/

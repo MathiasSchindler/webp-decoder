@@ -1,16 +1,22 @@
 #include "enc_rgb_to_yuv.h"
 
 #include <errno.h>
-#include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef NO_LIBC
+#include <math.h>
+#endif
 
 enum {
 	YUV_FIX = 16,
 	YUV_HALF = 1 << (YUV_FIX - 1),
 };
 
+static int g_gamma_tables_ok = 0;
+
+#ifndef NO_LIBC
 enum {
 	GAMMA_FIX = 12,
 	GAMMA_TAB_FIX = 7,
@@ -24,9 +30,15 @@ static const int kGammaTabRounder = 1 << (GAMMA_TAB_FIX - 1);
 
 static int g_linear_to_gamma_tab[GAMMA_TAB_SIZE + 1];
 static uint16_t g_gamma_to_linear_tab[256];
-static int g_gamma_tables_ok = 0;
+#endif
 
 static void enc_init_gamma_tables(void) {
+#ifdef NO_LIBC
+	// Ultra/nolibc build: skip gamma tables (would require pow/libm).
+	// We'll use plain sRGB averaging for chroma.
+	g_gamma_tables_ok = 1;
+	return;
+#else
 	if (g_gamma_tables_ok) return;
 
 	const double norm = 1.0 / 255.0;
@@ -40,8 +52,10 @@ static void enc_init_gamma_tables(void) {
 			(int)(255.0 * pow(scale * (double)v, 1.0 / kGamma) + 0.5);
 	}
 	g_gamma_tables_ok = 1;
+#endif
 }
 
+#ifndef NO_LIBC
 static inline uint32_t gamma_to_linear(uint8_t v) {
 	return g_gamma_to_linear_tab[v];
 }
@@ -60,6 +74,7 @@ static inline int linear_to_gamma(uint32_t base_value, int shift) {
 	const int y = interpolate((int)(base_value << shift));
 	return (y + kGammaTabRounder) >> GAMMA_TAB_FIX;
 }
+#endif
 
 static inline int clip_u8(int v) {
 	return (v < 0) ? 0 : (v > 255) ? 255 : v;
@@ -189,6 +204,11 @@ int enc_yuv420_from_rgb_libwebp(const uint8_t* rgb,
 			const uint8_t* p10 = row1 + (size_t)x0 * (size_t)rgb_step;
 			const uint8_t* p11 = row1 + (size_t)x1 * (size_t)rgb_step;
 
+#ifdef NO_LIBC
+			const int r_sum = ((int)p00[0] + (int)p01[0] + (int)p10[0] + (int)p11[0] + 2) >> 2;
+			const int g_sum = ((int)p00[1] + (int)p01[1] + (int)p10[1] + (int)p11[1] + 2) >> 2;
+			const int b_sum = ((int)p00[2] + (int)p01[2] + (int)p10[2] + (int)p11[2] + 2) >> 2;
+#else
 			const uint32_t r_lin = gamma_to_linear(p00[0]) + gamma_to_linear(p01[0]) +
 			                   gamma_to_linear(p10[0]) + gamma_to_linear(p11[0]);
 			const uint32_t g_lin = gamma_to_linear(p00[1]) + gamma_to_linear(p01[1]) +
@@ -199,6 +219,7 @@ int enc_yuv420_from_rgb_libwebp(const uint8_t* rgb,
 			const int r_sum = linear_to_gamma(r_lin, 0);
 			const int g_sum = linear_to_gamma(g_lin, 0);
 			const int b_sum = linear_to_gamma(b_lin, 0);
+#endif
 
 			dst_u[ux] = (uint8_t)vp8_rgb_to_u(r_sum, g_sum, b_sum, YUV_HALF << 2);
 			dst_v[ux] = (uint8_t)vp8_rgb_to_v(r_sum, g_sum, b_sum, YUV_HALF << 2);

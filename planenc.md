@@ -58,17 +58,16 @@ This project is intentionally “oracle-driven” and test-gated.
 
 ## Tooling contracts (encoder CLI)
 
-Proposed minimal CLI (can evolve):
+Current CLI (can evolve):
 
-- `./encoder -info in.png` prints PNG summary and what will be encoded
-- `./encoder -q <0..100> in.png out.webp` encodes lossy VP8
-- `./encoder -dump_frame in.png out.txt` dumps deterministic encoder decisions (modes, q, filter params, partition sizes)
+- `./encoder <in.png> <out.webp>` encodes lossy VP8 (defaults: `--q 75`, `--mode bpred`)
+- `./encoder --q <0..100> --mode <dc|i16|bpred> <in.png> <out.webp>` selects quality and intra mode
+- `./encoder --loopfilter <in.png> <out.webp>` opt-in: writes loopfilter header params (derived deterministically from qindex)
 
-Also useful:
+Notes:
 
-- `./encoder -selftest` runs a tiny synthetic suite
-
-(We can also fold into the existing `decoder` binary later, but keeping an `encoder` binary initially helps keep dependency surfaces small.)
+- The encoder is intended to be *valid* and deterministic; it is not expected to match libwebp (`cwebp`) heuristics.
+- Keeping a top-level `encoder` binary helps keep dependency surfaces small.
 
 ---
 
@@ -109,8 +108,8 @@ Shared helpers can still live in `src/common/` (endian helpers, small alloc, etc
 | 6 | Intra predict (DC only) + forward transform | Done | `src/enc-m05_intra/` |
 | 7 | Quantization + `-q` mapping | Done | `src/enc-m06_quant/` |
 | 8 | Token encoding (non-zero coeffs) | Done | `src/enc-m07_tokens/` |
-| 9 | Mode decisions (SAD chooser) + in-loop recon groundwork | In progress (I16 DC/V/H/TM done) | `src/enc-m05_intra/` |
-| 10 | Loopfilter params | Not started | `src/enc-m08_filter/` |
+| 9 | Mode decisions (SAD chooser) + in-loop recon | Done (I16 + UV + B_PRED) | `src/enc-m05_intra/` |
+| 10 | Loopfilter params (header) | Done (opt-in header params) | `src/enc-m08_filter/` |
 | 11 | Segmentation (optional) | Not started | `src/enc-m09_seg/` |
 | 12 | Token partitions > 1 | Not started | `src/enc-m07_tokens/` |
 | 13 | `VP8X` + metadata chunks | Not started | `src/enc-m01_riff/` |
@@ -164,6 +163,10 @@ Tests:
 Deliverable artifact:
 
 - Deterministic manifest for PNG inputs: `scripts/enc_m00_png_expected.txt`
+
+Notes (current behavior):
+
+- Supports common real-world dynamic-Huffman PNGs (zlib/DEFLATE) and propagates meaningful `errno` values on failure.
 
 ### M1 — WebP container writer (RFC 9649) (`src/enc-m01_riff/`)
 
@@ -372,17 +375,16 @@ Tests:
 
 Primary module: `src/enc-m08_filter/`
 
-Goal: set loop filter fields sensibly.
+Goal: set loop filter header fields sensibly.
 
-Implement:
+Implemented (current slice):
 
-- Basic filter settings derived from quality/quant
-- Start with a simple fixed mapping, then refine
+- Opt-in flag (`--loopfilter`) that writes deterministic loopfilter header params derived from qindex.
+- Default behavior remains unchanged unless explicitly enabled.
 
 Tests:
 
-- `webpinfo -bitstream_info` shows sane filter params
-- Visual and metric checks for blocking
+- `scripts/enc_m10_loopfilter_check.sh` gates `webpinfo -bitstream_info`-extracted header fields across a small quality set.
 
 ### M11 — Segmentation (optional but powerful)
 

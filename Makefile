@@ -21,6 +21,8 @@ NOLIBC_TINY_BUILD_DIR := build/nolibc_tiny
 NOLIBC_TINY_BIN := decoder_nolibc_tiny
 NOLIBC_ULTRA_BUILD_DIR := build/nolibc_ultra
 NOLIBC_ULTRA_BIN := decoder_nolibc_ultra
+ENC_NOLIBC_ULTRA_BUILD_DIR := build/nolibc_ultra_enc
+ENC_NOLIBC_ULTRA_BIN := encoder_nolibc_ultra
 
 SRC := \
 	src/main.c \
@@ -92,8 +94,9 @@ nolibc_tiny: $(NOLIBC_TINY_BIN)
 
 nolibc_ultra: $(NOLIBC_ULTRA_BIN)
 
-# Friendly alias: `make ultra` builds the tiny PNG-by-default syscall-only binary.
-ultra: nolibc_ultra
+# Friendly alias: `make ultra` builds the tiny PNG-by-default syscall-only binary,
+# and also builds both the normal (libc) encoder and a nolibc ultra encoder.
+ultra: nolibc_ultra $(ENC_NOLIBC_ULTRA_BIN) $(ENCODER)
 
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS_COMMON) -o $@ $(OBJ) $(LDFLAGS_COMMON)
@@ -405,4 +408,36 @@ $(BUILD_DIR)/%.o: src/%.c
 	$(CC) $(CFLAGS_COMMON) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(BIN) $(ENCODER) $(NOLIBC_BIN) $(NOLIBC_TINY_BIN) $(NOLIBC_ULTRA_BIN)
+	rm -rf $(BUILD_DIR) $(BIN) $(ENCODER) $(NOLIBC_BIN) $(NOLIBC_TINY_BIN) $(NOLIBC_ULTRA_BIN) $(ENC_NOLIBC_ULTRA_BIN)
+
+# --- nolibc ultra encoder ---
+
+ENC_NOLIBC_ULTRA_SRC := \
+	src/encoder_main_ultra.c \
+	src/enc-m00_png/enc_png.c \
+	src/enc-m04_yuv/enc_rgb_to_yuv.c \
+	src/enc-m04_yuv/enc_pad.c \
+	src/enc-m05_intra/enc_transform.c \
+	src/enc-m06_quant/enc_quant.c \
+	src/enc-m07_tokens/enc_vp8_tokens.c \
+	src/enc-m08_filter/enc_loopfilter.c \
+	src/enc-m08_recon/enc_recon.c \
+	src/enc-m02_vp8_bitwriter/enc_bool.c \
+	src/enc-m01_riff/enc_riff.c \
+	src/nolibc/syscall_glue.c
+
+ENC_NOLIBC_ULTRA_OBJ := $(patsubst src/%.c,$(ENC_NOLIBC_ULTRA_BUILD_DIR)/%.o,$(filter %.c,$(ENC_NOLIBC_ULTRA_SRC))) \
+	$(ENC_NOLIBC_ULTRA_BUILD_DIR)/nolibc/start.o
+
+ENC_NOLIBC_ULTRA_CFLAGS := $(NOLIBC_CFLAGS) -DENCODER_ULTRA -fno-inline $(ULTRA_EXTRA_CFLAGS)
+
+$(ENC_NOLIBC_ULTRA_BIN): $(ENC_NOLIBC_ULTRA_OBJ)
+	$(CC) $(NOLIBC_LTO) -o $@ $(ENC_NOLIBC_ULTRA_OBJ) $(NOLIBC_LDFLAGS) -lgcc
+
+$(ENC_NOLIBC_ULTRA_BUILD_DIR)/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ENC_NOLIBC_ULTRA_CFLAGS) -c $< -o $@
+
+$(ENC_NOLIBC_ULTRA_BUILD_DIR)/nolibc/start.o: src/nolibc/start.S
+	@mkdir -p $(dir $@)
+	$(CC) -c $< -o $@
