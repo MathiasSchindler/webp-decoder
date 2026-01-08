@@ -1,0 +1,28 @@
+# Build outputs
+/build/
+/decoder
+
+# Images / corpora (large, often local)
+/images/
+
+# Common C/C++ artifacts
+*.o
+*.a
+*.so
+*.so.*
+*.d
+*.obj
+*.exe
+
+# Debug/sanitizer/profiler outputs
+*.dSYM/
+vgcore.*
+perf.data
+perf.data.*
+
+# Editor/OS junk
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
