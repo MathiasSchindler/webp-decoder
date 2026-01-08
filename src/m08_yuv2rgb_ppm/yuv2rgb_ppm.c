@@ -1,10 +1,13 @@
 #include "yuv2rgb_ppm.h"
 
 #include <errno.h>
+#ifndef NO_LIBC
 #include <stdio.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
+#include "../common/fmt.h"
 #include "../common/os.h"
 
 // Bit-exact VP8/WebP YUV->RGB conversion (matches libwebp's VP8YuvToRgb).
@@ -127,6 +130,14 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 		return -1;
 	}
 
+#ifdef NO_LIBC
+	// Avoid stdio/snprintf in the no-libc build.
+	if (os_write_all(fd, "P6\n", 3) != 0) return -1;
+	fmt_write_u32(fd, img->width);
+	if (os_write_all(fd, " ", 1) != 0) return -1;
+	fmt_write_u32(fd, img->height);
+	if (os_write_all(fd, "\n255\n", 5) != 0) return -1;
+#else
 	char header[64];
 	int n = snprintf(header, sizeof(header), "P6\n%u %u\n255\n", img->width, img->height);
 	if (n <= 0 || (size_t)n >= sizeof(header)) {
@@ -134,6 +145,7 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 		return -1;
 	}
 	if (os_write_all(fd, header, (size_t)n) != 0) return -1;
+#endif
 
 	uint8_t* top_row = (uint8_t*)malloc((size_t)img->width * 3u);
 	uint8_t* bottom_row = (uint8_t*)malloc((size_t)img->width * 3u);

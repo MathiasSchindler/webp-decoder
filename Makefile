@@ -2,6 +2,8 @@ CC ?= cc
 
 BIN := decoder
 BUILD_DIR := build
+NOLIBC_BUILD_DIR := build/nolibc
+NOLIBC_BIN := decoder_nolibc
 
 SRC := \
 	src/main.c \
@@ -26,16 +28,45 @@ CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Werror \
 
 LDFLAGS_COMMON := -flto
 
-.PHONY: all clean
+.PHONY: all clean nolibc
 
 all: $(BIN)
 
+nolibc: $(NOLIBC_BIN)
+
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS_COMMON) -o $@ $(OBJ) $(LDFLAGS_COMMON)
+
+NOLIBC_SRC := $(SRC) \
+	src/nolibc/syscall_glue.c
+
+NOLIBC_OBJ := $(patsubst src/%.c,$(NOLIBC_BUILD_DIR)/%.o,$(filter %.c,$(NOLIBC_SRC))) \
+	$(NOLIBC_BUILD_DIR)/nolibc/start.o
+
+NOLIBC_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
+	-O3 -march=native \
+	-ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables \
+	-fno-omit-frame-pointer -fno-common \
+	-ffunction-sections -fdata-sections \
+	-DNO_LIBC
+
+NOLIBC_LDFLAGS := -nostdlib -static \
+	-Wl,-e,_start -Wl,--gc-sections -Wl,--build-id=none -s
+
+$(NOLIBC_BIN): $(NOLIBC_OBJ)
+	$(CC) -o $@ $(NOLIBC_OBJ) $(NOLIBC_LDFLAGS) -lgcc
+
+$(NOLIBC_BUILD_DIR)/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(NOLIBC_CFLAGS) -c $< -o $@
+
+$(NOLIBC_BUILD_DIR)/nolibc/start.o: src/nolibc/start.S
+	@mkdir -p $(dir $@)
+	$(CC) -c $< -o $@
 
 $(BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_COMMON) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(BIN)
+	rm -rf $(BUILD_DIR) $(BIN) $(NOLIBC_BIN)
