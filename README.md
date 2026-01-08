@@ -41,6 +41,26 @@ make
 
 This produces the `decoder` binary.
 
+### NOLIBC (syscall-only)
+
+On Linux x86_64 you can build a static syscall-only variant with a full CLI:
+
+```sh
+make nolibc
+```
+
+This produces `decoder_nolibc`.
+
+### Tiny (smaller, no RGB)
+
+If you want something smaller (but without RGB/PPM/PNG output):
+
+```sh
+make nolibc_tiny
+```
+
+This produces `decoder_nolibc_tiny` (supports `-info`, `-yuv`, `-yuvf`).
+
 ### Ultra (tiny, syscall-only)
 
 On Linux x86_64 you can also build a very small, static, syscall-only binary that writes PNG by default:
