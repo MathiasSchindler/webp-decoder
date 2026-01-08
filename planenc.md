@@ -100,13 +100,13 @@ Shared helpers can still live in `src/common/` (endian helpers, small alloc, etc
 
 | # | Milestone | Status | Primary module |
 |---:|---|---|---|
-| 0 | PNG reader (minimal subset) | Not started | `src/enc-m00_png/` |
-| 1 | WebP container writer | Not started | `src/enc-m01_riff/` |
-| 2 | VP8 bit/bool writer primitives | Not started | `src/enc-m02_vp8_bitwriter/` |
-| 3 | Minimal VP8 key frame (solid 16×16) | Not started | `src/enc-m03_vp8_headers/`, `src/enc-m07_tokens/` |
-| 4 | Arbitrary dimensions + padding/cropping | Not started | `src/enc-m04_yuv/` |
-| 5 | RGB→YUV420 (deterministic) | Not started | `src/enc-m04_yuv/` |
-| 6 | Intra predict (DC only) + forward transform | Not started | `src/enc-m05_intra/` |
+| 0 | PNG reader (minimal subset) | Done | `src/enc-m00_png/` |
+| 1 | WebP container writer | Done | `src/enc-m01_riff/` |
+| 2 | VP8 bit/bool writer primitives | Done | `src/enc-m02_vp8_bitwriter/` |
+| 3 | Minimal VP8 key frame (solid 16×16) | Done | `src/enc-m03_vp8_headers/` |
+| 4 | Arbitrary dimensions + padding/cropping | Done | `src/enc-m04_yuv/` |
+| 5 | RGB→YUV420 (deterministic) | Done | `src/enc-m04_yuv/` |
+| 6 | Intra predict (DC only) + forward transform | Done | `src/enc-m05_intra/` |
 | 7 | Quantization + `-q` mapping | Not started | `src/enc-m06_quant/` |
 | 8 | Token encoding (non-zero coeffs) | Not started | `src/enc-m07_tokens/` |
 | 9 | Mode decisions (simple SAD chooser) | Not started | `src/enc-m05_intra/` |
@@ -158,11 +158,12 @@ Implement:
 Tests:
 
 - For each `images/png-in/*.png`, decode to RGB and hash bytes
-- Cross-check with a known-good decoder (e.g. `python3 -c` via Pillow if available, or `ffmpeg`)
+- Gate via `scripts/enc_m00_png_check.sh` (compares against `scripts/enc_m00_png_expected.txt`)
+- Optional: cross-check with a known-good decoder (e.g. `python3 -c` via Pillow if available, or `ffmpeg`)
 
 Deliverable artifact:
 
-- Deterministic `rgb.sha256` manifest for PNG inputs
+- Deterministic manifest for PNG inputs: `scripts/enc_m00_png_expected.txt`
 
 ### M1 — WebP container writer (RFC 9649) (`src/enc-m01_riff/`)
 
@@ -177,7 +178,7 @@ Implement:
 
 Tests:
 
-- `webpinfo out.webp` parses cleanly and lists exactly one `VP8 ` chunk
+- `scripts/enc_m01_webp_container_smoke.sh` (wraps existing `images/webp/*.webp` VP8 payloads and validates with `webpinfo`)
 - Size fields match actual file length
 
 ### M2 — VP8 bit writer + boolean entropy encoder (`src/enc-m02_vp8_bitwriter/`)
@@ -191,12 +192,24 @@ Implement:
 
 Tests:
 
-- Unit tests that write bits and re-read using our bool decoder
-- Deterministic golden outputs for tiny synthetic sequences
+- `scripts/enc_m02_bool_selftest.sh` (round-trip bool encoder → existing bool decoder)
+- Deterministic synthetic sequence (fixed RNG seed inside `build/enc_boolselftest`)
 
 ### M3 — Minimal VP8 bitstream that decodes (solid-color 16×16)
 
 Goal: produce a valid VP8 key frame that decodes to a constant image.
+
+Status: **Done**.
+
+Implementation notes (current narrow subset):
+
+- Emits a single-macroblock (16×16) keyframe with `DC_PRED` for Y and UV.
+- Token partition is “all EOB” (no residual coefficients).
+- Coefficient probability update flags are all zero (defaults).
+
+Tests:
+
+- `scripts/enc_m03_miniframe_check.sh` (generates a WebP, decodes via our decoder, re-parses output PNG via our PNG reader, checks a pinned RGB hash)
 
 Strategy:
 
@@ -229,15 +242,18 @@ Primary module: `src/enc-m04_yuv/`
 
 Goal: handle arbitrary width/height with macroblock padding/cropping rules.
 
+Status: **Done**.
+
 Implement:
 
-- Macroblock grid sizing, edge padding rules
-- Write visible width/height; ensure decoded output crops correctly
+- Macroblock grid sizing (ceil/16)
+- Write visible width/height (decoder crops)
+- Emit per-macroblock prediction records and “all EOB” token data for the whole padded grid
 
 Tests:
 
-- Encode a few sizes: 1×1, 15×15, 16×16, 17×17, 31×7, etc.
-- `dwebp` decode success and correct decoded dimensions
+- `scripts/enc_m04_miniframe_check.sh` (generates a few sizes, decodes via our decoder, hashes RGB bytes)
+- Manual spot check: `make enc_m04_miniframe && ./build/enc_m04_miniframe 31 9 out.webp && ./decoder -png out.webp out.png`
 
 ### M5 — RGB → YUV420 conversion (spec-consistent)
 
@@ -245,31 +261,42 @@ Primary module: `src/enc-m04_yuv/`
 
 Goal: convert input RGB to YUV420 with stable, defined rounding.
 
+Status: **Done**.
+
 Implement:
 
-- Rec.601-ish RGB→YUV conversion (consistent with decoder expectations)
-- Downsample chroma to 4:2:0 deterministically
+- Mirror libwebp’s scalar conversion:
+  - BT.601-style *limited-range* Y (offset 16) and U/V (offset 128)
+  - Gamma-compressed chroma averaging (`kGamma=0.80`) during 4:2:0 subsampling
+  - Edge replication for odd sizes (matches libwebp’s last row/column behavior)
+- Alpha is ignored for now (RGBA treated as RGB)
 
 Tests:
 
-- Synthetic patterns with known averages (e.g. checkerboards) to validate chroma downsample correctness
-- Compare our YUV conversion to libwebp’s decoded YUV for carefully chosen simple cases (where prediction/residual are zero)
+- `scripts/enc_m05_yuv_check.sh` (hash-gates I420 bytes for `images/png-in/*.png`)
+- Manual spot check:
+  - `make enc_m05_yuvdump && ./build/enc_m05_yuvdump --i420 images/png-in/solid_rgb_16x16_255_000_000.png out.i420`
 
 ### M6 — Intra prediction (DC only) + forward transforms
 
 Primary module: `src/enc-m05_intra/`
 
-Goal: for each block, compute residual = (input - predictor), transform, quantize, and entropy-code.
+Goal: for each block, compute residual = (input - predictor) and run the forward transforms.
 
 Implement:
 
 - Intra predictors: start with DC_PRED only
 - Forward transforms (DCT/WHT)
 
+This milestone does **not** include quantization or token encoding yet; it exists to lock down the
+predictor/transform math deterministically (mirroring libwebp scalar behavior) before we start
+throwing coeffs away.
+
 Tests:
 
-- Round-trip: encode → decode (with `dwebp`) resembles input
-- Very small corpus smoke, focusing on determinism and decode success
+- `scripts/enc_m06_intra_check.sh` (hash-gates deterministic coefficient dumps for `images/png-in/*.png`)
+- Manual spot check:
+  - `make enc_m06_intradump && ./build/enc_m06_intradump images/png-in/solid_rgb_16x16_255_000_000.png out.bin`
 
 ### M7 — Quantization + `-q` mapping
 

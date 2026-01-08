@@ -2,6 +2,13 @@ CC ?= cc
 
 BIN := decoder
 BUILD_DIR := build
+ENC_PNGDUMP_BIN := build/enc_pngdump
+ENC_WEBPWRAP_BIN := build/enc_webpwrap
+ENC_BOOLSELFTEST_BIN := build/enc_boolselftest
+ENC_M03_MINIFRAME_BIN := build/enc_m03_miniframe
+ENC_M04_MINIFRAME_BIN := build/enc_m04_miniframe
+ENC_M05_YUVDUMP_BIN := build/enc_m05_yuvdump
+ENC_M06_INTRADUMP_BIN := build/enc_m06_intradump
 NOLIBC_BUILD_DIR := build/nolibc
 NOLIBC_BIN := decoder_nolibc
 NOLIBC_TINY_BUILD_DIR := build/nolibc_tiny
@@ -33,8 +40,30 @@ CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Werror \
 LDFLAGS_COMMON := -flto
 
 .PHONY: all clean nolibc nolibc_tiny nolibc_ultra ultra
+.PHONY: enc_pngdump
+.PHONY: enc_webpwrap
+.PHONY: enc_boolselftest
+.PHONY: enc_m03_miniframe
+.PHONY: enc_m04_miniframe
+.PHONY: enc_m05_yuvdump
+.PHONY: enc_m06_intradump
 
 all: $(BIN)
+
+# Encoder Milestone 0 helper: tiny PNG reader driver
+enc_pngdump: $(ENC_PNGDUMP_BIN)
+
+enc_webpwrap: $(ENC_WEBPWRAP_BIN)
+
+enc_boolselftest: $(ENC_BOOLSELFTEST_BIN)
+
+enc_m03_miniframe: $(ENC_M03_MINIFRAME_BIN)
+
+enc_m04_miniframe: $(ENC_M04_MINIFRAME_BIN)
+
+enc_m05_yuvdump: $(ENC_M05_YUVDUMP_BIN)
+
+enc_m06_intradump: $(ENC_M06_INTRADUMP_BIN)
 
 nolibc: $(NOLIBC_BIN)
 
@@ -47,6 +76,88 @@ ultra: nolibc_ultra
 
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS_COMMON) -o $@ $(OBJ) $(LDFLAGS_COMMON)
+
+ENC_PNGDUMP_SRC := \
+	tools/enc_pngdump.c \
+	src/enc-m00_png/enc_png.c
+
+$(ENC_PNGDUMP_BIN): $(ENC_PNGDUMP_SRC) src/enc-m00_png/enc_png.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_PNGDUMP_SRC)
+
+ENC_WEBPWRAP_SRC := \
+	tools/enc_webpwrap.c \
+	src/enc-m01_riff/enc_riff.c
+
+$(ENC_WEBPWRAP_BIN): $(ENC_WEBPWRAP_SRC) src/enc-m01_riff/enc_riff.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_WEBPWRAP_SRC)
+
+ENC_BOOLSELFTEST_SRC := \
+	tools/enc_boolselftest.c \
+	src/enc-m02_vp8_bitwriter/enc_bool.c \
+	src/m03_bool_decoder/bool_decoder.c \
+	src/common/os.c
+
+$(ENC_BOOLSELFTEST_BIN): $(ENC_BOOLSELFTEST_SRC) \
+	src/enc-m02_vp8_bitwriter/enc_bool.h \
+	src/m03_bool_decoder/bool_decoder.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_BOOLSELFTEST_SRC)
+
+ENC_M03_MINIFRAME_SRC := \
+	tools/enc_m03_miniframe.c \
+	src/enc-m01_riff/enc_riff.c \
+	src/enc-m02_vp8_bitwriter/enc_bool.c \
+	src/enc-m03_vp8_headers/enc_vp8_miniframe.c
+
+$(ENC_M03_MINIFRAME_BIN): $(ENC_M03_MINIFRAME_SRC) \
+	src/enc-m03_vp8_headers/enc_vp8_miniframe.h \
+	src/enc-m02_vp8_bitwriter/enc_bool.h \
+	src/enc-m01_riff/enc_riff.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M03_MINIFRAME_SRC)
+
+ENC_M04_MINIFRAME_SRC := \
+	tools/enc_m04_miniframe.c \
+	src/enc-m01_riff/enc_riff.c \
+	src/enc-m02_vp8_bitwriter/enc_bool.c \
+	src/enc-m04_yuv/enc_pad.c \
+	src/enc-m04_yuv/enc_vp8_eob.c
+
+$(ENC_M04_MINIFRAME_BIN): $(ENC_M04_MINIFRAME_SRC) \
+	src/enc-m04_yuv/enc_vp8_eob.h \
+	src/enc-m04_yuv/enc_pad.h \
+	src/enc-m02_vp8_bitwriter/enc_bool.h \
+	src/enc-m01_riff/enc_riff.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M04_MINIFRAME_SRC)
+
+ENC_M05_YUVDUMP_SRC := \
+	tools/enc_m05_yuvdump.c \
+	src/enc-m00_png/enc_png.c \
+	src/enc-m04_yuv/enc_rgb_to_yuv.c
+
+$(ENC_M05_YUVDUMP_BIN): $(ENC_M05_YUVDUMP_SRC) \
+	src/enc-m00_png/enc_png.h \
+	src/enc-m04_yuv/enc_rgb_to_yuv.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M05_YUVDUMP_SRC) -lm
+
+ENC_M06_INTRADUMP_SRC := \
+	tools/enc_m06_intradump.c \
+	src/enc-m00_png/enc_png.c \
+	src/enc-m04_yuv/enc_rgb_to_yuv.c \
+	src/enc-m05_intra/enc_transform.c \
+	src/enc-m05_intra/enc_intra_dc.c
+
+$(ENC_M06_INTRADUMP_BIN): $(ENC_M06_INTRADUMP_SRC) \
+	src/enc-m00_png/enc_png.h \
+	src/enc-m04_yuv/enc_rgb_to_yuv.h \
+	src/enc-m05_intra/enc_transform.h \
+	src/enc-m05_intra/enc_intra_dc.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M06_INTRADUMP_SRC) -lm
 
 NOLIBC_SRC := $(SRC) \
 	src/nolibc/syscall_glue.c
