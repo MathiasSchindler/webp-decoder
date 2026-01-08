@@ -43,18 +43,21 @@ NOLIBC_SRC := $(SRC) \
 NOLIBC_OBJ := $(patsubst src/%.c,$(NOLIBC_BUILD_DIR)/%.o,$(filter %.c,$(NOLIBC_SRC))) \
 	$(NOLIBC_BUILD_DIR)/nolibc/start.o
 
+NOLIBC_LTO := -flto
+
 NOLIBC_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
-	-O3 -march=native \
+	-Os -march=x86-64 \
 	-ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables \
 	-fno-omit-frame-pointer -fno-common \
 	-ffunction-sections -fdata-sections \
-	-DNO_LIBC
+	-DNO_LIBC \
+	$(NOLIBC_LTO)
 
 NOLIBC_LDFLAGS := -nostdlib -static \
 	-Wl,-e,_start -Wl,--gc-sections -Wl,--build-id=none -s
 
 $(NOLIBC_BIN): $(NOLIBC_OBJ)
-	$(CC) -o $@ $(NOLIBC_OBJ) $(NOLIBC_LDFLAGS) -lgcc
+	$(CC) $(NOLIBC_LTO) -o $@ $(NOLIBC_OBJ) $(NOLIBC_LDFLAGS) -lgcc
 
 $(NOLIBC_BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(dir $@)
