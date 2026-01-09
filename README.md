@@ -44,6 +44,14 @@ This produces two binaries:
 - `decoder`
 - `encoder`
 
+### Build everything
+
+If you want all build flavors (normal + all nolibc variants) in one go:
+
+```sh
+./scripts/build_all.sh
+```
+
 ### NOLIBC (syscall-only)
 
 On Linux x86_64 you can build a static syscall-only variant with a full CLI:
@@ -72,7 +80,13 @@ On Linux x86_64 you can also build a very small, static, syscall-only binary tha
 make ultra
 ```
 
-This produces `decoder_nolibc_ultra` (and also builds the normal `encoder`), intended to be run as:
+This produces:
+
+- `decoder_nolibc_ultra`
+- `encoder_nolibc_ultra`
+- (and also builds the normal `encoder`)
+
+The ultra decoder is intended to be run as:
 
 ```sh
 ./decoder_nolibc_ultra input.webp out.png
@@ -133,6 +147,12 @@ Examples:
   - [scripts/m8_compare_png_with_ppm.sh](scripts/m8_compare_png_with_ppm.sh)
 
 These scripts assume you have libwebp’s tools available (commonly at `~/libwebp/examples/` as described in [plandec.md](plandec.md)).
+
+If your libwebp tools live elsewhere, point the scripts at them via:
+
+```sh
+LIBWEBP_BIN_DIR=/path/to/libwebp/examples make test
+```
 
 Encoder regression gates live alongside the decoder ones under [scripts/](scripts/) and
 are named `enc_mXX_*.sh`. See [planenc.md](planenc.md) for the encoder milestone plan.

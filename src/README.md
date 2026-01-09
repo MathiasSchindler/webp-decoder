@@ -16,8 +16,6 @@ This folder contains the decoder and encoder implementations, split into milesto
 - `m08_yuv2rgb_ppm/`: YUV->RGB + PPM writer
 - `m09_png/`: PNG writer for decoded output
 
-Note: some legacy/alternate milestone directories remain in-tree (e.g. `m06_recon_yuv/`, `m07_loop_filter/`, `m09_hardening/`) from earlier iterations.
-
 ## Encoder milestones
 
 - `enc-m00_png/`: PNG reader (input)

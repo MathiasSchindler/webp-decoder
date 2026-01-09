@@ -30,6 +30,14 @@ Goal
 
 - Reduce confusion without breaking builds or scripts.
 
+Status
+
+- Phase A implemented: canonical dirs are described in `src/README.md`.
+- Phase B implemented: unreferenced legacy milestone directories were deleted:
+  - `src/m06_recon_yuv/`
+  - `src/m07_loop_filter/`
+  - `src/m09_hardening/`
+
 Plan (safe two-phase)
 
 Phase A — Make usage explicit (no deletes)
@@ -44,9 +52,9 @@ Phase A — Make usage explicit (no deletes)
 Phase B — Remove or merge (optional, later)
 
 5. If a legacy dir is truly unused:
-   - delete it, or move its content into canonical location.
+  - delete it.
 6. If it contains useful code:
-   - merge it deliberately into the canonical module and update includes.
+  - merge it deliberately into the canonical module and update includes.
 
 Testing / regressions
 
@@ -66,7 +74,6 @@ Acceptance criteria
 
 Observation
 
-- Today, the ultra encoder avoids libm and uses approximations:
 - Historically, the ultra encoder avoided libm and used approximations:
   - gamma tables were skipped (plain averaging)
   - fixed-point quality→qindex mapping differed from the libc/libm path
@@ -143,6 +150,13 @@ Observation
 Goal
 
 - Make names predictable and ensure scripts/docs consistently refer to them.
+
+Status
+
+- `.gitignore` covers build outputs for the normal and nolibc binaries.
+- `make test` runs `scripts/run_all.sh`, which checks required binaries and oracle tools.
+- Documented: top-level `README.md` describes `make ultra` outputs and `LIBWEBP_BIN_DIR` usage.
+- Implemented: `scripts/build_all.sh` builds all expected binaries.
 
 Plan
 

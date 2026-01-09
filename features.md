@@ -11,11 +11,20 @@ Guiding constraints
 - Prefer incremental “milestone” modules and `scripts/enc_mXX_*.sh` gates.
 - Primary correctness oracle remains: `webpinfo`, `dwebp`, and our decoder.
 
+Repo/testing reality (post-cleanup)
+
+- `make test` runs `scripts/run_all.sh` and enforces a stable gate order.
+- Oracle tools are resolved via `LIBWEBP_BIN_DIR`.
+- Script temp outputs live under `build/test-artifacts/<script>/`.
+- Ultra parity is enforced: `encoder` and `encoder_nolibc_ultra` are expected to be byte-identical for the parity corpus, and should stay that way unless we explicitly decide otherwise.
+
 Non-goals (for now)
 
 - Inter frames / animation.
 - VP8L lossless mode.
 - Bit-identical output to libwebp’s `cwebp`.
+
+Note: we *do* aim for bit-identical output between our libc and nolibc-ultra encoder builds.
 
 ---
 
