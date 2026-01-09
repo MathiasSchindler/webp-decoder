@@ -22,6 +22,12 @@ DWEBP=${DWEBP:-"$HOME/libwebp/examples/dwebp"}
 ULTRA=${ULTRA:-"./decoder_nolibc_ultra"}
 RUNS=${RUNS:-3}
 
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT_DIR"
+
+ARTIFACT_DIR="$ROOT_DIR/build/test-artifacts/benchmark_decode_png_csv"
+mkdir -p "$ARTIFACT_DIR"
+
 PYTHON=${PYTHON:-python3}
 HAVE_PY=0
 if command -v "$PYTHON" >/dev/null 2>&1; then
@@ -102,7 +108,7 @@ PY
   echo "$best"
 }
 
-tmpdir=$(mktemp -d)
+tmpdir=$(mktemp -d "$ARTIFACT_DIR/tmp.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
 
 {

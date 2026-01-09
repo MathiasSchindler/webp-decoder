@@ -3,6 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+ROOT_DIR=$(pwd)
+ARTIFACT_DIR="$ROOT_DIR/build/test-artifacts/m5_scan_outliers"
+mkdir -p "$ARTIFACT_DIR"
+
 DECODER=./decoder
 
 if [[ ! -x "$DECODER" ]]; then
@@ -21,7 +25,7 @@ if (( ${#files[@]} == 0 )); then
   exit 2
 fi
 
-tmp=$(mktemp)
+tmp=$(mktemp "$ARTIFACT_DIR/tmp.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 
 # Emit: file<TAB>p0_used<TAB>p0_size<TAB>tok_used<TAB>tok_size<TAB>p0_over<TAB>tok_over<TAB>p0_over_b<TAB>tok_over_b<TAB>absmax<TAB>nonzero

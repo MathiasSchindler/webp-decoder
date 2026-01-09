@@ -3,8 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+ROOT_DIR=$(pwd)
+. "$ROOT_DIR/scripts/common.sh"
+require_libwebp_dwebp
+
 DECODER=./decoder
-DWEBP=../../libwebp/examples/dwebp
 
 if [[ ! -x "$DECODER" ]]; then
   echo "error: $DECODER not found; run 'make' first" >&2

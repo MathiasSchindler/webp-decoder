@@ -4,15 +4,12 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
-DWEBP=../../libwebp/examples/dwebp
+. "$ROOT_DIR/scripts/common.sh"
+require_libwebp_dwebp
 
-if [ ! -x "$DWEBP" ]; then
-  echo "error: $DWEBP not found or not executable" >&2
-  exit 2
-fi
-
-tmp_dir=${TMPDIR:-/tmp}/webp_decoder_m1_png_verify
-mkdir -p "$tmp_dir"
+tmp_dir="$(mk_artifact_tmpdir)"
+cleanup() { rm -rf "$tmp_dir"; }
+trap cleanup EXIT
 
 fail=0
 count=0

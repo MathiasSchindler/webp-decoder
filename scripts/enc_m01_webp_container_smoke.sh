@@ -4,17 +4,14 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
-WEBPINFO=../../libwebp/examples/webpinfo
-
-if [ ! -x "$WEBPINFO" ]; then
-	echo "error: $WEBPINFO not found or not executable" >&2
-	exit 2
-fi
+. "$ROOT_DIR/scripts/common.sh"
+require_libwebp_webpinfo
 
 make -s enc_webpwrap >/dev/null
 
-tmp_dir=${TMPDIR:-/tmp}/webp_encoder_m1_container_smoke
-mkdir -p "$tmp_dir"
+tmp_dir="$(mk_artifact_tmpdir)"
+cleanup() { rm -rf "$tmp_dir"; }
+trap cleanup EXIT
 
 count=0
 fail=0

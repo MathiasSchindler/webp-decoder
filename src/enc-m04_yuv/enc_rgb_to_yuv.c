@@ -5,76 +5,32 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef NO_LIBC
-#include <math.h>
-#endif
+#include "enc_gamma_tables.h"
 
 enum {
 	YUV_FIX = 16,
 	YUV_HALF = 1 << (YUV_FIX - 1),
 };
 
-static int g_gamma_tables_ok = 0;
-
-#ifndef NO_LIBC
-enum {
-	GAMMA_FIX = 12,
-	GAMMA_TAB_FIX = 7,
-	GAMMA_TAB_SIZE = 1 << (GAMMA_FIX - GAMMA_TAB_FIX),
-};
-
-static const double kGamma = 0.80;
-static const int kGammaScale = (1 << GAMMA_FIX) - 1;
-static const int kGammaTabScale = 1 << GAMMA_TAB_FIX;
-static const int kGammaTabRounder = 1 << (GAMMA_TAB_FIX - 1);
-
-static int g_linear_to_gamma_tab[GAMMA_TAB_SIZE + 1];
-static uint16_t g_gamma_to_linear_tab[256];
-#endif
-
-static void enc_init_gamma_tables(void) {
-#ifdef NO_LIBC
-	// Ultra/nolibc build: skip gamma tables (would require pow/libm).
-	// We'll use plain sRGB averaging for chroma.
-	g_gamma_tables_ok = 1;
-	return;
-#else
-	if (g_gamma_tables_ok) return;
-
-	const double norm = 1.0 / 255.0;
-	const double scale = (double)(1 << GAMMA_TAB_FIX) / (double)kGammaScale;
-	for (int v = 0; v <= 255; v++) {
-		g_gamma_to_linear_tab[v] =
-			(uint16_t)(pow(norm * (double)v, kGamma) * (double)kGammaScale + 0.5);
-	}
-	for (int v = 0; v <= GAMMA_TAB_SIZE; v++) {
-		g_linear_to_gamma_tab[v] =
-			(int)(255.0 * pow(scale * (double)v, 1.0 / kGamma) + 0.5);
-	}
-	g_gamma_tables_ok = 1;
-#endif
-}
-
-#ifndef NO_LIBC
 static inline uint32_t gamma_to_linear(uint8_t v) {
-	return g_gamma_to_linear_tab[v];
+	return enc_gamma_to_linear_tab[v];
 }
 
 static inline int interpolate(int v) {
-	const int tab_pos = v >> (GAMMA_TAB_FIX + 2);
-	const int x = v & ((kGammaTabScale << 2) - 1);
+	const int scale = 1 << (ENC_GAMMA_TAB_FIX + 2);
+	const int tab_pos = v >> (ENC_GAMMA_TAB_FIX + 2);
+	const int x = v & (scale - 1);
 	if (tab_pos < 0) return 0;
-	if (tab_pos >= GAMMA_TAB_SIZE) return g_linear_to_gamma_tab[GAMMA_TAB_SIZE] * (kGammaTabScale << 2);
-	const int v0 = g_linear_to_gamma_tab[tab_pos];
-	const int v1 = g_linear_to_gamma_tab[tab_pos + 1];
-	return v1 * x + v0 * ((kGammaTabScale << 2) - x);
+	if (tab_pos >= ENC_GAMMA_TAB_SIZE) return enc_linear_to_gamma_tab[ENC_GAMMA_TAB_SIZE] * scale;
+	const int v0 = enc_linear_to_gamma_tab[tab_pos];
+	const int v1 = enc_linear_to_gamma_tab[tab_pos + 1];
+	return v1 * x + v0 * (scale - x);
 }
 
 static inline int linear_to_gamma(uint32_t base_value, int shift) {
 	const int y = interpolate((int)(base_value << shift));
-	return (y + kGammaTabRounder) >> GAMMA_TAB_FIX;
+	return (y + (1 << (ENC_GAMMA_TAB_FIX - 1))) >> ENC_GAMMA_TAB_FIX;
 }
-#endif
 
 static inline int clip_u8(int v) {
 	return (v < 0) ? 0 : (v > 255) ? 255 : v;
@@ -165,12 +121,6 @@ int enc_yuv420_from_rgb_libwebp(const uint8_t* rgb,
 		return -1;
 	}
 
-	enc_init_gamma_tables();
-	if (!g_gamma_tables_ok) {
-		errno = EINVAL;
-		return -1;
-	}
-
 	if (alloc_planes(width, height, out) != 0) return -1;
 
 	// Y plane.
@@ -204,11 +154,6 @@ int enc_yuv420_from_rgb_libwebp(const uint8_t* rgb,
 			const uint8_t* p10 = row1 + (size_t)x0 * (size_t)rgb_step;
 			const uint8_t* p11 = row1 + (size_t)x1 * (size_t)rgb_step;
 
-#ifdef NO_LIBC
-			const int r_sum = ((int)p00[0] + (int)p01[0] + (int)p10[0] + (int)p11[0] + 2) >> 2;
-			const int g_sum = ((int)p00[1] + (int)p01[1] + (int)p10[1] + (int)p11[1] + 2) >> 2;
-			const int b_sum = ((int)p00[2] + (int)p01[2] + (int)p10[2] + (int)p11[2] + 2) >> 2;
-#else
 			const uint32_t r_lin = gamma_to_linear(p00[0]) + gamma_to_linear(p01[0]) +
 			                   gamma_to_linear(p10[0]) + gamma_to_linear(p11[0]);
 			const uint32_t g_lin = gamma_to_linear(p00[1]) + gamma_to_linear(p01[1]) +
@@ -219,7 +164,6 @@ int enc_yuv420_from_rgb_libwebp(const uint8_t* rgb,
 			const int r_sum = linear_to_gamma(r_lin, 0);
 			const int g_sum = linear_to_gamma(g_lin, 0);
 			const int b_sum = linear_to_gamma(b_lin, 0);
-#endif
 
 			dst_u[ux] = (uint8_t)vp8_rgb_to_u(r_sum, g_sum, b_sum, YUV_HALF << 2);
 			dst_v[ux] = (uint8_t)vp8_rgb_to_v(r_sum, g_sum, b_sum, YUV_HALF << 2);

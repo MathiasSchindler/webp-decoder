@@ -3,22 +3,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-CWEBP=../../libwebp/examples/cwebp
-DWEBP=../../libwebp/examples/dwebp
-WEBPINFO=../../libwebp/examples/webpinfo
+ROOT_DIR=$(pwd)
+. "$ROOT_DIR/scripts/common.sh"
+require_libwebp_cwebp
+require_libwebp_dwebp
+require_libwebp_webpinfo
 
-if [[ ! -x "$CWEBP" ]]; then
-  echo "error: $CWEBP not found or not executable" >&2
-  exit 2
-fi
-if [[ ! -x "$DWEBP" ]]; then
-  echo "error: $DWEBP not found or not executable" >&2
-  exit 2
-fi
-if [[ ! -x "$WEBPINFO" ]]; then
-  echo "error: $WEBPINFO not found or not executable" >&2
-  exit 2
-fi
+:
 
 mkdir -p images/generated/ppm images/generated/webp
 

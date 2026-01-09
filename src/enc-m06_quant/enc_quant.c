@@ -1,10 +1,8 @@
 #include "enc_quant.h"
 
-#include <stddef.h>
+#include "enc_quality_table.h"
 
-#ifndef NO_LIBC
-#include <math.h>
-#endif
+#include <stddef.h>
 
 static inline int clamp_i32(int v, int lo, int hi) {
 	if (v < lo) return lo;
@@ -38,43 +36,7 @@ static inline int ac_q(int q) { return ac_qlookup[clamp_i32(q, 0, 127)]; }
 
 int enc_vp8_qindex_from_quality_libwebp(int quality) {
 	quality = clamp_i32(quality, 0, 100);
-
-#ifdef NO_LIBC
-	// Approximate libwebp's QualityToCompression without libm.
-	// We operate in Q20 fixed-point on [0..1] so the cube-root search fits in uint64_t.
-	const uint32_t ONE = 1u << 20;
-	uint32_t q01 = (uint32_t)(((uint64_t)quality * (uint64_t)ONE + 50u) / 100u);
-	uint32_t linear_c;
-	if (q01 < (3u * ONE) / 4u) {
-		linear_c = (uint32_t)(((uint64_t)q01 * 2ull) / 3ull);
-	} else {
-		// 2*q01 - 1
-		linear_c = (q01 >= ONE / 2u) ? (uint32_t)(2u * q01 - ONE) : 0u;
-	}
-
-	// Compute c ~= cbrt(linear_c) in Q20 via integer binary search.
-	uint32_t lo = 0;
-	uint32_t hi = ONE;
-	const uint64_t rhs = (uint64_t)linear_c * (uint64_t)ONE * (uint64_t)ONE; // linear_c * ONE^2
-	while (lo < hi) {
-		uint32_t mid = lo + ((hi - lo + 1u) >> 1);
-		uint64_t m = (uint64_t)mid;
-		uint64_t m3 = m * m * m;
-		if (m3 <= rhs) lo = mid;
-		else hi = mid - 1u;
-	}
-	uint32_t c = lo;
-	uint32_t inv = ONE - c;
-	int qindex = (int)(((uint64_t)127u * (uint64_t)inv + (uint64_t)(ONE >> 1)) >> 20);
-	return clamp_i32(qindex, 0, 127);
-#else
-	// libwebp: QualityToCompression (quant_enc.c)
-	const double q01 = (double)quality / 100.0;
-	const double linear_c = (q01 < 0.75) ? q01 * (2. / 3.) : 2. * q01 - 1.;
-	const double c = pow(linear_c, 1.0 / 3.0);
-	const int qindex = (int)(127.0 * (1.0 - c));
-	return clamp_i32(qindex, 0, 127);
-#endif
+	return (int)enc_qindex_from_quality[quality];
 }
 
 void enc_vp8_quant_factors_from_qindex(int qindex,

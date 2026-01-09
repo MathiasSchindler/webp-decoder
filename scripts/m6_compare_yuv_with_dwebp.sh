@@ -3,8 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+ROOT_DIR=$(pwd)
+. "$ROOT_DIR/scripts/common.sh"
+resolve_libwebp_tools
+
 DECODER=./decoder
-DWEBP=../../libwebp/examples/dwebp
 FFMPEG=ffmpeg
 
 if [[ ! -x "$DECODER" ]]; then
@@ -31,7 +34,7 @@ if (( ${#files[@]} == 0 )); then
   exit 2
 fi
 
-tmpdir="$(mktemp -d)"
+tmpdir="$(mk_artifact_tmpdir)"
 cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT
 

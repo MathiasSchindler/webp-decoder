@@ -7,6 +7,23 @@ Conventions:
 - Script names start with `m<N>_` where `<N>` is the milestone number from [plandec.md](../plandec.md).
 - Scripts should be runnable from the repo root: `/home/mathias/webp-stuff/decoder`.
 - Scripts intentionally avoid extra dependencies; they use POSIX-ish shell tools (`sh`, `awk`, `sed`, `grep`, `sha256sum`).
+- Temporary outputs should go under `build/test-artifacts/<script-name>/` and be cleaned up on success.
+
+## Running everything
+
+Most scripts rely on libwebp’s oracle tools (`webpinfo`, `dwebp`, sometimes `cwebp`).
+
+You can point scripts at your libwebp build via:
+
+- `LIBWEBP_BIN_DIR=/path/to/libwebp/examples`
+
+To run the full decoder+encoder gate suite in a stable order:
+
+```sh
+make test
+```
+
+This invokes `scripts/run_all.sh`.
 
 ## Milestone 1 (container parsing)
 

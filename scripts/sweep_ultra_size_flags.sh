@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Sweep GCC flags for nolibc_ultra to reduce binary size without changing output.
 #
-# Default oracle: images/commons/penguin-q80.webp -> /tmp/penguin_sweep.png
+# Default oracle: images/commons/penguin-q80.webp -> build/test-artifacts/sweep_ultra_size_flags/penguin_sweep.png
 # Compares SHA-256 against baseline build.
 #
 # Usage:
@@ -11,12 +11,14 @@ set -euo pipefail
 #   WEBP=images/commons/penguin-q20.webp scripts/sweep_ultra_size_flags.sh
 
 WEBP=${WEBP:-images/commons/penguin-q80.webp}
-OUTPNG=${OUTPNG:-/tmp/penguin_sweep.png}
+OUTPNG=${OUTPNG:-build/test-artifacts/sweep_ultra_size_flags/penguin_sweep.png}
 
 if [[ ! -f "$WEBP" ]]; then
   echo "error: WEBP not found: $WEBP" >&2
   exit 2
 fi
+
+mkdir -p "$(dirname "$OUTPNG")"
 
 need() {
   command -v "$1" >/dev/null 2>&1 || { echo "error: missing required tool: $1" >&2; exit 2; }

@@ -4,8 +4,10 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
+. "$ROOT_DIR/scripts/common.sh"
+require_libwebp_webpinfo
+
 DECODER=./decoder
-WEBPINFO=../../libwebp/examples/webpinfo
 
 if [ ! -x "$DECODER" ]; then
   echo "error: $DECODER not found or not executable; run 'make' first" >&2
