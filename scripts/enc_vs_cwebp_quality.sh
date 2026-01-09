@@ -18,6 +18,7 @@ make -s all enc_png2ppm enc_quality_metrics >/dev/null
 sizes_str=${SIZES:-"256 512"}
 qs_str=${QS:-"30 40 50 60 70 80"}
 mode=${MODE:-bpred}
+ours_flags=${OURS_FLAGS:-""}
 
 if [ "$#" -lt 1 ]; then
 	echo "Usage: $0 <img1.{jpg,png}> [img2 ...]" >&2
@@ -25,6 +26,7 @@ if [ "$#" -lt 1 ]; then
 	echo "  SIZES=\"256 512\"   (resize max dimension)" >&2
 	echo "  QS=\"30 40 ...\"     (quality sweep)" >&2
 	echo "  MODE=bpred|i16|dc    (our encoder mode)" >&2
+        echo "  OURS_FLAGS=\"...\"     (extra flags for ./encoder, e.g. --loopfilter)" >&2
 	exit 2
 fi
 
@@ -56,7 +58,8 @@ results_tsv="$tmpdir/results.tsv"
 				lib_webp="$tmpdir/${src_stem}_${s}_lib_q${q}.webp"
 				lib_ppm="$tmpdir/${src_stem}_${s}_lib_q${q}.ppm"
 
-				./encoder --q "$q" --mode "$mode" "$derived_png" "$ours_webp" >/dev/null
+                # OURS_FLAGS can be used to enable experimental knobs (e.g. --loopfilter).
+                ./encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
 				"$CWEBP" -quiet -q "$q" "$derived_png" -o "$lib_webp" >/dev/null 2>&1
 
 				ours_bytes=$(wc -c < "$ours_webp" | tr -d ' ')

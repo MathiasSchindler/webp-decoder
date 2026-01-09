@@ -14,6 +14,10 @@ tmpdir=$(mk_artifact_tmpdir)
 
 q=75
 mode=bpred
+lf_flag=
+if [ "${LOOPFILTER:-0}" = "1" ]; then
+	lf_flag="--loopfilter"
+fi
 
 {
 	found=0
@@ -29,7 +33,7 @@ mode=bpred
 		out_ppm="$tmpdir/$base.out.ppm"
 
 		./build/enc_png2ppm "$f" "$ref_ppm" >/dev/null 2>&1
-		./encoder --q "$q" --mode "$mode" "$f" "$out_webp" >/dev/null 2>&1
+		./encoder --q "$q" --mode "$mode" $lf_flag "$f" "$out_webp" >/dev/null 2>&1
 		"$DWEBP" -quiet "$out_webp" -ppm -o "$out_ppm" >/dev/null 2>&1
 
 		metrics=$(./build/enc_quality_metrics "$ref_ppm" "$out_ppm") || exit 1

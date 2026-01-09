@@ -48,45 +48,33 @@ Quality metrics depend heavily on *what* you compare. These choices must remain 
 
 ## Proposed artifacts
 
-Status:
-- Step 1 (PSNR): **implemented** and wired into `make test`.
-- Step 2 (SSIM): **implemented** and wired into `make test`.
+Status: implemented.
 
-Implemented artifacts (Step 1):
+Implemented artifacts:
 
-- New C tool (PSNR):
-  - `build/enc_quality_metrics` (built from `tools/enc_quality_metrics.c` + `src/quality/*`)
-  - Inputs: reference PPM and distorted PPM
-  - Output: machine-readable one-liner:
-    - `psnr_rgb=<val> psnr_r=<val> psnr_g=<val> psnr_b=<val>`
+- Tooling:
+  - `build/enc_quality_metrics` (from `tools/enc_quality_metrics.c` + `src/quality/*`)
+    - Output: `psnr_rgb=<val> psnr_r=<val> psnr_g=<val> psnr_b=<val> ssim_y=<val>`
+  - `build/enc_png2ppm` (from `tools/enc_png2ppm.c`)
+    - RGBA policy: alpha is ignored (RGB channels only).
 
-- SSIM (Step 2):
-  - Output includes: `ssim_y=<val>`
-  - Frozen parameters (must remain stable):
-    - luma: `Y = (77*R + 150*G + 29*B + 128) >> 8` (full-range)
-    - windowing: non-overlapping 8x8 blocks from (0,0)
-    - edges: include partial blocks on right/bottom edges
-    - aggregation: unweighted mean across blocks
-
-- New helper tool (PNG → PPM):
-  - `build/enc_png2ppm` (built from `tools/enc_png2ppm.c`)
-  - Deterministic policy: if input PNG is RGBA, alpha is ignored (RGB channels only).
-
-- New scripts:
-  - `scripts/enc_quality_manifest.sh` (generate current metrics manifest)
-  - `scripts/enc_quality_check.sh` (gate run; compare against baseline with tolerances)
-
-- New expected file:
+- Gate + baseline:
+  - `scripts/enc_quality_manifest.sh` (current metrics)
+  - `scripts/enc_quality_check.sh` (guardrail vs baseline)
   - `scripts/enc_quality_expected.txt` (pinned baseline; update via `--update`)
+  - Wired into `make test` via `scripts/run_all.sh`.
 
-- Integration:
-  - Add `enc_quality_check.sh` to `scripts/run_all.sh` under Encoder gates.
+Frozen SSIM parameters (must remain stable):
+- luma: `Y = (77*R + 150*G + 29*B + 128) >> 8` (full-range)
+- windowing: non-overlapping 8x8 blocks from (0,0)
+- edges: include partial blocks on right/bottom edges
+- aggregation: unweighted mean across blocks
 
 All temp files should follow the existing convention: `build/test-artifacts/<script>/`.
 
 ---
 
-## Step 1 — PSNR gate (C tool)
+## Step 1 — PSNR gate
 
 ### Definition
 
@@ -128,12 +116,6 @@ psnr_rgb=<val> psnr_r=<val> psnr_g=<val> psnr_b=<val>
 
 - Compare against `scripts/enc_quality_expected.txt` with tolerances.
 
-### Acceptance criteria for Step 1
-
-- `make test` includes the new PSNR gate. (Done: `scripts/run_all.sh` runs `scripts/enc_quality_check.sh`.)
-- The gate is stable and reproducible. (Done: metrics are integer SSE → deterministic PSNR; guardrail is `0.05 dB`.)
-- A baseline `scripts/enc_quality_expected.txt` exists. (Done; update with `./scripts/enc_quality_check.sh --update`.)
-
 ### How to run
 
 - Build tools: `make enc_png2ppm enc_quality_metrics`
@@ -151,6 +133,7 @@ Defaults (override via env):
 - `SIZES="256 512"` constrains max dimension while preserving aspect ratio.
 - `QS="30 40 50 60 70 80"` sweeps quality values.
 - `MODE=bpred` sets our encoder mode.
+- `OURS_FLAGS="..."` passes extra flags to `./encoder` (e.g. `--loopfilter`).
 
 This script:
 - resizes/normalizes inputs via ImageMagick (`magick`)
@@ -215,32 +198,11 @@ ssim_y=<val>
 - Update the baseline file to include SSIM.
 - Tighten or relax tolerances based on observed stability.
 
-### Acceptance criteria for Step 2
-
-- `make test` enforces SSIM gate.
-- SSIM implementation parameters are documented and stable.
 
 ---
 
-## Rollout / sequencing
+## Optional next steps
 
-1) Add the C tool with PSNR only.
-2) Add the scripts and wire into `scripts/run_all.sh`.
-3) Generate baseline expected metrics and pin them.
-4) Extend the tool to compute SSIM and update baseline.
-
----
-
-## Questions (to lock requirements)
-
-I can implement this without further documentation, but I need a few decisions to avoid churn:
-
-1) Should metrics be computed on **RGB** (all channels) or **luma-only**?
-   - Suggestion: PSNR on RGB + SSIM on luma.
-
-2) What input corpus should the quality gate use?
-   - Reuse the existing encoder corpus list (if it’s stable), or define `scripts/enc_quality_corpus.txt`.
-
-3) Is it acceptable for the metrics tool to link `-lm` (for `log10`), since it’s a standalone tool and doesn’t affect encoder parity?
-
-4) Any preferred default encode settings for the gate (e.g. `--q 75 --mode bpred` to match parity), or do you want to test multiple Qs/modes?
+- Add a Gaussian-window SSIM variant behind a flag.
+- Switch the “distorted” decode path from `dwebp -ppm` to our decoder once we want metrics to validate that pipeline end-to-end.
+- Define an explicit alpha compositing policy (today: alpha is ignored in the PNG→PPM helper).

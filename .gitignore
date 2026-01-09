@@ -8,7 +8,7 @@
 /encoder_nolibc_ultra
 
 # Images / corpora (large, often local)
-/images/
+# /images/
 
 # Common C/C++ artifacts
 *.o

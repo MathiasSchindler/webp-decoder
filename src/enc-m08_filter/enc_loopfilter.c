@@ -15,9 +15,13 @@ void enc_vp8_loopfilter_from_qindex(uint8_t qindex, EncVp8LoopFilterParams* out)
 	}
 
 	// qindex is 0..127. Map it to VP8 filter_level 0..63.
-	// Use rounded scaling rather than /2 so 127 maps to 63 exactly.
-	int level = (int)qindex * 63 + 63;
-	level /= 127;
+	// This is a deterministic heuristic tuned to be a bit stronger in the mid
+	// range than a simple linear /2 mapping, which helps reduce blocking.
+	//
+	// - qindex==0   => level==0
+	// - qindex>=96  => level saturates to 63
+	int level = ((int)qindex * 63 + 48) / 96;
+	if (level > 63) level = 63;
 
 	// Sharpness is a small knob (0..7) that reduces interior filtering.
 	// Keep it conservative; increase a bit for very low quality.

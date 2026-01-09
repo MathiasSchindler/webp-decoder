@@ -261,18 +261,22 @@ static void pred16x16_build(uint8_t dst[16 * 16],
 	}
 }
 
-static uint32_t sad16x16_src_vs_pred(const EncYuv420Image* yuv, uint32_t w, uint32_t h, uint32_t x0, uint32_t y0,
-	                                 const uint8_t pred[16 * 16]) {
-	uint32_t sad = 0;
+static uint32_t sse16x16_src_vs_pred(const EncYuv420Image* yuv,
+	                                uint32_t w,
+	                                uint32_t h,
+	                                uint32_t x0,
+	                                uint32_t y0,
+	                                const uint8_t pred[16 * 16]) {
+	uint32_t sse = 0;
 	for (uint32_t dy = 0; dy < 16; dy++) {
 		for (uint32_t dx = 0; dx < 16; dx++) {
 			uint8_t s = load_clamped(yuv->y, yuv->y_stride, w, h, x0 + dx, y0 + dy);
 			uint8_t p = pred[(dy * 16u) + dx];
 			int d = (int)s - (int)p;
-			sad += (uint32_t)(d < 0 ? -d : d);
+			sse += (uint32_t)(d * d);
 		}
 	}
-	return sad;
+	return sse;
 }
 
 static void pred16_fill4x4(uint8_t out4x4[16], const uint8_t pred16[16 * 16], uint32_t bx, uint32_t by) {
@@ -366,23 +370,23 @@ static void pred8x8_build(uint8_t dst[8 * 8],
 	}
 }
 
-static uint32_t sad8x8_plane_src_vs_pred(const uint8_t* src,
+static uint32_t sse8x8_plane_src_vs_pred(const uint8_t* src,
 	                                   uint32_t src_stride,
 	                                   uint32_t w,
 	                                   uint32_t h,
 	                                   uint32_t x0,
 	                                   uint32_t y0,
 	                                   const uint8_t pred[8 * 8]) {
-	uint32_t sad = 0;
+	uint32_t sse = 0;
 	for (uint32_t dy = 0; dy < 8; dy++) {
 		for (uint32_t dx = 0; dx < 8; dx++) {
 			uint8_t s = load_clamped(src, src_stride, w, h, x0 + dx, y0 + dy);
 			uint8_t p = pred[(dy * 8u) + dx];
 			int d = (int)s - (int)p;
-			sad += (uint32_t)(d < 0 ? -d : d);
+			sse += (uint32_t)(d * d);
 		}
 	}
-	return sad;
+	return sse;
 }
 
 static uint8_t dc_value(const uint8_t* left, const uint8_t* top, int size, int round, int shift) {
@@ -428,24 +432,39 @@ static void fill4x4_clamped(uint8_t out4x4[16],
 	}
 }
 
-static uint32_t sad4x4_src_vs_pred(const EncYuv420Image* yuv,
-	                             uint32_t w,
-	                             uint32_t h,
-	                             uint32_t x0,
-	                             uint32_t y0,
-	                             const uint8_t pred4[16]) {
-	uint8_t src4[16];
-	fill4x4_clamped(src4, yuv->y, yuv->y_stride, w, h, x0, y0);
+static void fill4x4_const(uint8_t out4x4[16], uint8_t v) {
+	for (int i = 0; i < 16; i++) out4x4[i] = v;
+}
+
+static void dequant4x4_inplace(int16_t coeffs[16], int dc_step, int ac_step);
+static void inv_dct4x4(const int16_t* input, int16_t* output);
+
+static uint32_t sad4x4_u8(const uint8_t a[16], const uint8_t b[16]) {
 	uint32_t sad = 0;
 	for (int i = 0; i < 16; i++) {
-		int d = (int)src4[i] - (int)pred4[i];
+		int d = (int)a[i] - (int)b[i];
 		sad += (uint32_t)(d < 0 ? -d : d);
 	}
 	return sad;
 }
 
-static void fill4x4_const(uint8_t out4x4[16], uint8_t v) {
-	for (int i = 0; i < 16; i++) out4x4[i] = v;
+static uint32_t sad8x8_plane_src_vs_pred(const uint8_t* plane,
+				     uint32_t stride,
+				     uint32_t w,
+				     uint32_t h,
+				     uint32_t x0,
+				     uint32_t y0,
+				     const uint8_t pred8[8 * 8]) {
+	uint32_t sad = 0;
+	for (uint32_t dy = 0; dy < 8; dy++) {
+		for (uint32_t dx = 0; dx < 8; dx++) {
+			uint8_t s = load_clamped(plane, stride, w, h, x0 + dx, y0 + dy);
+			uint8_t p = pred8[dy * 8u + dx];
+			int d = (int)s - (int)p;
+			sad += (uint32_t)(d < 0 ? -d : d);
+		}
+	}
+	return sad;
 }
 
 static void inv_wht4x4(const int16_t* in, int16_t* out) {
@@ -921,14 +940,14 @@ int enc_vp8_encode_i16x16_uv_sad_inloop(const EncYuv420Image* yuv,
 				above_left = have_above ? 129 : 127;
 			}
 
-			// Choose I16 mode by SAD.
-			uint32_t best_sad = 0xFFFFFFFFu;
+			// Choose I16 mode by SSE (distortion).
+			uint32_t best_sse = 0xFFFFFFFFu;
 			Vp8I16Mode best_mode = VP8_I16_DC_PRED;
 			for (Vp8I16Mode mode = VP8_I16_DC_PRED; mode <= VP8_I16_TM_PRED; mode++) {
 				pred16x16_build(pred_tmp, mode, A16, L16, have_above, have_left, 127, 129, above_left);
-				uint32_t sad = sad16x16_src_vs_pred(yuv, w, h, x0, y0, pred_tmp);
-				if (sad < best_sad) {
-					best_sad = sad;
+				uint32_t sse = sse16x16_src_vs_pred(yuv, w, h, x0, y0, pred_tmp);
+				if (sse < best_sse) {
+					best_sse = sse;
 					best_mode = mode;
 				}
 			}
@@ -936,7 +955,7 @@ int enc_vp8_encode_i16x16_uv_sad_inloop(const EncYuv420Image* yuv,
 			const size_t mb_index = (size_t)mby * (size_t)mb_cols + (size_t)mbx;
 			y_modes[mb_index] = (uint8_t)best_mode;
 
-			// Choose UV (8x8) mode by SAD against U+V.
+			// Choose UV (8x8) mode by SSE against U+V.
 			int have_above_c = (mby > 0);
 			int have_left_c = (mbx > 0);
 			uint8_t A8u[8];
@@ -960,16 +979,16 @@ int enc_vp8_encode_i16x16_uv_sad_inloop(const EncYuv420Image* yuv,
 				above_left_v = al;
 			}
 
-			uint32_t best_uv_sad = 0xFFFFFFFFu;
+			uint32_t best_uv_sse = 0xFFFFFFFFu;
 			Vp8I16Mode best_uv_mode = VP8_I16_DC_PRED;
 			for (Vp8I16Mode mode = VP8_I16_DC_PRED; mode <= VP8_I16_TM_PRED; mode++) {
 				pred8x8_build(pred_u_tmp, mode, A8u, L8u, have_above_c, have_left_c, 127, 129, above_left_u);
 				pred8x8_build(pred_v_tmp, mode, A8v, L8v, have_above_c, have_left_c, 127, 129, above_left_v);
-				uint32_t sad_u = sad8x8_plane_src_vs_pred(yuv->u, yuv->uv_stride, uv_w, uv_h, ux0, uy0, pred_u_tmp);
-				uint32_t sad_v = sad8x8_plane_src_vs_pred(yuv->v, yuv->uv_stride, uv_w, uv_h, ux0, uy0, pred_v_tmp);
-				uint32_t sad = sad_u + sad_v;
-				if (sad < best_uv_sad) {
-					best_uv_sad = sad;
+				uint32_t sse_u = sse8x8_plane_src_vs_pred(yuv->u, yuv->uv_stride, uv_w, uv_h, ux0, uy0, pred_u_tmp);
+				uint32_t sse_v = sse8x8_plane_src_vs_pred(yuv->v, yuv->uv_stride, uv_w, uv_h, ux0, uy0, pred_v_tmp);
+				uint32_t sse = sse_u + sse_v;
+				if (sse < best_uv_sse) {
+					best_uv_sse = sse;
 					best_uv_mode = mode;
 				}
 			}
@@ -1323,11 +1342,14 @@ int enc_vp8_encode_bpred_uv_sad_inloop(const EncYuv420Image* yuv,
 						}
 					}
 
+					fill4x4_clamped(src4, yuv->y, yuv->y_stride, w, h, sx, sy);
+
 					uint32_t best_sad = 0xFFFFFFFFu;
 					Vp8BMode best_mode = B_DC_PRED;
+					fill4x4_clamped(src4, yuv->y, yuv->y_stride, w, h, sx, sy);
 					for (Vp8BMode mode = B_DC_PRED; mode <= B_HU_PRED; mode++) {
 						bpred4x4(pred4, &A8[1], L4, mode);
-						uint32_t sad = sad4x4_src_vs_pred(yuv, w, h, sx, sy, pred4);
+						uint32_t sad = sad4x4_u8(src4, pred4);
 						if (sad < best_sad) {
 							best_sad = sad;
 							best_mode = mode;
@@ -1335,8 +1357,6 @@ int enc_vp8_encode_bpred_uv_sad_inloop(const EncYuv420Image* yuv,
 					}
 					b_modes[mb_index * 16u + (size_t)(sb_r * 4u + sb_c)] = (uint8_t)best_mode;
 					bpred4x4(pred4, &A8[1], L4, best_mode);
-
-					fill4x4_clamped(src4, yuv->y, yuv->y_stride, w, h, sx, sy);
 					int16_t coeff[16];
 					enc_vp8_ftransform4x4(src4, 4, pred4, 4, coeff);
 					enc_vp8_quantize4x4_inplace(coeff, qf.y1_dc, qf.y1_ac);

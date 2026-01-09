@@ -20,6 +20,12 @@ if [[ ! -x "$enc_ultra" ]]; then
 	( cd "$ROOT_DIR" && make ultra >/dev/null )
 fi
 
+# If the normal encoder was rebuilt more recently, ensure the ultra binary isn't stale.
+if [[ -x "$enc_ultra" && "$enc_normal" -nt "$enc_ultra" ]]; then
+	note "encoder_nolibc_ultra is stale; rebuilding via 'make ultra'"
+	( cd "$ROOT_DIR" && make ultra >/dev/null )
+fi
+
 if [[ ! -x "$enc_ultra" ]]; then
 	die "missing $enc_ultra (build failed?)"
 fi
