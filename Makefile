@@ -4,6 +4,8 @@ BIN := decoder
 ENCODER := encoder
 BUILD_DIR := build
 ENC_PNGDUMP_BIN := build/enc_pngdump
+ENC_PNG2PPM_BIN := build/enc_png2ppm
+ENC_QUALITY_METRICS_BIN := build/enc_quality_metrics
 ENC_WEBPWRAP_BIN := build/enc_webpwrap
 ENC_BOOLSELFTEST_BIN := build/enc_boolselftest
 ENC_M03_MINIFRAME_BIN := build/enc_m03_miniframe
@@ -49,6 +51,8 @@ LDFLAGS_COMMON := -flto
 
 .PHONY: all clean nolibc nolibc_tiny nolibc_ultra ultra test
 .PHONY: enc_pngdump
+.PHONY: enc_png2ppm
+.PHONY: enc_quality_metrics
 .PHONY: enc_webpwrap
 .PHONY: enc_boolselftest
 .PHONY: enc_m03_miniframe
@@ -68,6 +72,10 @@ test: all
 
 # Encoder Milestone 0 helper: tiny PNG reader driver
 enc_pngdump: $(ENC_PNGDUMP_BIN)
+
+enc_png2ppm: $(ENC_PNG2PPM_BIN)
+
+enc_quality_metrics: $(ENC_QUALITY_METRICS_BIN)
 
 enc_webpwrap: $(ENC_WEBPWRAP_BIN)
 
@@ -136,6 +144,27 @@ ENC_PNGDUMP_SRC := \
 $(ENC_PNGDUMP_BIN): $(ENC_PNGDUMP_SRC) src/enc-m00_png/enc_png.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_PNGDUMP_SRC)
+
+ENC_PNG2PPM_SRC := \
+	tools/enc_png2ppm.c \
+	src/enc-m00_png/enc_png.c
+
+$(ENC_PNG2PPM_BIN): $(ENC_PNG2PPM_SRC) src/enc-m00_png/enc_png.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_PNG2PPM_SRC)
+
+ENC_QUALITY_METRICS_SRC := \
+	tools/enc_quality_metrics.c \
+	src/quality/quality_ppm.c \
+	src/quality/quality_psnr.c \
+	src/quality/quality_ssim.c
+
+$(ENC_QUALITY_METRICS_BIN): $(ENC_QUALITY_METRICS_SRC) \
+	src/quality/quality_ppm.h \
+	src/quality/quality_psnr.h \
+	src/quality/quality_ssim.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_QUALITY_METRICS_SRC) -lm
 
 ENC_WEBPWRAP_SRC := \
 	tools/enc_webpwrap.c \
