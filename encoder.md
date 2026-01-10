@@ -305,7 +305,13 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
       - `--bpred-rdo-lambda-mul N`
       - `--bpred-rdo-lambda-div N`
    - Design note: we intentionally keep only two intra strategies (`bpred` and experimental `bpred-rdo`) to avoid mode sprawl.
-   - Current defaults (only used when `--mode bpred-rdo`): `mul=8`, `div=1`, `rate=entropy`, `quant=ac-deadzone`, `ac-deadzone=70`.
+   - Current defaults (only used when `--mode bpred-rdo`): `mul=10`, `div=1`, `rate=entropy`, `quant=ac-deadzone`, `ac-deadzone=70`.
+   - 2026-01-10 follow-up: retune the default $\lambda$ scaling at larger photo sizes (SIZES=1024, QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`):
+      - Commons HQ baseline (mul=8, div=1):  Overall: ΔPSNR=-0.636 dB  ΔSSIM=-0.00716  bytes_ratio@SSIM=1.164
+      - Commons HQ tuned (mul=10, div=1):    Overall: ΔPSNR=-0.700 dB  ΔSSIM=-0.00717  bytes_ratio@SSIM=1.163
+      - Commons baseline (mul=8, div=1):     Overall: ΔPSNR=-0.539 dB  ΔSSIM=-0.00446  bytes_ratio@SSIM=1.112
+      - Commons tuned (mul=10, div=1):       Overall: ΔPSNR=-0.460 dB  ΔSSIM=-0.00445  bytes_ratio@SSIM=1.112
+      - Conclusion: `mul=10 div=1` is neutral-to-slightly-better on photo corpora without regressing the general `images/commons` set; make it the new default.
    - Files:
       - [src/encoder_main.c](src/encoder_main.c)
       - [src/enc-m08_recon/enc_recon.h](src/enc-m08_recon/enc_recon.h)

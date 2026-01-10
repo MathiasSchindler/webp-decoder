@@ -230,6 +230,19 @@ uint32_t enc_vp8_estimate_keyframe_ymode_bits_q8(int ymode);
 uint32_t enc_vp8_estimate_keyframe_uv_mode_bits_q8(int uv_mode);
 uint32_t enc_vp8_estimate_keyframe_bmode_bits_q8(int above_bmode, int left_bmode, int bmode);
 
+// Dry-run coefficient token bitcount using the actual VP8 bool encoder.
+//
+// This is intended for encoder-side RDO experiments. It encodes only coefficient
+// tokens (no mode signaling) for a single macroblock, assuming external contexts
+// are 0 (i.e. left/above blocks outside the macroblock are treated as all-zero).
+//
+// Returns a cost in Q8 "bits" (1 bit == 256).
+//
+// If coeff_probs_override is NULL, this falls back to the default tables.
+uint32_t enc_vp8_dry_run_keyframe_mb_token_bits_q8_probs(int ymode,
+                                                        const int16_t* mb_coeffs,
+                                                        const uint8_t coeff_probs_override[4][8][3][11]);
+
 #ifdef __cplusplus
 }
 #endif

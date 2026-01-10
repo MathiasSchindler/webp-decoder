@@ -29,6 +29,7 @@ typedef struct {
 	uint32_t lambda_div;
 	// 0: use the existing cheap magnitude proxy (default)
 	// 1: use an entropy-style token cost estimator (experimental)
+	// 2: use a dry-run bool-encoder token bitcount (experimental)
 	uint32_t rate_mode;
 	// Mode signaling rate term:
 	// 0: use the existing tiny fixed proxy costs (default)
@@ -41,6 +42,10 @@ typedef struct {
 	// AC coefficients with |v| < (ac_deadzone_pct/100)*step are quantized to 0.
 	// If 0, an internal default is used.
 	uint32_t ac_deadzone_pct;
+	// Optional quant step scaling (percentage). If 0, treated as 100.
+	// Increasing a step size generally reduces bitrate at some quality loss.
+	uint32_t qscale_y_ac_pct;
+	uint32_t qscale_uv_ac_pct;
 } EncBpredRdoTuning;
 
 int enc_vp8_recon_alloc(uint32_t width, uint32_t height, EncVp8ReconPlanes* out);

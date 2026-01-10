@@ -19,7 +19,7 @@ typedef enum {
 
 static void usage(const char* argv0) {
 	fprintf(stderr,
-	        "Usage: %s [--q <0..100>] [--mode <bpred|bpred-rdo|i16|dc>] [--loopfilter] [--token-probs <default|adaptive>] [--mb-skip] [--bpred-rdo-lambda-mul N] [--bpred-rdo-lambda-div N] [--bpred-rdo-rate <proxy|entropy>] [--bpred-rdo-signal <proxy|entropy>] [--bpred-rdo-quant <default|ac-deadzone>] [--bpred-rdo-ac-deadzone N] <in.png> <out.webp>\n"
+	        "Usage: %s [--q <0..100>] [--mode <bpred|bpred-rdo|i16|dc>] [--loopfilter] [--token-probs <default|adaptive>] [--mb-skip] [--bpred-rdo-lambda-mul N] [--bpred-rdo-lambda-div N] [--bpred-rdo-rate <proxy|entropy|dry-run>] [--bpred-rdo-signal <proxy|entropy>] [--bpred-rdo-quant <default|ac-deadzone>] [--bpred-rdo-ac-deadzone N] [--bpred-rdo-qscale-y-ac N] [--bpred-rdo-qscale-uv-ac N] <in.png> <out.webp>\n"
 	        "\n"
 	        "Standalone VP8 keyframe (lossy) encoder producing a simple WebP container.\n"
 	        "\n"
@@ -29,12 +29,14 @@ static void usage(const char* argv0) {
 	        "  --loopfilter | --lf    Write deterministic loopfilter header params derived from qindex\n"
 			"  --token-probs <default|adaptive>  Emit coefficient token prob updates. Default: adaptive\n"
 			"  --mb-skip              Experimental: signal mb_skip_coeff and omit tokens for all-zero MBs\n"
-			"  --bpred-rdo-lambda-mul N  Tune bpred-rdo: multiply lambda(qindex) by N (default 8)\n"
+				"  --bpred-rdo-lambda-mul N  Tune bpred-rdo: multiply lambda(qindex) by N (default 10)\n"
 			"  --bpred-rdo-lambda-div N  Tune bpred-rdo: divide lambda(qindex) by N (default 1)\n"
-			"  --bpred-rdo-rate <proxy|entropy>  Tune bpred-rdo: rate estimator (default entropy)\n"
+			"  --bpred-rdo-rate <proxy|entropy|dry-run>  Tune bpred-rdo: rate estimator (default entropy)\n"
 			"  --bpred-rdo-signal <proxy|entropy>  Tune bpred-rdo: mode signaling cost model (default proxy)\n"
 			"  --bpred-rdo-quant <default|ac-deadzone>  Tune bpred-rdo: quantization tweak (default ac-deadzone)\n"
-			"  --bpred-rdo-ac-deadzone N  Tune bpred-rdo: AC deadzone threshold percent (default 70)\n",
+			"  --bpred-rdo-ac-deadzone N  Tune bpred-rdo: AC deadzone threshold percent (default 70)\n"
+			"  --bpred-rdo-qscale-y-ac N  Tune bpred-rdo: scale Y AC quant step percent (default 100)\n"
+			"  --bpred-rdo-qscale-uv-ac N  Tune bpred-rdo: scale UV AC quant step percent (default 100)\n",
 	        argv0);
 }
 
@@ -73,12 +75,14 @@ int main(int argc, char** argv) {
 	int enable_mb_skip = 0;
 	EncMode mode = ENC_MODE_BPRED_RDO;
 	EncVp8TokenProbsMode token_probs_mode = ENC_VP8_TOKEN_PROBS_ADAPTIVE;
-	int bpred_rdo_lambda_mul = 8;
+	int bpred_rdo_lambda_mul = 10;
 	int bpred_rdo_lambda_div = 1;
 	int bpred_rdo_rate_mode = 1;
 	int bpred_rdo_signal_mode = 0;
 	int bpred_rdo_quant_mode = 1;
 	int bpred_rdo_ac_deadzone_pct = 70;
+	int bpred_rdo_qscale_y_ac_pct = 100;
+	int bpred_rdo_qscale_uv_ac_pct = 100;
 
 	int argi = 1;
 	while (argi < argc) {
@@ -143,6 +147,8 @@ int main(int argc, char** argv) {
 				bpred_rdo_rate_mode = 0;
 			} else if (strcmp(s, "entropy") == 0) {
 				bpred_rdo_rate_mode = 1;
+			} else if (strcmp(s, "dry-run") == 0 || strcmp(s, "dryrun") == 0) {
+				bpred_rdo_rate_mode = 2;
 			} else {
 				usage(argv[0]);
 				return 2;
@@ -184,6 +190,24 @@ int main(int argc, char** argv) {
 			}
 			// Convenience: specifying a deadzone implies enabling the deadzone quantization.
 			bpred_rdo_quant_mode = 1;
+			argi += 2;
+			continue;
+		}
+		if (argi + 1 < argc && strcmp(argv[argi], "--bpred-rdo-qscale-y-ac") == 0) {
+			if (parse_int(argv[argi + 1], &bpred_rdo_qscale_y_ac_pct) != 0 || bpred_rdo_qscale_y_ac_pct <= 0 ||
+			    bpred_rdo_qscale_y_ac_pct > 400) {
+				usage(argv[0]);
+				return 2;
+			}
+			argi += 2;
+			continue;
+		}
+		if (argi + 1 < argc && strcmp(argv[argi], "--bpred-rdo-qscale-uv-ac") == 0) {
+			if (parse_int(argv[argi + 1], &bpred_rdo_qscale_uv_ac_pct) != 0 || bpred_rdo_qscale_uv_ac_pct <= 0 ||
+			    bpred_rdo_qscale_uv_ac_pct > 400) {
+				usage(argv[0]);
+				return 2;
+			}
 			argi += 2;
 			continue;
 		}
@@ -251,6 +275,8 @@ int main(int argc, char** argv) {
 		tuning.signal_mode = (uint32_t)bpred_rdo_signal_mode;
 		tuning.quant_mode = (uint32_t)bpred_rdo_quant_mode;
 		tuning.ac_deadzone_pct = (uint32_t)bpred_rdo_ac_deadzone_pct;
+		tuning.qscale_y_ac_pct = (uint32_t)bpred_rdo_qscale_y_ac_pct;
+		tuning.qscale_uv_ac_pct = (uint32_t)bpred_rdo_qscale_uv_ac_pct;
 		rc = enc_vp8_encode_bpred_uv_rdo_inloop(&yuv,
 		                                       quality,
 						       token_probs_mode,

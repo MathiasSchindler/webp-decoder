@@ -620,6 +620,79 @@ static int enc_block(EncBoolEncoder* e,
 
 	return current_has_coeffs;
 }
+uint32_t enc_vp8_dry_run_keyframe_mb_token_bits_q8_probs(int ymode,
+								const int16_t* mb_coeffs,
+								const uint8_t coeff_probs_override[4][8][3][11]) {
+	if (!mb_coeffs) return 0;
+	const uint8_t (*coeff_probs)[8][3][num_dct_tokens - 1] = coeff_probs_override ? coeff_probs_override : default_coeff_probs;
+
+	EncBoolEncoder e;
+	enc_bool_init(&e);
+
+	const int has_y2 = (ymode != (int)VP8_B_PRED);
+
+	// Y2 (external contexts assumed 0)
+	if (has_y2) {
+		(void)enc_block(&e, coeff_probs[1], /*first_coeff=*/0, /*left_has=*/0, /*above_has=*/0, mb_coeffs);
+	}
+
+	// Y blocks
+	{
+		uint8_t above_y[4] = {0, 0, 0, 0};
+		uint8_t left_y[4] = {0, 0, 0, 0};
+		uint8_t y_has[4][4];
+		for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) y_has[rr][cc] = 0;
+
+		const int y_plane = has_y2 ? 0 : 3;
+		const int first_coeff = has_y2 ? 1 : 0;
+		const int16_t* y = mb_coeffs + 16;
+		for (int rr = 0; rr < 4; rr++) {
+			for (int cc = 0; cc < 4; cc++) {
+				uint8_t left_has = (cc == 0) ? left_y[rr] : y_has[rr][cc - 1];
+				uint8_t above_has = (rr == 0) ? above_y[cc] : y_has[rr - 1][cc];
+				int has = enc_block(&e, coeff_probs[y_plane], first_coeff, left_has, above_has, y + (rr * 4 + cc) * 16);
+				y_has[rr][cc] = (uint8_t)has;
+			}
+		}
+	}
+
+	// U blocks (2x2)
+	{
+		uint8_t above_u[2] = {0, 0};
+		uint8_t left_u[2] = {0, 0};
+		uint8_t u_has[2][2] = {{0, 0}, {0, 0}};
+		const int16_t* u = mb_coeffs + 16 + (16 * 16);
+		for (int rr = 0; rr < 2; rr++) {
+			for (int cc = 0; cc < 2; cc++) {
+				uint8_t left_has = (cc == 0) ? left_u[rr] : u_has[rr][cc - 1];
+				uint8_t above_has = (rr == 0) ? above_u[cc] : u_has[rr - 1][cc];
+				int has = enc_block(&e, coeff_probs[2], /*first_coeff=*/0, left_has, above_has, u + (rr * 2 + cc) * 16);
+				u_has[rr][cc] = (uint8_t)has;
+			}
+		}
+	}
+
+	// V blocks (2x2)
+	{
+		uint8_t above_v[2] = {0, 0};
+		uint8_t left_v[2] = {0, 0};
+		uint8_t v_has[2][2] = {{0, 0}, {0, 0}};
+		const int16_t* v = mb_coeffs + 16 + (16 * 16) + (4 * 16);
+		for (int rr = 0; rr < 2; rr++) {
+			for (int cc = 0; cc < 2; cc++) {
+				uint8_t left_has = (cc == 0) ? left_v[rr] : v_has[rr][cc - 1];
+				uint8_t above_has = (rr == 0) ? above_v[cc] : v_has[rr - 1][cc];
+				int has = enc_block(&e, coeff_probs[2], /*first_coeff=*/0, left_has, above_has, v + (rr * 2 + cc) * 16);
+				v_has[rr][cc] = (uint8_t)has;
+			}
+		}
+	}
+
+	enc_bool_finish(&e);
+	uint32_t bits_q8 = (uint32_t)((enc_bool_size(&e) * 8u) << 8);
+	enc_bool_free(&e);
+	return bits_q8;
+}
 
 // --- Coefficient probability adaptation (keyframes only) ---
 

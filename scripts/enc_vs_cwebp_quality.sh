@@ -76,7 +76,10 @@ process_one_image_size() {
 
         # OURS_FLAGS can be used to enable experimental knobs (e.g. --loopfilter).
         ./encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
+        [ -s "$ours_webp" ] || die "encoder produced no output: $ours_webp (src=$src size=$s q=$q mode=$mode flags='$ours_flags')"
+
         "$CWEBP" -quiet -q "$q" "$derived_png" -o "$lib_webp" >/dev/null 2>&1
+        [ -s "$lib_webp" ] || die "cwebp produced no output: $lib_webp (src=$src size=$s q=$q)"
 
         local ours_bytes
         local lib_bytes
@@ -84,7 +87,9 @@ process_one_image_size() {
         lib_bytes=$(wc -c < "$lib_webp" | tr -d ' ')
 
         "$DWEBP" -quiet "$ours_webp" -ppm -o "$ours_ppm" >/dev/null 2>&1
+        [ -s "$ours_ppm" ] || die "dwebp produced no output: $ours_ppm (from $ours_webp)"
         "$DWEBP" -quiet "$lib_webp" -ppm -o "$lib_ppm" >/dev/null 2>&1
+        [ -s "$lib_ppm" ] || die "dwebp produced no output: $lib_ppm (from $lib_webp)"
 
         local ours_metrics
         local lib_metrics
@@ -130,6 +135,7 @@ process_one_image_size() {
                 done
             done
         } | xargs -0 -n2 -P "$jobs" bash -c '
+            set -euo pipefail
             src="$1"; s="$2";
             id=$(printf "%s|%s" "$src" "$s" | shasum -a 256 | awk "{print \$1}");
             out="$rows_dir/rows_${id}.tsv";

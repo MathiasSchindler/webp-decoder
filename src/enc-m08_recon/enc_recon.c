@@ -13,6 +13,14 @@ static inline uint8_t clamp255_i32(int32_t v) {
 	if (v > 255) return 255;
 	return (uint8_t)v;
 }
+static int rdo_scale_step_pct(int step, uint32_t pct) {
+	if (pct == 0) pct = 100;
+	uint64_t v = (uint64_t)(uint32_t)step * (uint64_t)pct;
+	v = (v + 50u) / 100u;
+	if (v < 1u) v = 1u;
+	if (v > 2047u) v = 2047u;
+	return (int)v;
+}
 
 static uint8_t dc_value(const uint8_t* left, const uint8_t* top, int size, int round, int shift);
 static uint8_t load_clamped(const uint8_t* plane, uint32_t stride, uint32_t w, uint32_t h, uint32_t x, uint32_t y);
@@ -1080,8 +1088,9 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 					 size_t* coeffs_count_out,
 					 uint8_t* qindex_out,
 					 const EncBpredRdoTuning* tuning) {
-	int use_entropy_rate = 0;
-	if (tuning) use_entropy_rate = (tuning->rate_mode == 1);
+	int rate_mode = 0;
+	if (tuning) rate_mode = (int)tuning->rate_mode;
+	const int use_rate_estimation = (rate_mode != 0);
 
 	// Pass 1: always run with default probability tables for entropy-rate estimation.
 	uint8_t* y1 = NULL;
@@ -1109,8 +1118,8 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 	                                               tuning);
 	if (rc != 0) return rc;
 
-	// Only refine when entropy-rate estimation is enabled AND token probs are adaptive.
-	if (!use_entropy_rate || token_probs_mode == ENC_VP8_TOKEN_PROBS_DEFAULT) {
+	// Only refine when a rate estimator is enabled AND token probs are adaptive.
+	if (!use_rate_estimation || token_probs_mode == ENC_VP8_TOKEN_PROBS_DEFAULT) {
 		*y_modes_out = y1;
 		*y_modes_count_out = y1n;
 		*b_modes_out = b1;
@@ -1868,17 +1877,29 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 
 	uint32_t lambda_mul = 1;
 	uint32_t lambda_div = 1;
+	int rate_mode = 0;
 	int use_entropy_rate = 0;
+	int use_dry_run_rate = 0;
 	int use_entropy_signal = 0;
 	int quant_mode = 0;
 	uint32_t ac_deadzone_pct = 0;
+		uint32_t qscale_y_ac_pct = 100;
+		uint32_t qscale_uv_ac_pct = 100;
 	if (tuning) {
 		lambda_mul = tuning->lambda_mul ? tuning->lambda_mul : 1;
 		lambda_div = tuning->lambda_div ? tuning->lambda_div : 1;
-		use_entropy_rate = (tuning->rate_mode == 1);
+		rate_mode = (int)tuning->rate_mode;
+		use_entropy_rate = (rate_mode != 0);
+		use_dry_run_rate = (rate_mode == 2);
 		use_entropy_signal = (tuning->signal_mode == 1);
 		quant_mode = (tuning->quant_mode == 1) ? 1 : 0;
 		ac_deadzone_pct = tuning->ac_deadzone_pct;
+		qscale_y_ac_pct = tuning->qscale_y_ac_pct ? tuning->qscale_y_ac_pct : 100;
+		qscale_uv_ac_pct = tuning->qscale_uv_ac_pct ? tuning->qscale_uv_ac_pct : 100;
+		// Apply optional quant step scaling (Experiment 2).
+		qf.y1_ac = rdo_scale_step_pct(qf.y1_ac, qscale_y_ac_pct);
+		qf.y2_ac = rdo_scale_step_pct(qf.y2_ac, qscale_y_ac_pct);
+		qf.uv_ac = rdo_scale_step_pct(qf.uv_ac, qscale_uv_ac_pct);
 	}
 
 	const uint32_t uv_w = (w + 1u) >> 1;
@@ -1956,7 +1977,7 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 					enc_vp8_ftransform4x4(src4, 4, pred4, 4, ublk_tmp[n]);
 					rdo_quantize4x4_inplace(ublk_tmp[n], qf.uv_dc, qf.uv_ac, quant_mode, ac_deadzone_pct);
 					refine_dc_quant4x4(ublk_tmp[n], qf.uv_dc, qf.uv_ac, src4, pred4);
-					if (use_entropy_rate) {
+					if (use_entropy_rate && !use_dry_run_rate) {
 						uint8_t has = 0;
 						uint8_t left_has = (bx == 0) ? 0 : u_has[by >> 2][(bx >> 2) - 1];
 						uint8_t above_has = (by == 0) ? 0 : u_has[(by >> 2) - 1][bx >> 2];
@@ -1970,7 +1991,7 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 								&has,
 								coeff_probs_override));
 						u_has[by >> 2][bx >> 2] = has;
-					} else {
+					} else if (!use_entropy_rate) {
 						rate += rdo_rate_proxy4x4(ublk_tmp[n]);
 					}
 					int16_t deq[16];
@@ -1994,7 +2015,7 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 					enc_vp8_ftransform4x4(src4, 4, pred4, 4, vblk_tmp[n]);
 					rdo_quantize4x4_inplace(vblk_tmp[n], qf.uv_dc, qf.uv_ac, quant_mode, ac_deadzone_pct);
 					refine_dc_quant4x4(vblk_tmp[n], qf.uv_dc, qf.uv_ac, src4, pred4);
-					if (use_entropy_rate) {
+					if (use_entropy_rate && !use_dry_run_rate) {
 						uint8_t has = 0;
 						uint8_t left_has = (bx == 0) ? 0 : v_has[by >> 2][(bx >> 2) - 1];
 						uint8_t above_has = (by == 0) ? 0 : v_has[(by >> 2) - 1][bx >> 2];
@@ -2008,7 +2029,7 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 								&has,
 								coeff_probs_override));
 						v_has[by >> 2][bx >> 2] = has;
-					} else {
+					} else if (!use_entropy_rate) {
 						rate += rdo_rate_proxy4x4(vblk_tmp[n]);
 					}
 					int16_t deq[16];
@@ -2022,6 +2043,23 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 						int d = (int)src4[i] - (int)r;
 						sse += (uint32_t)(d * d);
 					}
+				}
+
+				// If using dry-run rate, add an actual bool-encoder bitcount for just the UV tokens.
+				if (use_dry_run_rate) {
+					int16_t mb_coeffs_uv[16 + (16 * 16) + (4 * 16) + (4 * 16)];
+					memset(mb_coeffs_uv, 0, sizeof(mb_coeffs_uv));
+					int16_t* dst_uv = mb_coeffs_uv + 16 + (16 * 16);
+					for (int n = 0; n < 4; n++) {
+						for (int i = 0; i < 16; i++) dst_uv[i] = ublk_tmp[n][i];
+						dst_uv += 16;
+					}
+					for (int n = 0; n < 4; n++) {
+						for (int i = 0; i < 16; i++) dst_uv[i] = vblk_tmp[n][i];
+						dst_uv += 16;
+					}
+					const uint32_t bits_q8 = enc_vp8_dry_run_keyframe_mb_token_bits_q8_probs(/*ymode=*/4, mb_coeffs_uv, coeff_probs_override);
+					rate += rdo_rate_from_token_bits_q8(bits_q8);
 				}
 
 				uint32_t cost = sse + (uint32_t)((uint64_t)lambda_uv * (uint64_t)rate);
@@ -2279,23 +2317,44 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 					rate += rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_ymode_bits_q8((int)mode));
 				}
 				if (use_entropy_rate) {
-					uint32_t bits_q8 = 0;
-					uint8_t y2_has = 0;
-					bits_q8 += enc_vp8_estimate_keyframe_block_token_bits_q8(1, 0, 0, 0, y2, &y2_has);
-					uint8_t above_y[4] = {0, 0, 0, 0};
-					uint8_t left_y[4] = {0, 0, 0, 0};
-					uint8_t y_has[4][4];
-					for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) y_has[rr][cc] = 0;
-					for (int rr = 0; rr < 4; rr++) {
-						for (int cc = 0; cc < 4; cc++) {
-							uint8_t left_has = (cc == 0) ? left_y[rr] : y_has[rr][cc - 1];
-							uint8_t above_has = (rr == 0) ? above_y[cc] : y_has[rr - 1][cc];
-							uint8_t has = 0;
-							bits_q8 += enc_vp8_estimate_keyframe_block_token_bits_q8(0, 1, left_has, above_has, tmp[rr * 4 + cc], &has);
-							y_has[rr][cc] = has;
+					if (!use_dry_run_rate) {
+						uint32_t bits_q8 = 0;
+						uint8_t y2_has = 0;
+						bits_q8 += enc_vp8_estimate_keyframe_block_token_bits_q8(1, 0, 0, 0, y2, &y2_has);
+						uint8_t above_y[4] = {0, 0, 0, 0};
+						uint8_t left_y[4] = {0, 0, 0, 0};
+						uint8_t y_has[4][4];
+						for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) y_has[rr][cc] = 0;
+						for (int rr = 0; rr < 4; rr++) {
+							for (int cc = 0; cc < 4; cc++) {
+								uint8_t left_has = (cc == 0) ? left_y[rr] : y_has[rr][cc - 1];
+								uint8_t above_has = (rr == 0) ? above_y[cc] : y_has[rr - 1][cc];
+								uint8_t has = 0;
+								bits_q8 += enc_vp8_estimate_keyframe_block_token_bits_q8(0, 1, left_has, above_has, tmp[rr * 4 + cc], &has);
+								y_has[rr][cc] = has;
+							}
 						}
+						rate += rdo_rate_from_token_bits_q8(bits_q8);
+					} else {
+						int16_t mb_coeffs_i16[16 + (16 * 16) + (4 * 16) + (4 * 16)];
+						int16_t* dst = mb_coeffs_i16;
+						for (int i = 0; i < 16; i++) dst[i] = y2[i];
+						dst += 16;
+						for (int n = 0; n < 16; n++) {
+							for (int i = 0; i < 16; i++) dst[i] = tmp[n][i];
+							dst += 16;
+						}
+						for (int n = 0; n < 4; n++) {
+							for (int i = 0; i < 16; i++) dst[i] = best_ublk[n][i];
+							dst += 16;
+						}
+						for (int n = 0; n < 4; n++) {
+							for (int i = 0; i < 16; i++) dst[i] = best_vblk[n][i];
+							dst += 16;
+						}
+						const uint32_t bits_q8 = enc_vp8_dry_run_keyframe_mb_token_bits_q8_probs((int)mode, mb_coeffs_i16, coeff_probs_override);
+						rate += rdo_rate_from_token_bits_q8(bits_q8);
 					}
-					rate += rdo_rate_from_token_bits_q8(bits_q8);
 				} else {
 					rate += rdo_rate_weight_y2(rdo_rate_proxy4x4(y2));
 					for (int n = 0; n < 16; ++n) rate += rdo_rate_proxy4x4(tmp[n]);
@@ -2343,7 +2402,76 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 			}
 
 			// Decide macroblock luma mode and commit coeffs + recon.
-			int choose_i16 = (best_cost_i16 < cost_bpred);
+			uint32_t cost_bpred_cmp = cost_bpred;
+			if (use_dry_run_rate) {
+				// Recompute B_PRED macroblock cost using a dry-run token bitcount (mode selection inside
+				// the macroblock was still driven by the usual estimator; this improves the I16 vs B_PRED decision).
+				uint32_t sse_y = 0;
+				for (uint32_t dy = 0; dy < 16u; ++dy) {
+					uint32_t sy = y0 + dy;
+					if (sy >= h) sy = h ? (h - 1u) : 0u;
+					const uint8_t* src_row = yuv->y + (size_t)sy * yuv->y_stride;
+					for (uint32_t dx = 0; dx < 16u; ++dx) {
+						uint32_t sx = x0 + dx;
+						if (sx >= w) sx = w ? (w - 1u) : 0u;
+						int d = (int)src_row[sx] - (int)cand_recon_y[dy * 16u + dx];
+						sse_y += (uint32_t)(d * d);
+					}
+				}
+				uint32_t rate = 0;
+				rate += rdo_ymode_signal_cost(4);
+				if (use_entropy_signal) {
+					rate += rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_ymode_bits_q8(4));
+				}
+				for (uint32_t rr = 0; rr < 4; rr++) {
+					for (uint32_t cc = 0; cc < 4; cc++) {
+						const uint32_t blk = rr * 4u + cc;
+						const int mode = (int)cand_b_modes[blk];
+						rate += rdo_bmode_signal_cost(mode);
+						if (use_entropy_signal) {
+							int left_bmode = 0;
+							int above_bmode = 0;
+							if (cc > 0) {
+								left_bmode = (int)cand_b_modes[blk - 1u];
+							} else if (mbx > 0) {
+								const uint32_t mb_left_index = (uint32_t)mb_index - 1u;
+								const int left_ymode = (int)y_modes[mb_left_index];
+								if (left_ymode == 4) left_bmode = (int)b_modes[mb_left_index * 16u + (rr * 4u + 3u)];
+								else left_bmode = rdo_mbymode_to_bmode(left_ymode);
+							}
+							if (rr > 0) {
+								above_bmode = (int)cand_b_modes[blk - 4u];
+							} else if (mby > 0) {
+								const uint32_t mb_above_index = (uint32_t)mb_index - mb_cols;
+								const int above_ymode = (int)y_modes[mb_above_index];
+								if (above_ymode == 4) above_bmode = (int)b_modes[mb_above_index * 16u + (3u * 4u + cc)];
+								else above_bmode = rdo_mbymode_to_bmode(above_ymode);
+							}
+							rate += rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_bmode_bits_q8(above_bmode, left_bmode, mode));
+						}
+					}
+				}
+				int16_t mb_coeffs_bp[16 + (16 * 16) + (4 * 16) + (4 * 16)];
+				memset(mb_coeffs_bp, 0, 16 * sizeof(int16_t));
+				int16_t* dst = mb_coeffs_bp + 16;
+				for (int n = 0; n < 16; n++) {
+					for (int i = 0; i < 16; i++) dst[i] = cand_y_coeffs[n][i];
+					dst += 16;
+				}
+				for (int n = 0; n < 4; n++) {
+					for (int i = 0; i < 16; i++) dst[i] = best_ublk[n][i];
+					dst += 16;
+				}
+				for (int n = 0; n < 4; n++) {
+					for (int i = 0; i < 16; i++) dst[i] = best_vblk[n][i];
+					dst += 16;
+				}
+				const uint32_t bits_q8 = enc_vp8_dry_run_keyframe_mb_token_bits_q8_probs(/*ymode=*/4, mb_coeffs_bp, coeff_probs_override);
+				rate += rdo_rate_from_token_bits_q8(bits_q8);
+				cost_bpred_cmp = sse_y + (uint32_t)((uint64_t)lambda_y * (uint64_t)rate);
+			}
+
+			int choose_i16 = (best_cost_i16 < cost_bpred_cmp);
 			int16_t* mbdst = out + mb_index * coeffs_per_mb;
 			int16_t* ydst = mbdst + 16;
 			if (choose_i16) {
