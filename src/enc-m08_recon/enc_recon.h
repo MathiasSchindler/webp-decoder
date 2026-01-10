@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "../enc-m04_yuv/enc_rgb_to_yuv.h"
+#include "../enc-m07_tokens/enc_vp8_tokens.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -125,6 +126,7 @@ int enc_vp8_encode_bpred_uv_sad_inloop(const EncYuv420Image* yuv,
 // This is an RDO-lite distortion term (no explicit rate term yet).
 int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 				 int quality,
+			 EncVp8TokenProbsMode token_probs_mode,
 				 uint8_t** y_modes_out,
 				 size_t* y_modes_count_out,
 				 uint8_t** b_modes_out,

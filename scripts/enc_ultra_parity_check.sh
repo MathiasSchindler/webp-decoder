@@ -50,7 +50,7 @@ while read -r png _hash; do
 	out_a="$tmpdir/normal_$count.webp"
 	out_b="$tmpdir/ultra_$count.webp"
 
-	"$enc_normal" --q "$quality" --mode "$mode" "$ROOT_DIR/$png" "$out_a" >/dev/null
+	"$enc_normal" --q "$quality" --mode "$mode" --token-probs default "$ROOT_DIR/$png" "$out_a" >/dev/null
 	"$enc_ultra" "$ROOT_DIR/$png" "$out_b" >/dev/null
 
 	if ! cmp -s "$out_a" "$out_b"; then

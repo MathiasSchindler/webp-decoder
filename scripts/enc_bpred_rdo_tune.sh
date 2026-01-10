@@ -9,6 +9,7 @@ cd "$ROOT_DIR"
 sizes_str=${SIZES:-"256"}
 qs_str=${QS:-"40 60 80"}
 ours_flags=${OURS_FLAGS:-"--loopfilter"}
+jobs=${JOBS:-1}
 
 if [ "$#" -gt 0 ]; then
 	images=()
@@ -46,7 +47,7 @@ fi
 
 run_one() {
 	local mode=$1
-	SIZES="$sizes_str" QS="$qs_str" MODE="$mode" OURS_FLAGS="$ours_flags" \
+	JOBS="$jobs" SIZES="$sizes_str" QS="$qs_str" MODE="$mode" OURS_FLAGS="$ours_flags" \
 		./scripts/enc_vs_cwebp_quality.sh "${images[@]}"
 }
 
@@ -65,7 +66,7 @@ extract_overall() {
 
 printf '== bpred-rdo tuning harness ==\n'
 printf 'Images (%d): %s\n' "${#images[@]}" "${images[*]}"
-printf 'SIZES=%s  QS=%s  OURS_FLAGS=%s\n\n' "$sizes_str" "$qs_str" "$ours_flags"
+printf 'JOBS=%s  SIZES=%s  QS=%s  OURS_FLAGS=%s\n\n' "$jobs" "$sizes_str" "$qs_str" "$ours_flags"
 
 printf '== MODE=bpred ==\n'
 bpred_out=$(run_one bpred)

@@ -27,14 +27,14 @@ static void usage(const char* argv0) {
 	        "  --q <0..100>           Quality (mapped to VP8 qindex). Default: 75\n"
 	        "  --mode <bpred|bpred-rdo|i16|dc>  Intra mode strategy. Default: bpred-rdo\n"
 	        "  --loopfilter | --lf    Write deterministic loopfilter header params derived from qindex\n"
-			"  --token-probs <default|adaptive>  Experimental: emit adaptive coeff prob updates (default default)\n"
+			"  --token-probs <default|adaptive>  Emit coefficient token prob updates. Default: adaptive\n"
 			"  --mb-skip              Experimental: signal mb_skip_coeff and omit tokens for all-zero MBs\n"
 			"  --bpred-rdo-lambda-mul N  Tune bpred-rdo: multiply lambda(qindex) by N (default 8)\n"
 			"  --bpred-rdo-lambda-div N  Tune bpred-rdo: divide lambda(qindex) by N (default 1)\n"
 			"  --bpred-rdo-rate <proxy|entropy>  Tune bpred-rdo: rate estimator (default entropy)\n"
 			"  --bpred-rdo-signal <proxy|entropy>  Tune bpred-rdo: mode signaling cost model (default proxy)\n"
 			"  --bpred-rdo-quant <default|ac-deadzone>  Tune bpred-rdo: quantization tweak (default ac-deadzone)\n"
-			"  --bpred-rdo-ac-deadzone N  Tune bpred-rdo: AC deadzone threshold percent (default 60)\n",
+			"  --bpred-rdo-ac-deadzone N  Tune bpred-rdo: AC deadzone threshold percent (default 70)\n",
 	        argv0);
 }
 
@@ -72,13 +72,13 @@ int main(int argc, char** argv) {
 	int enable_loopfilter = 0;
 	int enable_mb_skip = 0;
 	EncMode mode = ENC_MODE_BPRED_RDO;
-	EncVp8TokenProbsMode token_probs_mode = ENC_VP8_TOKEN_PROBS_DEFAULT;
+	EncVp8TokenProbsMode token_probs_mode = ENC_VP8_TOKEN_PROBS_ADAPTIVE;
 	int bpred_rdo_lambda_mul = 8;
 	int bpred_rdo_lambda_div = 1;
 	int bpred_rdo_rate_mode = 1;
 	int bpred_rdo_signal_mode = 0;
 	int bpred_rdo_quant_mode = 1;
-	int bpred_rdo_ac_deadzone_pct = 60;
+	int bpred_rdo_ac_deadzone_pct = 70;
 
 	int argi = 1;
 	while (argi < argc) {
@@ -253,6 +253,7 @@ int main(int argc, char** argv) {
 		tuning.ac_deadzone_pct = (uint32_t)bpred_rdo_ac_deadzone_pct;
 		rc = enc_vp8_encode_bpred_uv_rdo_inloop(&yuv,
 		                                       quality,
+						       token_probs_mode,
 		                                       &y_modes,
 		                                       &y_modes_count,
 		                                       &b_modes,

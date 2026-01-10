@@ -408,10 +408,24 @@ uint32_t enc_vp8_estimate_keyframe_block_token_bits_q8(int coeff_plane,
 					      uint8_t above_has,
 					      const int16_t block[16],
 					      uint8_t* out_has_coeffs) {
+	return enc_vp8_estimate_keyframe_block_token_bits_q8_probs(
+	    coeff_plane, first_coeff, left_has, above_has, block, out_has_coeffs, /*coeff_probs_override=*/NULL);
+}
+
+uint32_t enc_vp8_estimate_keyframe_block_token_bits_q8_probs(int coeff_plane,
+						    int first_coeff,
+						    uint8_t left_has,
+						    uint8_t above_has,
+						    const int16_t block[16],
+						    uint8_t* out_has_coeffs,
+						    const uint8_t coeff_probs_override[4][8][3][11]) {
 	if (coeff_plane < 0) coeff_plane = 0;
 	if (coeff_plane > 3) coeff_plane = 3;
 	if (first_coeff < 0) first_coeff = 0;
 	if (first_coeff > 15) first_coeff = 15;
+	if (coeff_probs_override) {
+		return cost_block_q8(coeff_probs_override[coeff_plane], first_coeff, left_has, above_has, block, out_has_coeffs);
+	}
 	return cost_block_q8(default_coeff_probs[coeff_plane], first_coeff, left_has, above_has, block, out_has_coeffs);
 }
 
@@ -937,7 +951,7 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 	free(above_y2);
 }
 
-static void enc_compute_adaptive_coeff_probs(uint8_t out_probs[4][8][3][num_dct_tokens - 1],
+void enc_vp8_compute_adaptive_coeff_probs(uint8_t out_probs[4][8][3][num_dct_tokens - 1],
 							  uint32_t mb_cols,
 							  uint32_t mb_rows,
 							  const uint8_t* y_modes,
@@ -1047,10 +1061,28 @@ static void enc_compute_adaptive_coeff_probs(uint8_t out_probs[4][8][3][num_dct_
 	free(above_y2);
 
 	// Decide updates per probability (net savings vs update signaling cost).
-	const uint32_t min_total = 32;
+	// No hard minimum sample count: rely on the signaling-overhead cost check
+	// (plus smoothing prior) to decide if an update is worth it.
 	// Simple smoothing to avoid overfitting low-count symbols.
 	// Treat the default probability as a weak prior of this total strength.
-	const uint32_t prior_strength = 64;
+	uint32_t prior_strength = 64;
+	{
+		const char* s = getenv("ENC_ADAPTIVE_PRIOR_STRENGTH");
+		if (s && *s) {
+			char* end = NULL;
+			long v = strtol(s, &end, 10);
+			if (end && *end == '\0' && v > 0 && v <= 1000000) prior_strength = (uint32_t)v;
+		}
+	}
+	uint32_t min_total = 0;
+	{
+		const char* s = getenv("ENC_ADAPTIVE_MIN_TOTAL");
+		if (s && *s) {
+			char* end = NULL;
+			long v = strtol(s, &end, 10);
+			if (end && *end == '\0' && v > 0 && v <= 1000000) min_total = (uint32_t)v;
+		}
+	}
 	for (int i = 0; i < 4; i++) {
 		for (int j = 0; j < 8; j++) {
 			for (int k = 0; k < 3; k++) {
@@ -1058,7 +1090,7 @@ static void enc_compute_adaptive_coeff_probs(uint8_t out_probs[4][8][3][num_dct_
 					uint32_t left = counts[i][j][k][t][0];
 					uint32_t right = counts[i][j][k][t][1];
 					uint32_t total = left + right;
-					if (total < min_total) continue;
+					if (min_total && total < min_total) continue;
 
 					uint32_t oldp = (uint32_t)default_coeff_probs[i][j][k][t];
 					uint32_t left_prior = (oldp * prior_strength + 128u) / 256u;
@@ -1482,7 +1514,7 @@ int enc_vp8_build_keyframe_intra_coeffs_ex_probs(uint32_t width,
 	}
 
 	uint8_t coeff_probs[4][8][3][num_dct_tokens - 1];
-	enc_compute_adaptive_coeff_probs(coeff_probs, mb_cols, mb_rows, y_modes, coeffs);
+	enc_vp8_compute_adaptive_coeff_probs(coeff_probs, mb_cols, mb_rows, y_modes, coeffs);
 
 	EncBoolEncoder p0;
 	enc_bool_init(&p0);

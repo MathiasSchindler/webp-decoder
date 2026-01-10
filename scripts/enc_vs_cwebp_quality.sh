@@ -25,6 +25,7 @@ sizes_str=${SIZES:-"256 512"}
 qs_str=${QS:-"30 40 50 60 70 80"}
 mode=${MODE:-bpred}
 ours_flags=${OURS_FLAGS:-""}
+jobs=${JOBS:-1}
 
 if [ "$#" -lt 1 ]; then
 	echo "Usage: $0 <img1.{jpg,png}> [img2 ...]" >&2
@@ -33,67 +34,111 @@ if [ "$#" -lt 1 ]; then
 	echo "  QS=\"30 40 ...\"     (quality sweep)" >&2
 	echo "  MODE=bpred|i16|dc    (our encoder mode)" >&2
         echo "  OURS_FLAGS=\"...\"     (extra flags for ./encoder, e.g. --loopfilter)" >&2
+    echo "  JOBS=1              (parallel jobs; >1 enables multicore)" >&2
 	exit 2
 fi
 
 tmpdir=$(mk_artifact_tmpdir)
 results_tsv="$tmpdir/results.tsv"
 
+process_one_image_size() {
+    local src=$1
+    local s=$2
+
+    if [ ! -f "$src" ]; then
+        die "missing input: $src"
+    fi
+
+    local src_base
+    src_base=$(basename "$src")
+    local src_stem=${src_base%.*}
+
+    # Unique job id to avoid filename collisions across parallel jobs.
+    local id
+    id=$(printf '%s|%s' "$src" "$s" | shasum -a 256 | awk '{print $1}')
+
+    local derived_png="$tmpdir/${src_stem}_${s}_${id}.png"
+    local ref_ppm="$tmpdir/${src_stem}_${s}_${id}.ref.ppm"
+
+    # Preserve aspect ratio; constrain max dimension to s.
+    if [ "$have_magick" -eq 1 ]; then
+        magick "$src" -auto-orient -resize "${s}x${s}>" -strip "$derived_png"
+    else
+        sips -Z "$s" -s format png "$src" --out "$derived_png" >/dev/null
+    fi
+    ./build/enc_png2ppm "$derived_png" "$ref_ppm" >/dev/null
+
+    for q in $qs_str; do
+        local ours_webp="$tmpdir/${src_stem}_${s}_${id}_ours_q${q}.webp"
+        local ours_ppm="$tmpdir/${src_stem}_${s}_${id}_ours_q${q}.ppm"
+        local lib_webp="$tmpdir/${src_stem}_${s}_${id}_lib_q${q}.webp"
+        local lib_ppm="$tmpdir/${src_stem}_${s}_${id}_lib_q${q}.ppm"
+
+        # OURS_FLAGS can be used to enable experimental knobs (e.g. --loopfilter).
+        ./encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
+        "$CWEBP" -quiet -q "$q" "$derived_png" -o "$lib_webp" >/dev/null 2>&1
+
+        local ours_bytes
+        local lib_bytes
+        ours_bytes=$(wc -c < "$ours_webp" | tr -d ' ')
+        lib_bytes=$(wc -c < "$lib_webp" | tr -d ' ')
+
+        "$DWEBP" -quiet "$ours_webp" -ppm -o "$ours_ppm" >/dev/null 2>&1
+        "$DWEBP" -quiet "$lib_webp" -ppm -o "$lib_ppm" >/dev/null 2>&1
+
+        local ours_metrics
+        local lib_metrics
+        ours_metrics=$(./build/enc_quality_metrics "$ref_ppm" "$ours_ppm")
+        lib_metrics=$(./build/enc_quality_metrics "$ref_ppm" "$lib_ppm")
+
+        local ours_psnr
+        local ours_ssim
+        local lib_psnr
+        local lib_ssim
+        ours_psnr=$(printf '%s\n' "$ours_metrics" | tr ' ' '\n' | awk -F= '$1=="psnr_rgb"{print $2}')
+        ours_ssim=$(printf '%s\n' "$ours_metrics" | tr ' ' '\n' | awk -F= '$1=="ssim_y"{print $2}')
+        lib_psnr=$(printf '%s\n' "$lib_metrics" | tr ' ' '\n' | awk -F= '$1=="psnr_rgb"{print $2}')
+        lib_ssim=$(printf '%s\n' "$lib_metrics" | tr ' ' '\n' | awk -F= '$1=="ssim_y"{print $2}')
+
+        echo -e "$src_base\t${s}\tours\t${q}\t${ours_bytes}\t${ours_psnr}\t${ours_ssim}"
+        echo -e "$src_base\t${s}\tlib\t${q}\t${lib_bytes}\t${lib_psnr}\t${lib_ssim}"
+    done
+}
+
 {
 	echo -e "image\tsize\tencoder\tq\tbytes\tpsnr_rgb\tssim_y"
 
-	for src in "$@"; do
-		if [ ! -f "$src" ]; then
-			die "missing input: $src"
-		fi
+    if [ "$jobs" -le 1 ]; then
+        for src in "$@"; do
+            for s in $sizes_str; do
+                process_one_image_size "$src" "$s"
+            done
+        done
+    else
+        # Parallel mode: split work by (image,size) job and write per-job TSV fragments.
+        rows_dir="$tmpdir/rows"
+        mkdir -p "$rows_dir"
 
-		src_base=$(basename "$src")
-		src_stem=${src_base%.*}
+        export tmpdir qs_str mode ours_flags have_magick have_sips CWEBP DWEBP rows_dir
+        export -f process_one_image_size die
 
-		for s in $sizes_str; do
-			derived_png="$tmpdir/${src_stem}_${s}.png"
-			ref_ppm="$tmpdir/${src_stem}_${s}.ref.ppm"
+        # Build NUL-separated arg list: src\0size\0src\0size\0...
+        {
+            for src in "$@"; do
+                for s in $sizes_str; do
+                    printf '%s\0%s\0' "$src" "$s"
+                done
+            done
+        } | xargs -0 -n2 -P "$jobs" bash -c '
+            src="$1"; s="$2";
+            id=$(printf "%s|%s" "$src" "$s" | shasum -a 256 | awk "{print \$1}");
+            out="$rows_dir/rows_${id}.tsv";
+            process_one_image_size "$src" "$s" >"$out"
+        ' _
 
-            # Preserve aspect ratio; constrain max dimension to s.
-            if [ "$have_magick" -eq 1 ]; then
-                magick "$src" -auto-orient -resize "${s}x${s}>" -strip "$derived_png"
-            else
-                # macOS fallback (no ImageMagick): sips can resize and convert.
-                # Note: this may not exactly match ImageMagick's auto-orient behavior, but
-                # keeps the harness runnable on a stock macOS setup.
-                sips -Z "$s" -s format png "$src" --out "$derived_png" >/dev/null
-            fi
-			./build/enc_png2ppm "$derived_png" "$ref_ppm" >/dev/null
-
-			for q in $qs_str; do
-				ours_webp="$tmpdir/${src_stem}_${s}_ours_q${q}.webp"
-				ours_ppm="$tmpdir/${src_stem}_${s}_ours_q${q}.ppm"
-				lib_webp="$tmpdir/${src_stem}_${s}_lib_q${q}.webp"
-				lib_ppm="$tmpdir/${src_stem}_${s}_lib_q${q}.ppm"
-
-                # OURS_FLAGS can be used to enable experimental knobs (e.g. --loopfilter).
-                ./encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
-				"$CWEBP" -quiet -q "$q" "$derived_png" -o "$lib_webp" >/dev/null 2>&1
-
-				ours_bytes=$(wc -c < "$ours_webp" | tr -d ' ')
-				lib_bytes=$(wc -c < "$lib_webp" | tr -d ' ')
-
-				"$DWEBP" -quiet "$ours_webp" -ppm -o "$ours_ppm" >/dev/null 2>&1
-				"$DWEBP" -quiet "$lib_webp" -ppm -o "$lib_ppm" >/dev/null 2>&1
-
-				ours_metrics=$(./build/enc_quality_metrics "$ref_ppm" "$ours_ppm")
-				lib_metrics=$(./build/enc_quality_metrics "$ref_ppm" "$lib_ppm")
-
-				ours_psnr=$(printf '%s\n' "$ours_metrics" | tr ' ' '\n' | awk -F= '$1=="psnr_rgb"{print $2}')
-				ours_ssim=$(printf '%s\n' "$ours_metrics" | tr ' ' '\n' | awk -F= '$1=="ssim_y"{print $2}')
-				lib_psnr=$(printf '%s\n' "$lib_metrics" | tr ' ' '\n' | awk -F= '$1=="psnr_rgb"{print $2}')
-				lib_ssim=$(printf '%s\n' "$lib_metrics" | tr ' ' '\n' | awk -F= '$1=="ssim_y"{print $2}')
-
-				echo -e "$src_base\t${s}\tours\t${q}\t${ours_bytes}\t${ours_psnr}\t${ours_ssim}"
-				echo -e "$src_base\t${s}\tlib\t${q}\t${lib_bytes}\t${lib_psnr}\t${lib_ssim}"
-			done
-		done
-	done
+        # Merge results.
+        cat "$rows_dir"/rows_*.tsv
+    fi
 } > "$results_tsv"
 
 python3 - "$results_tsv" <<'PY'

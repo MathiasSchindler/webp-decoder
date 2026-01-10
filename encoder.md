@@ -20,7 +20,9 @@ Overall: ΔPSNR=-4.835 dB  ΔSSIM=-0.02999  bytes_ratio@SSIM=1.697
 ## Start here (TL;DR)
 
 - Default encoder mode is now `--mode bpred-rdo`.
+- Default token probabilities mode is now `--token-probs adaptive`.
 - Use `--mode bpred` when you want the simple baseline/reference path.
+- Use `--token-probs default` when you need the old bitstream behavior (e.g. `encoder_nolibc_ultra` parity).
 
 Note: older log entries below sometimes mention the then-default `--mode bpred`.
 - Quick compare (prints both Overalls):
@@ -245,6 +247,10 @@ Broader (still small) micro-corpus:
 4) If it’s an improvement, consider updating our quality regression baseline:
    - `./scripts/enc_quality_check.sh --update`
 
+Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless you set them):
+- `ENC_ADAPTIVE_PRIOR_STRENGTH=<N>` (default 64)
+- `ENC_ADAPTIVE_MIN_TOTAL=<N>` (default 0; set to 32 to match the old “min_total=32” cutoff)
+
 ## Progress log
 
 - 2026-01-09 baseline (256px QS 40/60/80 MODE=bpred):
@@ -299,7 +305,7 @@ Broader (still small) micro-corpus:
       - `--bpred-rdo-lambda-mul N`
       - `--bpred-rdo-lambda-div N`
    - Design note: we intentionally keep only two intra strategies (`bpred` and experimental `bpred-rdo`) to avoid mode sprawl.
-   - Current defaults (only used when `--mode bpred-rdo`): `mul=8`, `div=1`, `rate=entropy`, `quant=ac-deadzone`, `ac-deadzone=60`.
+   - Current defaults (only used when `--mode bpred-rdo`): `mul=8`, `div=1`, `rate=entropy`, `quant=ac-deadzone`, `ac-deadzone=70`.
    - Files:
       - [src/encoder_main.c](src/encoder_main.c)
       - [src/enc-m08_recon/enc_recon.h](src/enc-m08_recon/enc_recon.h)
@@ -317,6 +323,11 @@ Broader (still small) micro-corpus:
       - Default quant:          Overall: ΔPSNR=-0.622 dB  ΔSSIM=-0.00635  bytes_ratio@SSIM=1.281
       - AC deadzone @60%:       Overall: ΔPSNR=-0.537 dB  ΔSSIM=-0.00613  bytes_ratio@SSIM=1.185
    - Conclusion: @60% is a consistent improvement in bytes_ratio@SSIM without hurting SSIM overall; make this the default for `bpred-rdo`.
+
+   - 2026-01-10 follow-up: retune `--bpred-rdo-ac-deadzone` on commons-hq at larger sizes (SIZES=512 1024, QS 40/60/80, `OURS_FLAGS="--loopfilter"`):
+      - @60%: bytes_ratio@SSIM=1.195
+      - @70%: bytes_ratio@SSIM=1.149
+      - Conclusion: @70% is a consistent size win on photo corpora; update the `bpred-rdo` default.
 
 - 2026-01-10 `bpred-rdo` tuning harness + new photo corpus:
    - Added a small, photo-heavy in-repo corpus: [images/commons-hq/README.md](images/commons-hq/README.md)
@@ -480,4 +491,17 @@ Broader (still small) micro-corpus:
       - `MODE=bpred`:     Overall: ΔPSNR=-9.049 dB  ΔSSIM=-0.04631  bytes_ratio@SSIM=1.722
       - `MODE=bpred-rdo`: Overall: ΔPSNR=-0.718 dB  ΔSSIM=-0.00460  bytes_ratio@SSIM=1.178
 
+- 2026-01-10 Step 5 (token coding efficiency): mb_skip_coeff signaling + token omission (experimental flag)
+   - Added `--mb-skip` (opt-in) in [src/encoder_main.c](src/encoder_main.c).
+   - Encoder now can signal per-macroblock `mb_skip_coeff` in partition 0 and omit coefficient tokens for macroblocks that are fully zero.
+   - Implementation: [src/enc-m07_tokens/enc_vp8_tokens.c](src/enc-m07_tokens/enc_vp8_tokens.c)
+   - Safety: `make test` stays green; default output unchanged unless `--mb-skip` is used.
+   - TODO: benchmark impact on `bytes_ratio@SSIM` alongside `--token-probs adaptive`.
+
 (append new entries here as we improve)
+
+- 2026-01-10 default settings update (commons-hq driven): enable adaptive token probs by default
+   - Change: set encoder default to `--token-probs adaptive` because it consistently improves `bytes_ratio@SSIM` vs libwebp on large photo corpora.
+   - Files:
+      - [src/encoder_main.c](src/encoder_main.c)
+      - [scripts/enc_ultra_parity_check.sh](scripts/enc_ultra_parity_check.sh) (now pins `--token-probs default` for parity)

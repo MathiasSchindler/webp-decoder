@@ -1053,6 +1053,102 @@ int enc_vp8_encode_dc_pred_inloop(const EncYuv420Image* yuv,
 	return 0;
 }
 
+static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
+								  int quality,
+								  const uint8_t coeff_probs_override[4][8][3][11],
+								  uint8_t** y_modes_out,
+								  size_t* y_modes_count_out,
+								  uint8_t** b_modes_out,
+								  size_t* b_modes_count_out,
+								  uint8_t** uv_modes_out,
+								  size_t* uv_modes_count_out,
+								  int16_t** coeffs_out,
+								  size_t* coeffs_count_out,
+								  uint8_t* qindex_out,
+								  const EncBpredRdoTuning* tuning);
+
+int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
+					 int quality,
+					 EncVp8TokenProbsMode token_probs_mode,
+					 uint8_t** y_modes_out,
+					 size_t* y_modes_count_out,
+					 uint8_t** b_modes_out,
+					 size_t* b_modes_count_out,
+					 uint8_t** uv_modes_out,
+					 size_t* uv_modes_count_out,
+					 int16_t** coeffs_out,
+					 size_t* coeffs_count_out,
+					 uint8_t* qindex_out,
+					 const EncBpredRdoTuning* tuning) {
+	int use_entropy_rate = 0;
+	if (tuning) use_entropy_rate = (tuning->rate_mode == 1);
+
+	// Pass 1: always run with default probability tables for entropy-rate estimation.
+	uint8_t* y1 = NULL;
+	size_t y1n = 0;
+	uint8_t* b1 = NULL;
+	size_t b1n = 0;
+	uint8_t* uv1 = NULL;
+	size_t uv1n = 0;
+	int16_t* c1 = NULL;
+	size_t c1n = 0;
+	uint8_t q1 = 0;
+
+	int rc = enc_vp8_encode_bpred_uv_rdo_inloop_pass(yuv,
+	                                               quality,
+	                                               /*coeff_probs_override=*/NULL,
+	                                               &y1,
+	                                               &y1n,
+	                                               &b1,
+	                                               &b1n,
+	                                               &uv1,
+	                                               &uv1n,
+	                                               &c1,
+	                                               &c1n,
+	                                               &q1,
+	                                               tuning);
+	if (rc != 0) return rc;
+
+	// Only refine when entropy-rate estimation is enabled AND token probs are adaptive.
+	if (!use_entropy_rate || token_probs_mode == ENC_VP8_TOKEN_PROBS_DEFAULT) {
+		*y_modes_out = y1;
+		*y_modes_count_out = y1n;
+		*b_modes_out = b1;
+		*b_modes_count_out = b1n;
+		*uv_modes_out = uv1;
+		*uv_modes_count_out = uv1n;
+		*coeffs_out = c1;
+		*coeffs_count_out = c1n;
+		*qindex_out = q1;
+		return 0;
+	}
+
+	// Pass 2: derive a coeff-prob table from pass1, and use it for rate estimation.
+	const uint32_t mb_cols = (yuv->width + 15u) >> 4;
+	const uint32_t mb_rows = (yuv->height + 15u) >> 4;
+	uint8_t probs1[4][8][3][11];
+	enc_vp8_compute_adaptive_coeff_probs(probs1, mb_cols, mb_rows, y1, c1);
+
+	free(c1);
+	free(uv1);
+	free(b1);
+	free(y1);
+
+	return enc_vp8_encode_bpred_uv_rdo_inloop_pass(yuv,
+	                                             quality,
+	                                             probs1,
+	                                             y_modes_out,
+	                                             y_modes_count_out,
+	                                             b_modes_out,
+	                                             b_modes_count_out,
+	                                             uv_modes_out,
+	                                             uv_modes_count_out,
+	                                             coeffs_out,
+	                                             coeffs_count_out,
+	                                             qindex_out,
+	                                             tuning);
+}
+
 
 int enc_vp8_encode_i16x16_uv_sad_inloop(const EncYuv420Image* yuv,
 	                                    int quality,
@@ -1687,8 +1783,9 @@ int enc_vp8_encode_bpred_uv_sad_inloop(const EncYuv420Image* yuv,
 }
 
 
-int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
-							 int quality,
+static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
+								  int quality,
+								  const uint8_t coeff_probs_override[4][8][3][11],
 							 uint8_t** y_modes_out,
 							 size_t* y_modes_count_out,
 							 uint8_t** b_modes_out,
@@ -1864,7 +1961,14 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 						uint8_t left_has = (bx == 0) ? 0 : u_has[by >> 2][(bx >> 2) - 1];
 						uint8_t above_has = (by == 0) ? 0 : u_has[(by >> 2) - 1][bx >> 2];
 						rate += rdo_rate_from_token_bits_q8(
-							enc_vp8_estimate_keyframe_block_token_bits_q8(2, 0, left_has, above_has, ublk_tmp[n], &has));
+							enc_vp8_estimate_keyframe_block_token_bits_q8_probs(
+								2,
+								0,
+								left_has,
+								above_has,
+								ublk_tmp[n],
+								&has,
+								coeff_probs_override));
 						u_has[by >> 2][bx >> 2] = has;
 					} else {
 						rate += rdo_rate_proxy4x4(ublk_tmp[n]);
@@ -1895,7 +1999,14 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 						uint8_t left_has = (bx == 0) ? 0 : v_has[by >> 2][(bx >> 2) - 1];
 						uint8_t above_has = (by == 0) ? 0 : v_has[(by >> 2) - 1][bx >> 2];
 						rate += rdo_rate_from_token_bits_q8(
-							enc_vp8_estimate_keyframe_block_token_bits_q8(2, 0, left_has, above_has, vblk_tmp[n], &has));
+							enc_vp8_estimate_keyframe_block_token_bits_q8_probs(
+								2,
+								0,
+								left_has,
+								above_has,
+								vblk_tmp[n],
+								&has,
+								coeff_probs_override));
 						v_has[by >> 2][bx >> 2] = has;
 					} else {
 						rate += rdo_rate_proxy4x4(vblk_tmp[n]);
@@ -2044,7 +2155,14 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 									enc_vp8_estimate_keyframe_bmode_bits_q8(above_bmode, left_bmode, (int)mode));
 							}
 							rate += rdo_rate_from_token_bits_q8(
-								enc_vp8_estimate_keyframe_block_token_bits_q8(3, 0, left_has_ctx, above_has_ctx, coeff, &has));
+								enc_vp8_estimate_keyframe_block_token_bits_q8_probs(
+									3,
+									0,
+									left_has_ctx,
+									above_has_ctx,
+									coeff,
+									&has,
+									coeff_probs_override));
 						} else {
 							rate += rdo_bmode_signal_cost(mode);
 							rate += rdo_rate_proxy4x4(coeff);

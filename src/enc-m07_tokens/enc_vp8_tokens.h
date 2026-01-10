@@ -192,6 +192,28 @@ uint32_t enc_vp8_estimate_keyframe_block_token_bits_q8(int coeff_plane,
                                                       const int16_t block[16],
                                                       uint8_t* out_has_coeffs);
 
+// Like enc_vp8_estimate_keyframe_block_token_bits_q8(), but uses an explicit
+// coefficient probability table override (e.g. to better match adaptive probs).
+//
+// If coeff_probs_override is NULL, this falls back to the default tables.
+uint32_t enc_vp8_estimate_keyframe_block_token_bits_q8_probs(int coeff_plane,
+                                                            int first_coeff,
+                                                            uint8_t left_has,
+                                                            uint8_t above_has,
+                                                            const int16_t block[16],
+                                                            uint8_t* out_has_coeffs,
+                                                            const uint8_t coeff_probs_override[4][8][3][11]);
+
+// Compute the coefficient probability table we'd emit for a keyframe when using
+// adaptive token probs (based on coefficient branch counts + update heuristics).
+//
+// This is intentionally deterministic.
+void enc_vp8_compute_adaptive_coeff_probs(uint8_t out_probs[4][8][3][11],
+                                         uint32_t mb_cols,
+                                         uint32_t mb_rows,
+                                         const uint8_t* y_modes,
+                                         const int16_t* coeffs);
+
 // Estimate the macroblock token cost (coeffs only) for keyframes, assuming
 // external contexts are 0. Uses the standard VP8 per-block context propagation
 // within the macroblock.
