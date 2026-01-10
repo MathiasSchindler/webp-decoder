@@ -297,7 +297,7 @@ Broader (still small) micro-corpus:
       - `--bpred-rdo-lambda-mul N`
       - `--bpred-rdo-lambda-div N`
    - Design note: we intentionally keep only two intra strategies (`bpred` and experimental `bpred-rdo`) to avoid mode sprawl.
-   - Current defaults (only used when `--mode bpred-rdo`): `mul=6`, `div=1`.
+   - Current defaults (only used when `--mode bpred-rdo`): `mul=8`, `div=1`, `rate=entropy`.
    - Files:
       - [src/encoder_main.c](src/encoder_main.c)
       - [src/enc-m08_recon/enc_recon.h](src/enc-m08_recon/enc_recon.h)
@@ -372,7 +372,7 @@ Broader (still small) micro-corpus:
    - Safety: `make test` stays green because default `--mode bpred` is unchanged.
    - Vs libwebp on the original 3-image set (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`):
       - Baseline `MODE=bpred`: Overall: ΔPSNR=-5.645 dB  ΔSSIM=-0.02894  bytes_ratio@SSIM=1.694
-      - `MODE=bpred-rdo` (default knobs `--bpred-rdo-lambda-mul 6 --bpred-rdo-lambda-div 1`): Overall: ΔPSNR=-3.560 dB  ΔSSIM=-0.01527  bytes_ratio@SSIM=1.422
+      - `MODE=bpred-rdo` (proxy-era defaults at the time: `--bpred-rdo-lambda-mul 6 --bpred-rdo-lambda-div 1`): Overall: ΔPSNR=-3.560 dB  ΔSSIM=-0.01527  bytes_ratio@SSIM=1.422
    - Quick $
      \lambda$ sweep on the same set (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`):
       - `mul=4 div=1`: Overall: ΔPSNR=-3.807 dB  ΔSSIM=-0.01594  bytes_ratio@SSIM=1.523
