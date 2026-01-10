@@ -175,19 +175,6 @@ static inline uint32_t rdo_ymode_signal_cost(uint8_t ymode) {
 	}
 }
 
-static inline int rdo_mbymode_to_bmode(int ymode) {
-	// Match the mapping used by the VP8 keyframe decoder/bitstream:
-	// when a neighbor macroblock is not B_PRED, its subblock modes are implied
-	// by the macroblock mode for purposes of bmode contexts.
-	switch (ymode) {
-		case VP8_I16_DC_PRED: return B_DC_PRED;
-		case VP8_I16_V_PRED: return B_VE_PRED;
-		case VP8_I16_H_PRED: return B_HE_PRED;
-		case VP8_I16_TM_PRED: return B_TM_PRED;
-		default: return B_DC_PRED;
-	}
-}
-
 static inline uint32_t rdo_lambda_from_qindex(uint8_t qindex, uint32_t mul, uint32_t div) {
 	// Conservative lambda schedule. Grows with quantization strength.
 	const uint32_t q = (uint32_t)qindex;
@@ -1601,6 +1588,17 @@ int enc_vp8_encode_bpred_uv_sad_inloop(const EncYuv420Image* yuv,
 	const uint32_t uv_w = (w + 1u) >> 1;
 	const uint32_t uv_h = (h + 1u) >> 1;
 
+	uint32_t ymode_min_bits_q8 = 0xFFFFFFFFu;
+	for (int m = 0; m <= 4; m++) {
+		const uint32_t bits_q8 = enc_vp8_estimate_keyframe_ymode_bits_q8(m);
+		if (bits_q8 < ymode_min_bits_q8) ymode_min_bits_q8 = bits_q8;
+	}
+	uint32_t uv_mode_min_bits_q8 = 0xFFFFFFFFu;
+	for (int m = 0; m <= 3; m++) {
+		const uint32_t bits_q8 = enc_vp8_estimate_keyframe_uv_mode_bits_q8(m);
+		if (bits_q8 < uv_mode_min_bits_q8) uv_mode_min_bits_q8 = bits_q8;
+	}
+
 	uint8_t src4[16];
 	uint8_t pred4[16];
 	uint8_t pred_u8[8 * 8];
@@ -1959,6 +1957,17 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 	const uint32_t uv_w = (w + 1u) >> 1;
 	const uint32_t uv_h = (h + 1u) >> 1;
 
+	uint32_t ymode_min_bits_q8 = 0xFFFFFFFFu;
+	for (int m = 0; m <= 4; m++) {
+		const uint32_t bits_q8 = enc_vp8_estimate_keyframe_ymode_bits_q8(m);
+		if (bits_q8 < ymode_min_bits_q8) ymode_min_bits_q8 = bits_q8;
+	}
+	uint32_t uv_mode_min_bits_q8 = 0xFFFFFFFFu;
+	for (int m = 0; m <= 3; m++) {
+		const uint32_t bits_q8 = enc_vp8_estimate_keyframe_uv_mode_bits_q8(m);
+		if (bits_q8 < uv_mode_min_bits_q8) uv_mode_min_bits_q8 = bits_q8;
+	}
+
 	uint8_t src4[16];
 	uint8_t pred4[16];
 	uint8_t pred_u8[8 * 8];
@@ -2013,9 +2022,11 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 
 				uint32_t sse = 0;
 				uint32_t rate = 0;
-				rate += rdo_uv_mode_signal_cost(mode);
-				if (use_entropy_rate && use_entropy_signal) {
-					rate += rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_uv_mode_bits_q8((int)mode));
+				if (use_entropy_signal) {
+					const uint32_t bits_q8 = enc_vp8_estimate_keyframe_uv_mode_bits_q8((int)mode);
+					rate += rdo_rate_from_mode_bits_q8(bits_q8 - uv_mode_min_bits_q8);
+				} else {
+					rate += rdo_uv_mode_signal_cost(mode);
 				}
 				uint8_t u_has[2][2] = {{0, 0}, {0, 0}};
 				uint8_t v_has[2][2] = {{0, 0}, {0, 0}};
@@ -2244,36 +2255,8 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 						refine_dc_quant4x4(coeff, qf.y1_dc, qf.y1_ac, src4, pred4);
 						uint32_t rate = 0;
 						uint8_t has = 0;
+						rate += rdo_bmode_signal_cost(mode);
 						if (use_entropy_rate) {
-							int left_bmode = 0;
-							int above_bmode = 0;
-							if (sb_c > 0) {
-								left_bmode = (int)cand_b_modes[blk - 1u];
-							} else if (mbx > 0) {
-								const uint32_t mb_left_index = mb_index - 1u;
-								const int left_ymode = (int)y_modes[mb_left_index];
-								if (left_ymode == 4) {
-									left_bmode = (int)b_modes[mb_left_index * 16u + (sb_r * 4u + 3u)];
-								} else {
-									left_bmode = rdo_mbymode_to_bmode(left_ymode);
-								}
-							}
-							if (sb_r > 0) {
-								above_bmode = (int)cand_b_modes[blk - 4u];
-							} else if (mby > 0) {
-								const uint32_t mb_above_index = mb_index - mb_cols;
-								const int above_ymode = (int)y_modes[mb_above_index];
-								if (above_ymode == 4) {
-									above_bmode = (int)b_modes[mb_above_index * 16u + (3u * 4u + sb_c)];
-								} else {
-									above_bmode = rdo_mbymode_to_bmode(above_ymode);
-								}
-							}
-							rate += rdo_bmode_signal_cost(mode);
-							if (use_entropy_signal) {
-								rate += rdo_rate_from_mode_bits_q8(
-									enc_vp8_estimate_keyframe_bmode_bits_q8(above_bmode, left_bmode, (int)mode));
-							}
 							rate += rdo_rate_from_token_bits_q8(
 								enc_vp8_estimate_keyframe_block_token_bits_q8_probs(
 									3,
@@ -2284,7 +2267,6 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 									&has,
 									coeff_probs_override));
 						} else {
-							rate += rdo_bmode_signal_cost(mode);
 							rate += rdo_rate_proxy4x4(coeff);
 							for (int i = 0; i < 16; i++) has |= (uint8_t)(coeff[i] != 0);
 						}
@@ -2325,9 +2307,11 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 					}
 				}
 			}
-			cost_bpred += (uint32_t)((uint64_t)lambda_y * (uint64_t)rdo_ymode_signal_cost(4));
-			if (use_entropy_rate && use_entropy_signal) {
-				cost_bpred += (uint32_t)((uint64_t)lambda_y * (uint64_t)rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_ymode_bits_q8(4)));
+			if (use_entropy_signal) {
+				const uint32_t bits_q8 = enc_vp8_estimate_keyframe_ymode_bits_q8(4);
+				cost_bpred += (uint32_t)((uint64_t)lambda_y * (uint64_t)rdo_rate_from_mode_bits_q8(bits_q8 - ymode_min_bits_q8));
+			} else {
+				cost_bpred += (uint32_t)((uint64_t)lambda_y * (uint64_t)rdo_ymode_signal_cost(4));
 			}
 			for (uint32_t dy = 0; dy < 16; ++dy) {
 				memcpy(cand_recon_y + dy * 16u,
@@ -2394,9 +2378,11 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 
 				// Rate term.
 				uint32_t rate = 0;
-				rate += rdo_ymode_signal_cost((uint8_t)mode);
-				if (use_entropy_rate && use_entropy_signal) {
-					rate += rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_ymode_bits_q8((int)mode));
+				if (use_entropy_signal) {
+					const uint32_t bits_q8 = enc_vp8_estimate_keyframe_ymode_bits_q8((int)mode);
+					rate += rdo_rate_from_mode_bits_q8(bits_q8 - ymode_min_bits_q8);
+				} else {
+					rate += rdo_ymode_signal_cost((uint8_t)mode);
 				}
 				if (use_entropy_rate) {
 					if (!use_dry_run_rate) {
@@ -2501,36 +2487,17 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 					}
 				}
 				uint32_t rate = 0;
-				rate += rdo_ymode_signal_cost(4);
 				if (use_entropy_signal) {
-					rate += rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_ymode_bits_q8(4));
+					const uint32_t bits_q8 = enc_vp8_estimate_keyframe_ymode_bits_q8(4);
+					rate += rdo_rate_from_mode_bits_q8(bits_q8 - ymode_min_bits_q8);
+				} else {
+					rate += rdo_ymode_signal_cost(4);
 				}
 				for (uint32_t rr = 0; rr < 4; rr++) {
 					for (uint32_t cc = 0; cc < 4; cc++) {
 						const uint32_t blk = rr * 4u + cc;
 						const int mode = (int)cand_b_modes[blk];
 						rate += rdo_bmode_signal_cost(mode);
-						if (use_entropy_signal) {
-							int left_bmode = 0;
-							int above_bmode = 0;
-							if (cc > 0) {
-								left_bmode = (int)cand_b_modes[blk - 1u];
-							} else if (mbx > 0) {
-								const uint32_t mb_left_index = (uint32_t)mb_index - 1u;
-								const int left_ymode = (int)y_modes[mb_left_index];
-								if (left_ymode == 4) left_bmode = (int)b_modes[mb_left_index * 16u + (rr * 4u + 3u)];
-								else left_bmode = rdo_mbymode_to_bmode(left_ymode);
-							}
-							if (rr > 0) {
-								above_bmode = (int)cand_b_modes[blk - 4u];
-							} else if (mby > 0) {
-								const uint32_t mb_above_index = (uint32_t)mb_index - mb_cols;
-								const int above_ymode = (int)y_modes[mb_above_index];
-								if (above_ymode == 4) above_bmode = (int)b_modes[mb_above_index * 16u + (3u * 4u + cc)];
-								else above_bmode = rdo_mbymode_to_bmode(above_ymode);
-							}
-							rate += rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_bmode_bits_q8(above_bmode, left_bmode, mode));
-						}
 					}
 				}
 				int16_t mb_coeffs_bp[16 + (16 * 16) + (4 * 16) + (4 * 16)];

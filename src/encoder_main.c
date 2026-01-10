@@ -38,7 +38,7 @@ static void usage(const char* argv0) {
 	        "  --bpred-rdo-qscale-y-dc N  Tune bpred-rdo: scale Y DC quant step percent (default 100)\n"
 	        "  --bpred-rdo-qscale-y-ac N  Tune bpred-rdo: scale Y AC quant step percent (default 100)\n"
 	        "  --bpred-rdo-qscale-uv-dc N  Tune bpred-rdo: scale UV DC quant step percent (default 100)\n"
-	        "  --bpred-rdo-qscale-uv-ac N  Tune bpred-rdo: scale UV AC quant step percent (default 115)\n"
+	        "  --bpred-rdo-qscale-uv-ac N  Tune bpred-rdo: scale UV AC quant step percent (default 130)\n"
 	        "  --bpred-rdo-satd-prune-k N  Tune bpred-rdo: keep best N 4x4 modes by SATD before full eval (default 0=off)\n",
 	        argv0);
 }
@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
 	int bpred_rdo_qscale_y_dc_pct = 100;
 	int bpred_rdo_qscale_y_ac_pct = 100;
 	int bpred_rdo_qscale_uv_dc_pct = 100;
-	int bpred_rdo_qscale_uv_ac_pct = 115;
+	int bpred_rdo_qscale_uv_ac_pct = 130;
 	int bpred_rdo_satd_prune_k = 0;
 
 	int argi = 1;

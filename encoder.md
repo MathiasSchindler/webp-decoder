@@ -22,7 +22,7 @@ Overall: ΔPSNR=-4.835 dB  ΔSSIM=-0.02999  bytes_ratio@SSIM=1.697
 - Default encoder mode is now `--mode bpred-rdo`.
 - Default token probabilities mode is now `--token-probs adaptive`.
 - Experimental alternative: `--token-probs adaptive2`.
-- Current `bpred-rdo` defaults (used by the harness when you only pass `--loopfilter`): `--bpred-rdo-rate dry-run` and `--bpred-rdo-qscale-uv-ac 115` (plus `--bpred-rdo-quant ac-deadzone --bpred-rdo-ac-deadzone 70`).
+- Current `bpred-rdo` defaults (used by the harness when you only pass `--loopfilter`): `--bpred-rdo-rate dry-run` and `--bpred-rdo-qscale-uv-ac 130` (plus `--bpred-rdo-quant ac-deadzone --bpred-rdo-ac-deadzone 70`).
 - Use `--mode bpred` when you want the simple baseline/reference path.
 - Use `--token-probs default` when you need the old bitstream behavior (e.g. `encoder_nolibc_ultra` parity).
 
@@ -57,7 +57,7 @@ Baseline = our current defaults in `bpred-rdo` with loopfilter enabled via the h
 - Current bpred-rdo defaults (when no extra tuning flags are passed):
    - `--bpred-rdo-rate dry-run`
    - `--bpred-rdo-quant ac-deadzone --bpred-rdo-ac-deadzone 70`
-   - `--bpred-rdo-qscale-uv-ac 115` (other qscales default 100)
+   - `--bpred-rdo-qscale-uv-ac 130` (other qscales default 100)
    - `--token-probs adaptive`
 
 Reference = libwebp `cwebp -q Q` (via the harness).
@@ -74,7 +74,7 @@ Reference = libwebp `cwebp -q Q` (via the harness).
 
 These are the commands to run after each change. They print the per-image summary and the `Overall:` line.
 
-Prereq: `LIBWEBP_BIN_DIR` must contain `cwebp` and `dwebp` (e.g. `$HOME/libwebp/examples`).
+Prereq: `LIBWEBP_BIN_DIR` must contain `cwebp` and `dwebp` (e.g. `$HOME/libwebp/examples`, or `/opt/homebrew/bin` if installed via Homebrew on macOS).
 
 Commons-hq (photos):
 
@@ -459,6 +459,25 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
 
 ## Progress log
 
+- 2026-01-10 baseline rerun after promoting `--bpred-rdo-qscale-uv-ac 130` (512/1024px QS 40/60/80, `MODE=bpred-rdo`, `OURS_FLAGS="--loopfilter"`, vs libwebp):
+   - commons-hq (12): Overall: ΔPSNR=-2.175 dB  ΔSSIM=-0.00746  bytes_ratio@SSIM=1.114
+   - micro corpus (3): Overall: ΔPSNR=-1.638 dB  ΔSSIM=-0.00445  bytes_ratio@SSIM=1.074
+
+- 2026-01-10 Experiment 6: token probability adaptation check (`--token-probs adaptive2`, and adaptive prior strength):
+   - Baseline (default `--token-probs adaptive`, same setup as above):
+      - commons-hq: Overall bytes_ratio@SSIM=1.114
+      - micro:      Overall bytes_ratio@SSIM=1.074
+   - `--token-probs adaptive2`:
+      - commons-hq: Overall bytes_ratio@SSIM=1.116 (slightly worse)
+      - micro:      Overall bytes_ratio@SSIM=1.074 (neutral)
+   - `--token-probs adaptive` with `ENC_ADAPTIVE_PRIOR_STRENGTH=32`:
+      - commons-hq: Overall bytes_ratio@SSIM=1.110 (small win)
+      - micro:      Overall bytes_ratio@SSIM=1.074 (neutral)
+   - `--mb-skip` (with default token probs = `adaptive`):
+      - commons-hq: Overall bytes_ratio@SSIM=1.115 (neutral/slightly worse)
+      - micro:      Overall bytes_ratio@SSIM=1.074 (neutral)
+   - Conclusion: keep `adaptive` as default; keep `adaptive2` opt-in. The prior-strength tweak is promising but small; leave it as an opt-in knob unless it holds up on broader corpora.
+
 - 2026-01-10 consolidated baseline + experiments (512/1024px QS 40/60/80 MODE=bpred-rdo; corpora: [images/commons-hq/README.md](images/commons-hq/README.md) + 3-image micro):
    - Baseline at the start of the iteration (`OURS_FLAGS="--loopfilter"`):
       - commons-hq (12): Overall: ΔPSNR=-0.642 dB  ΔSSIM=-0.00769  bytes_ratio@SSIM=1.149
@@ -466,7 +485,7 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
    - Experiment 1 promoted: bpred-rdo rate estimator `--bpred-rdo-rate dry-run` is now the default.
       - commons-hq (12) with `OURS_FLAGS="--loopfilter --bpred-rdo-rate dry-run"`: Overall: ΔPSNR=-0.644 dB  ΔSSIM=-0.00769  bytes_ratio@SSIM=1.144
       - micro corpus (3) with `OURS_FLAGS="--loopfilter --bpred-rdo-rate dry-run"`: Overall: ΔPSNR=-0.445 dB  ΔSSIM=-0.00492  bytes_ratio@SSIM=1.096
-   - Experiment 2 promoted: UV AC quant scaling `--bpred-rdo-qscale-uv-ac 115` is now the default.
+   - Experiment 2 promoted: UV AC quant scaling `--bpred-rdo-qscale-uv-ac 115` was set as the default at the time (superseded by Experiment 5).
       - commons-hq (12) with `OURS_FLAGS="--loopfilter --bpred-rdo-qscale-uv-ac 115"`: Overall: ΔPSNR=-1.395 dB  ΔSSIM=-0.00761  bytes_ratio@SSIM=1.131
       - micro corpus (3) with `OURS_FLAGS="--loopfilter --bpred-rdo-qscale-uv-ac 115"`: Overall: ΔPSNR=-0.997 dB  ΔSSIM=-0.00452  bytes_ratio@SSIM=1.083
    - Experiment 3 implemented but not promoted: `--token-probs adaptive2` (deterministic prior schedule + min sample thresholds)
@@ -509,6 +528,52 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
       - `k=4` regressed micro on this sweep (Overall bytes_ratio@SSIM=1.126); `k=8` looks best so far.
 	  - Wider QS sweep (30..80) on micro (512/1024px, `OURS_FLAGS="--loopfilter --bpred-rdo-satd-prune-k 8"`): Overall bytes_ratio@SSIM=1.154 (baseline `--loopfilter` was 1.156).
 
+- 2026-01-10 Experiment 3: quick lambda scaling sweep (bpred-rdo `--bpred-rdo-lambda-mul`):
+   - Goal: see if a small tweak to lambda scaling improves `bytes_ratio@SSIM` on commons-hq without regressing micro.
+   - Setup: 512/1024px QS 40/60/80, `MODE=bpred-rdo`, `OURS_FLAGS="--loopfilter --bpred-rdo-lambda-mul N"`.
+   - commons-hq (12) Overall `bytes_ratio@SSIM`:
+      - `mul=8`:  1.123
+      - `mul=10`: 1.127 (current default)
+      - `mul=12`: 1.118 (best in this sweep)
+      - `mul=14`: 1.123
+   - micro corpus (3) validation:
+      - `mul=8`:  Overall bytes_ratio@SSIM=1.083
+      - `mul=12`: Overall bytes_ratio@SSIM=1.083
+   - Conclusion: `mul=12` is a very small win on commons-hq and neutral on micro; keep defaults unchanged until we see a larger/clearer improvement on broader corpora.
+
+- 2026-01-10 Experiment 4: mode signaling cost modeling (`--bpred-rdo-signal entropy`):
+   - Motivation: make the RDO “rate” term include a more realistic cost for signaling intra modes (beyond the dry-run coeff token bitcount).
+   - Implementation notes (in [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c)):
+      - Keep the tuned proxy cost for per-subblock 4x4 bpred modes (bmode). Entropy-based per-subblock signaling caused large regressions.
+      - For macroblock y-mode and UV 8x8 mode, `--bpred-rdo-signal entropy` uses the existing bool-coder bit estimators from [src/enc-m07_tokens/enc_vp8_tokens.c](src/enc-m07_tokens/enc_vp8_tokens.c), but as a **relative** cost (delta vs the cheapest symbol in that tree) to avoid adding a constant penalty to all modes.
+   - Results vs libwebp (512/1024px QS 40/60/80, `MODE=bpred-rdo`):
+      - Baseline (`OURS_FLAGS="--loopfilter"`):
+         - commons-hq (12): Overall bytes_ratio@SSIM=1.127
+         - micro corpus (3): Overall bytes_ratio@SSIM=1.083
+      - Entropy signaling (`OURS_FLAGS="--loopfilter --bpred-rdo-signal entropy"`):
+         - commons-hq (12): Overall: ΔPSNR=-1.392 dB  ΔSSIM=-0.00869  bytes_ratio@SSIM=1.140
+         - micro corpus (3): Overall: ΔPSNR=-1.030 dB  ΔSSIM=-0.00463  bytes_ratio@SSIM=1.085
+   - Conclusion: regresses commons-hq slightly and is neutral-to-slightly-worse on micro; keep default `--bpred-rdo-signal proxy`. `make test`: OK.
+
+- 2026-01-10 Experiment 5: quant shaping sweep (chroma AC scale, `--bpred-rdo-qscale-uv-ac`):
+   - Motivation: spend fewer bits on chroma texture when SSIM is dominated by luma, to improve size-at-SSIM without harming overall SSIM.
+   - Setup: 512/1024px QS 40/60/80, `MODE=bpred-rdo`.
+   - Baseline (`OURS_FLAGS="--loopfilter"`):
+      - commons-hq (12): Overall bytes_ratio@SSIM=1.127
+      - micro corpus (3): Overall bytes_ratio@SSIM=1.083
+   - Sweep results (vs libwebp):
+      - `--bpred-rdo-qscale-uv-ac 120`:
+         - commons-hq: Overall bytes_ratio@SSIM=1.124
+         - micro:      Overall bytes_ratio@SSIM=1.080
+      - `--bpred-rdo-qscale-uv-ac 125`:
+         - commons-hq: Overall bytes_ratio@SSIM=1.120
+         - micro:      Overall bytes_ratio@SSIM=1.076
+      - `--bpred-rdo-qscale-uv-ac 130`:
+         - commons-hq: Overall bytes_ratio@SSIM=1.114 (best in this sweep)
+         - micro:      Overall bytes_ratio@SSIM=1.074
+      - `--bpred-rdo-qscale-uv-ac 135` / `140`: slightly worse than `130` on commons-hq in this sweep.
+   - Conclusion: `--bpred-rdo-qscale-uv-ac 130` looks like a small but consistent win on these two corpora; promote it to the new default.
+
 - 2026-01-10 Step 2 (bpred mode selection):
    - Tried switching B_PRED (4x4) and UV (8x8) selection from SAD → pixel-domain SSE in [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c).
    - Result: `make test` caught regressions via `enc_quality_check.sh` (so this is **not** enabled by default).
@@ -544,7 +609,7 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
       - `--bpred-rdo-lambda-mul N`
       - `--bpred-rdo-lambda-div N`
    - Design note: we intentionally keep only two intra strategies (`bpred` and experimental `bpred-rdo`) to avoid mode sprawl.
-   - Current defaults (only used when `--mode bpred-rdo`): `mul=10`, `div=1`, `rate=dry-run`, `quant=ac-deadzone`, `ac-deadzone=70`, `qscale-y-dc=100`, `qscale-y-ac=100`, `qscale-uv-dc=100`, `qscale-uv-ac=115`.
+   - Current defaults (only used when `--mode bpred-rdo`): `mul=10`, `div=1`, `rate=dry-run`, `quant=ac-deadzone`, `ac-deadzone=70`, `qscale-y-dc=100`, `qscale-y-ac=100`, `qscale-uv-dc=100`, `qscale-uv-ac=130`.
    - 2026-01-10 follow-up: retune the default $\lambda$ scaling at larger photo sizes (SIZES=1024, QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`):
       - Commons HQ baseline (mul=8, div=1):  Overall: ΔPSNR=-0.636 dB  ΔSSIM=-0.00716  bytes_ratio@SSIM=1.164
       - Commons HQ tuned (mul=10, div=1):    Overall: ΔPSNR=-0.700 dB  ΔSSIM=-0.00717  bytes_ratio@SSIM=1.163
