@@ -9,7 +9,7 @@
 #include "../src/quality/quality_ssim.h"
 
 static void usage(const char* argv0) {
-	fprintf(stderr, "Usage: %s <ref.ppm> <dist.ppm>\n", argv0);
+	fprintf(stderr, "Usage: %s <ref.ppm> <dist.ppm|->\n", argv0);
 }
 
 static void print_val(const char* key, double v) {
@@ -35,7 +35,13 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "quality_ppm_read_file failed: %s (errno=%d)\n", ref_path, errno);
 		return 1;
 	}
-	if (quality_ppm_read_file(dist_path, &b) != 0) {
+	int dist_ok = 0;
+	if (strcmp(dist_path, "-") == 0) {
+		dist_ok = (quality_ppm_read_stream(stdin, &b) == 0);
+	} else {
+		dist_ok = (quality_ppm_read_file(dist_path, &b) == 0);
+	}
+	if (!dist_ok) {
 		fprintf(stderr, "quality_ppm_read_file failed: %s (errno=%d)\n", dist_path, errno);
 		quality_ppm_free(&a);
 		return 1;

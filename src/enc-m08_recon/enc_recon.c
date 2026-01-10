@@ -308,22 +308,18 @@ static void bpred4x4(uint8_t out[16], const uint8_t* A, const uint8_t* L, Vp8BMo
 			break;
 		}
 		case B_HU_PRED: {
-			B[0][0] = avg2_u8(E[0], E[1]);
-			B[0][1] = avg3_u8(E[0], E[1], E[2]);
-			B[0][2] = avg2_u8(E[1], E[2]);
-			B[0][3] = avg3_u8(E[1], E[2], E[3]);
-			B[1][0] = avg3_u8(E[1], E[2], E[3]);
-			B[1][1] = avg2_u8(E[2], E[3]);
-			B[1][2] = avg3_u8(E[2], E[3], E[4]);
-			B[1][3] = avg2_u8(E[3], E[4]);
-			B[2][0] = avg2_u8(E[3], E[4]);
-			B[2][1] = avg3_u8(E[3], E[4], E[5]);
-			B[2][2] = avg2_u8(E[4], E[5]);
-			B[2][3] = avg3_u8(E[4], E[5], E[6]);
-			B[3][0] = avg3_u8(E[4], E[5], E[6]);
-			B[3][1] = avg2_u8(E[5], E[6]);
-			B[3][2] = avg3_u8(E[5], E[6], E[7]);
-			B[3][3] = avg2_u8(E[6], E[7]);
+			// Match RFC 6386 reference (and our decoder's subblock_predict).
+			B[0][0] = avg2_u8(L[0], L[1]);
+			B[0][1] = avg3_u8(L[0], L[1], L[2]);
+			B[0][2] = B[1][0] = avg2_u8(L[1], L[2]);
+			B[0][3] = B[1][1] = avg3_u8(L[1], L[2], L[3]);
+			B[1][2] = B[2][0] = avg2_u8(L[2], L[3]);
+			B[1][3] = B[2][1] = avg3_u8(L[2], L[3], L[3]);
+			for (int r = 2; r < 4; r++) {
+				for (int c = 2; c < 4; c++) B[r][c] = L[3];
+			}
+			B[3][0] = L[3];
+			B[3][1] = L[3];
 			break;
 		}
 		default: {

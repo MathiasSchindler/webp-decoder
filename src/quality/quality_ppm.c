@@ -42,53 +42,44 @@ static int read_token(FILE* f, char* buf, size_t buf_len) {
 	return (i > 0) ? 0 : -1;
 }
 
-int quality_ppm_read_file(const char* path, QualityPpmImage* out_img) {
+int quality_ppm_read_stream(FILE* f, QualityPpmImage* out_img) {
 	if (!out_img) return -1;
 	memset(out_img, 0, sizeof(*out_img));
-
-	FILE* f = fopen(path, "rb");
 	if (!f) return -1;
 
 	char tok[64];
 	if (read_token(f, tok, sizeof(tok)) != 0 || strcmp(tok, "P6") != 0) {
-		fclose(f);
 		errno = EINVAL;
 		return -1;
 	}
 
 	if (read_token(f, tok, sizeof(tok)) != 0) {
-		fclose(f);
 		errno = EINVAL;
 		return -1;
 	}
 	char* end = NULL;
 	unsigned long w = strtoul(tok, &end, 10);
 	if (!end || *end != '\0' || w == 0 || w > UINT32_MAX) {
-		fclose(f);
 		errno = EINVAL;
 		return -1;
 	}
 
 	if (read_token(f, tok, sizeof(tok)) != 0) {
-		fclose(f);
 		errno = EINVAL;
 		return -1;
 	}
 	unsigned long h = strtoul(tok, &end, 10);
 	if (!end || *end != '\0' || h == 0 || h > UINT32_MAX) {
-		fclose(f);
 		errno = EINVAL;
 		return -1;
 	}
 
 	if (read_token(f, tok, sizeof(tok)) != 0) {
-		fclose(f);
 		errno = EINVAL;
 		return -1;
 	}
 	unsigned long maxv = strtoul(tok, &end, 10);
 	if (!end || *end != '\0' || maxv != 255) {
-		fclose(f);
 		errno = EINVAL;
 		return -1;
 	}
@@ -99,7 +90,6 @@ int quality_ppm_read_file(const char* path, QualityPpmImage* out_img) {
 	*/
 	int c = fgetc(f);
 	if (c == EOF || !is_ws(c)) {
-		fclose(f);
 		errno = EINVAL;
 		return -1;
 	}
@@ -107,7 +97,6 @@ int quality_ppm_read_file(const char* path, QualityPpmImage* out_img) {
 	uint64_t npx = (uint64_t)(uint32_t)w * (uint64_t)(uint32_t)h;
 	uint64_t nbytes64 = npx * 3u;
 	if (nbytes64 > (uint64_t)SIZE_MAX) {
-		fclose(f);
 		errno = ENOMEM;
 		return -1;
 	}
@@ -115,22 +104,31 @@ int quality_ppm_read_file(const char* path, QualityPpmImage* out_img) {
 
 	uint8_t* rgb = (uint8_t*)malloc(nbytes);
 	if (!rgb) {
-		fclose(f);
 		return -1;
 	}
 
 	if (fread(rgb, 1, nbytes, f) != nbytes) {
 		free(rgb);
-		fclose(f);
 		errno = EINVAL;
 		return -1;
 	}
 
-	fclose(f);
 	out_img->width = (uint32_t)w;
 	out_img->height = (uint32_t)h;
 	out_img->rgb = rgb;
 	return 0;
+}
+
+int quality_ppm_read_file(const char* path, QualityPpmImage* out_img) {
+	if (!out_img) return -1;
+	memset(out_img, 0, sizeof(*out_img));
+
+	FILE* f = fopen(path, "rb");
+	if (!f) return -1;
+
+	int rc = quality_ppm_read_stream(f, out_img);
+	fclose(f);
+	return rc;
 }
 
 void quality_ppm_free(QualityPpmImage* img) {

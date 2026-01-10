@@ -65,6 +65,25 @@ static void print_coeff_stats(const Vp8CoeffStats* cs) {
 	fmt_write_str(1, "  Token overread b: ");
 	fmt_write_u32(1, cs->token_overread_bytes);
 	fmt_write_nl(1);
+	if (cs->token_overread && cs->token_overread_mb_index != 0xFFFFFFFFu) {
+		fmt_write_str(1, "  Token overread @: MB ");
+		fmt_write_u32(1, cs->token_overread_mb_index);
+		fmt_write_str(1, " plane=");
+		switch (cs->token_overread_plane) {
+			case 0: fmt_write_str(1, "Y"); break;
+			case 1: fmt_write_str(1, "Y2"); break;
+			case 2: fmt_write_str(1, "U"); break;
+			case 3: fmt_write_str(1, "V"); break;
+			default: fmt_write_str(1, "?"); break;
+		}
+		fmt_write_str(1, " blk=");
+		fmt_write_u32(1, cs->token_overread_block_index);
+		fmt_write_str(1, " i=");
+		fmt_write_u32(1, cs->token_overread_coeff_i);
+		fmt_write_str(1, " stage=");
+		fmt_write_u32(1, cs->token_overread_stage);
+		fmt_write_nl(1);
+	}
 }
 
 #endif

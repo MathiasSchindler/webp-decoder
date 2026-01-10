@@ -18,6 +18,14 @@ typedef struct {
 	uint8_t token_overread;
 	uint32_t token_overread_bytes;
 
+	// Debug: location of first token-partition overread (if any).
+	// Filled with 0xFFFFFFFF when not applicable/unknown.
+	uint32_t token_overread_mb_index;
+	uint32_t token_overread_plane;       // 0=Y, 1=Y2, 2=U, 3=V
+	uint32_t token_overread_block_index; // within the plane (Y:0..15, U/V:0..3, Y2:0)
+	uint32_t token_overread_coeff_i;     // coefficient index in scan order (0..15)
+	uint32_t token_overread_stage;       // 0=token, 1=extra, 2=sign
+
 	uint32_t mb_skip_coeff;
 	uint32_t mb_b_pred;
 

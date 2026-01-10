@@ -256,9 +256,35 @@ static int read_coeff_token(BoolDecoder* d, const uint8_t probs[num_dct_tokens -
 	return vp8_treed_read(d, coeff_tree, probs, start_node);
 }
 
-static int decode_block(BoolDecoder* d, uint8_t coeff_probs_plane[8][3][num_dct_tokens - 1], int first_coeff,
-						uint8_t left_has, uint8_t above_has, uint32_t* io_nonzero_coeffs, uint32_t* io_eob_tokens,
-						uint32_t* io_abs_max, int16_t out_block[16]) {
+static void record_token_overread_loc(Vp8CoeffStats* out,
+								 uint32_t mb_index,
+								 uint32_t plane,
+								 uint32_t block_index,
+								 uint32_t coeff_i,
+								 uint32_t stage) {
+	if (!out) return;
+	// Only record the first occurrence.
+	if (out->token_overread_mb_index != 0xFFFFFFFFu) return;
+	out->token_overread_mb_index = mb_index;
+	out->token_overread_plane = plane;
+	out->token_overread_block_index = block_index;
+	out->token_overread_coeff_i = coeff_i;
+	out->token_overread_stage = stage;
+}
+
+static int decode_block(BoolDecoder* d,
+					uint8_t coeff_probs_plane[8][3][num_dct_tokens - 1],
+					int first_coeff,
+					uint8_t left_has,
+					uint8_t above_has,
+					uint32_t* io_nonzero_coeffs,
+					uint32_t* io_eob_tokens,
+					uint32_t* io_abs_max,
+					int16_t out_block[16],
+					Vp8CoeffStats* out_stats,
+					uint32_t mb_index,
+					uint32_t plane,
+					uint32_t block_index) {
 	for (int i = 0; i < 16; i++) out_block[i] = 0;
 
 	int ctx3 = (int)left_has + (int)above_has;
@@ -270,6 +296,9 @@ static int decode_block(BoolDecoder* d, uint8_t coeff_probs_plane[8][3][num_dct_
 		const uint8_t* probs = coeff_probs_plane[band][ctx3];
 
 		int token = read_coeff_token(d, probs, prev_token_was_zero);
+		if (bool_decoder_overread(d)) {
+			record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/0);
+		}
 		if (token == dct_eob) {
 			if (io_eob_tokens) (*io_eob_tokens)++;
 			break;
@@ -293,11 +322,17 @@ static int decode_block(BoolDecoder* d, uint8_t coeff_probs_plane[8][3][num_dct_
 				case dct_cat6: extra = vp8_read_extra(d, Pcat6); break;
 				default: extra = 0; break;
 			}
+			if (bool_decoder_overread(d)) {
+				record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/1);
+			}
 			abs_value = cat_base[cat] + (int)extra;
 		}
 
 		if (abs_value != 0) {
 			int sign = bool_decode_bool(d, 128);
+			if (bool_decoder_overread(d)) {
+				record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/2);
+			}
 			int v = sign ? -abs_value : abs_value;
 			out_block[zigzag[i]] = (int16_t)v;
 			current_has_coeffs = 1;
@@ -389,8 +424,19 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 				uint8_t above_has = above_y2[mb_c];
 				int has = 0;
 				if (!info.skip_coeff) {
-					has = decode_block(&d, g_coeff_probs[1], 0, left_has, above_has, &out->coeff_nonzero_total,
-					                 &out->coeff_eob_tokens, &out->coeff_abs_max, block);
+					has = decode_block(&d,
+					                 g_coeff_probs[1],
+					                 0,
+					                 left_has,
+					                 above_has,
+					                 &out->coeff_nonzero_total,
+					                 &out->coeff_eob_tokens,
+					                 &out->coeff_abs_max,
+					                 block,
+					                 out,
+					                 mb_index,
+					                 /*plane=*/1,
+					                 /*block_index=*/0);
 					dst = frame ? (frame->coeff_y2 + (size_t)mb_index * 16u) : NULL;
 					for (int i = 0; i < 16; i++) {
 						*io_hash = fnv1a64_i32(*io_hash, block[i]);
@@ -428,8 +474,19 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					uint8_t above_has = (rr == 0) ? above_y[mb_c * 4 + cc] : y_has[rr - 1][cc];
 					int has = 0;
 					if (!info.skip_coeff) {
-						has = decode_block(&d, g_coeff_probs[y_plane], first_coeff, left_has, above_has,
-						                 &out->coeff_nonzero_total, &out->coeff_eob_tokens, &out->coeff_abs_max, block);
+						has = decode_block(&d,
+					                 g_coeff_probs[y_plane],
+					                 first_coeff,
+					                 left_has,
+					                 above_has,
+					                 &out->coeff_nonzero_total,
+					                 &out->coeff_eob_tokens,
+					                 &out->coeff_abs_max,
+					                 block,
+					                 out,
+					                 mb_index,
+					                 /*plane=*/0,
+					                 /*block_index=*/(uint32_t)(rr * 4 + cc));
 						size_t blk = (size_t)mb_index * 16u + (size_t)(rr * 4 + cc);
 						dst = frame ? (frame->coeff_y + blk * 16u) : NULL;
 						for (int i = 0; i < 16; i++) {
@@ -465,8 +522,19 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					uint8_t above_has = (rr == 0) ? above_u[mb_c * 2 + cc] : u_has[rr - 1][cc];
 					int has = 0;
 					if (!info.skip_coeff) {
-						has = decode_block(&d, g_coeff_probs[2], 0, left_has, above_has, &out->coeff_nonzero_total,
-						                 &out->coeff_eob_tokens, &out->coeff_abs_max, block);
+						has = decode_block(&d,
+					                 g_coeff_probs[2],
+					                 0,
+					                 left_has,
+					                 above_has,
+					                 &out->coeff_nonzero_total,
+					                 &out->coeff_eob_tokens,
+					                 &out->coeff_abs_max,
+					                 block,
+					                 out,
+					                 mb_index,
+					                 /*plane=*/2,
+					                 /*block_index=*/(uint32_t)(rr * 2 + cc));
 						size_t blk = (size_t)mb_index * 4u + (size_t)(rr * 2 + cc);
 						dst = frame ? (frame->coeff_u + blk * 16u) : NULL;
 						for (int i = 0; i < 16; i++) {
@@ -498,8 +566,19 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					uint8_t above_has = (rr == 0) ? above_v[mb_c * 2 + cc] : v_has[rr - 1][cc];
 					int has = 0;
 					if (!info.skip_coeff) {
-						has = decode_block(&d, g_coeff_probs[2], 0, left_has, above_has, &out->coeff_nonzero_total,
-						                 &out->coeff_eob_tokens, &out->coeff_abs_max, block);
+						has = decode_block(&d,
+					                 g_coeff_probs[2],
+					                 0,
+					                 left_has,
+					                 above_has,
+					                 &out->coeff_nonzero_total,
+					                 &out->coeff_eob_tokens,
+					                 &out->coeff_abs_max,
+					                 block,
+					                 out,
+					                 mb_index,
+					                 /*plane=*/3,
+					                 /*block_index=*/(uint32_t)(rr * 2 + cc));
 						size_t blk = (size_t)mb_index * 4u + (size_t)(rr * 2 + cc);
 						dst = frame ? (frame->coeff_v + blk * 16u) : NULL;
 						for (int i = 0; i < 16; i++) {
@@ -614,6 +693,11 @@ int vp8_decode_decoded_frame(ByteSpan vp8_payload, Vp8DecodedFrame* out) {
 	out->stats.mb_cols = mb_cols;
 	out->stats.mb_rows = mb_rows;
 	out->stats.mb_total = mb_total;
+	out->stats.token_overread_mb_index = 0xFFFFFFFFu;
+	out->stats.token_overread_plane = 0xFFFFFFFFu;
+	out->stats.token_overread_block_index = 0xFFFFFFFFu;
+	out->stats.token_overread_coeff_i = 0xFFFFFFFFu;
+	out->stats.token_overread_stage = 0xFFFFFFFFu;
 
 	// Guard against overflow/DoS in allocations.
 	if (mb_cols == 0 || mb_rows == 0) {

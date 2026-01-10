@@ -512,6 +512,16 @@ uint32_t enc_vp8_estimate_keyframe_mb_token_bits_q8(int ymode, const int16_t* mb
 }
 
 static dct_token token_for_abs(int abs_value, uint32_t* out_extra, const uint8_t** out_extraprobs) {
+	// VP8 token categories cap the representable magnitude.
+	// cat6 uses 11 extra bits with base 67 => max abs_value = 67 + (2^11 - 1).
+	// If we don't clamp, values larger than this silently lose high bits when
+	// writing the 11-bit extra payload, corrupting coefficients on decode.
+	{
+		const int cat6_base = 67;
+		const int cat6_extra_max = (1 << 11) - 1;
+		const int abs_max = cat6_base + cat6_extra_max;
+		if (abs_value > abs_max) abs_value = abs_max;
+	}
 	*out_extra = 0;
 	*out_extraprobs = NULL;
 	if (abs_value <= 0) return DCT_0;
@@ -940,10 +950,16 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 			const size_t mb_index = (size_t)mb_r * (size_t)mb_cols + (size_t)mb_c;
 			const int16_t* mb = coeffs + mb_index * coeffs_per_mb;
 
+			int ymode = y_modes ? (int)y_modes[mb_index] : 0;
+			int has_y2 = (ymode != (int)VP8_B_PRED);
+
 			if (mb_skip_coeff && mb_skip_coeff[mb_index]) {
-					// Skipped macroblocks have no coefficients; reset contexts as if all blocks were all-zero.
-					above_y2[mb_c] = 0;
-					left_y2_flag = 0;
+					// Skipped macroblocks have no coded residual; reset per-block contexts to all-zero.
+					// For Y2, only reset when this MB would have a Y2 block (i.e. not B_PRED).
+					if (has_y2) {
+						above_y2[mb_c] = 0;
+						left_y2_flag = 0;
+					}
 					for (int cc = 0; cc < 4; cc++) above_y[mb_c * 4u + (uint32_t)cc] = 0;
 					for (int rr = 0; rr < 4; rr++) left_y[rr] = 0;
 					for (int cc = 0; cc < 2; cc++) above_u[mb_c * 2u + (uint32_t)cc] = 0;
@@ -953,9 +969,6 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 					continue;
 			}
 
-			int ymode = y_modes ? (int)y_modes[mb_index] : 0;
-			int has_y2 = (ymode != (int)VP8_B_PRED);
-
 			// Y2
 			if (has_y2) {
 				uint8_t left_has = left_y2_flag;
@@ -964,9 +977,9 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 				above_y2[mb_c] = (uint8_t)has;
 				left_y2_flag = (uint8_t)has;
 			} else {
-				// With no Y2 coded, reset contexts as if Y2 were all-zero.
-				above_y2[mb_c] = 0;
-				left_y2_flag = 0;
+				// With no Y2 coded (B_PRED), do not update Y2 contexts.
+				// Per RFC 6386, the Y2 neighbor context for a later MB with Y2 is taken from the
+				// most recent MB in the same row/column that had a Y2 block.
 			}
 
 			// Y blocks.
@@ -1074,8 +1087,7 @@ void enc_vp8_compute_adaptive_coeff_probs(uint8_t out_probs[4][8][3][num_dct_tok
 				above_y2[mb_c] = (uint8_t)has;
 				left_y2_flag = (uint8_t)has;
 			} else {
-				above_y2[mb_c] = 0;
-				left_y2_flag = 0;
+				// No Y2 coded (B_PRED): keep Y2 contexts unchanged.
 			}
 
 			// Y blocks.
@@ -1265,8 +1277,7 @@ void enc_vp8_compute_adaptive_coeff_probs2(uint8_t out_probs[4][8][3][num_dct_to
 				above_y2[mb_c] = (uint8_t)has;
 				left_y2_flag = (uint8_t)has;
 			} else {
-				above_y2[mb_c] = 0;
-				left_y2_flag = 0;
+				// No Y2 coded (B_PRED): keep Y2 contexts unchanged.
 			}
 
 			// Y blocks.
