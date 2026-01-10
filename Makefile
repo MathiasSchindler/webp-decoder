@@ -1,5 +1,23 @@
 CC ?= cc
 
+# Default to parallel builds using all available CPU cores.
+# Users can override with `make -jN` or by setting `JOBS=`.
+JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+ifeq (,$(filter -j%,$(MAKEFLAGS)))
+MAKEFLAGS += -j$(JOBS)
+endif
+
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
+# The syscall-only (nolibc) builds are Linux x86_64 specific.
+NOLIBC_SUPPORTED := 0
+ifeq ($(UNAME_S),Linux)
+ifeq ($(UNAME_M),x86_64)
+NOLIBC_SUPPORTED := 1
+endif
+endif
+
 BIN := decoder
 ENCODER := encoder
 BUILD_DIR := build
@@ -67,8 +85,13 @@ LDFLAGS_COMMON := -flto
 
 all: $(BIN) $(ENCODER)
 
-test: all
-	./scripts/run_all.sh
+test: all ultra \
+	enc_pngdump enc_png2ppm enc_quality_metrics enc_webpwrap enc_boolselftest \
+	enc_m03_miniframe enc_m04_miniframe enc_m05_yuvdump enc_m06_intradump \
+	enc_m07_quantdump enc_m08_tokentest enc_m09_dcenc enc_m09_modeenc enc_m09_bpredenc
+	# Run gates without inheriting MAKEFLAGS/MAKELEVEL to avoid jobserver warnings
+	# from scripts that invoke `make` internally.
+	env -u MAKEFLAGS -u MAKELEVEL TEST_JOBS=$(JOBS) ./scripts/run_all.sh
 
 # Encoder Milestone 0 helper: tiny PNG reader driver
 enc_pngdump: $(ENC_PNGDUMP_BIN)
@@ -99,15 +122,27 @@ enc_m09_modeenc: $(ENC_M09_MODEENC_BIN)
 
 enc_m09_bpredenc: $(ENC_M09_BPREDENC_BIN)
 
+ifeq ($(NOLIBC_SUPPORTED),1)
 nolibc: $(NOLIBC_BIN)
 
 nolibc_tiny: $(NOLIBC_TINY_BIN)
 
 nolibc_ultra: $(NOLIBC_ULTRA_BIN)
+else
+nolibc nolibc_tiny nolibc_ultra:
+	@echo "error: nolibc targets are supported only on Linux x86_64" >&2
+	@echo "hint: use 'make' (normal libc build) or 'make ultra' (portable ultra build)" >&2
+	@exit 2
+endif
 
 # Friendly alias: `make ultra` builds the tiny PNG-by-default syscall-only binary,
 # and also builds both the normal (libc) encoder and a nolibc ultra encoder.
+ifeq ($(NOLIBC_SUPPORTED),1)
 ultra: nolibc_ultra $(ENC_NOLIBC_ULTRA_BIN) $(ENCODER)
+else
+.PHONY: ultra_portable
+ultra: ultra_portable $(ENCODER)
+endif
 
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS_COMMON) -o $@ $(OBJ) $(LDFLAGS_COMMON)
@@ -422,6 +457,7 @@ NOLIBC_ULTRA_SRC := \
 NOLIBC_ULTRA_OBJ := $(patsubst src/%.c,$(NOLIBC_ULTRA_BUILD_DIR)/%.o,$(filter %.c,$(NOLIBC_ULTRA_SRC))) \
 	$(NOLIBC_ULTRA_BUILD_DIR)/nolibc/start.o
 
+ifeq ($(NOLIBC_SUPPORTED),1)
 $(NOLIBC_ULTRA_BIN): $(NOLIBC_ULTRA_OBJ)
 	$(CC) $(NOLIBC_LTO) -o $@ $(NOLIBC_ULTRA_OBJ) $(NOLIBC_LDFLAGS) -lgcc
 
@@ -432,6 +468,14 @@ $(NOLIBC_ULTRA_BUILD_DIR)/%.o: src/%.c
 $(NOLIBC_ULTRA_BUILD_DIR)/nolibc/start.o: src/nolibc/start.S
 	@mkdir -p $(dir $@)
 	$(CC) -c $< -o $@
+else
+ULTRA_PORTABLE_DECODER_SRC := $(filter-out src/nolibc/syscall_glue.c,$(NOLIBC_ULTRA_SRC))
+
+ultra_portable: $(NOLIBC_ULTRA_BIN) $(ENC_NOLIBC_ULTRA_BIN)
+
+$(NOLIBC_ULTRA_BIN): $(ULTRA_PORTABLE_DECODER_SRC)
+	$(CC) $(CFLAGS_COMMON) -Os -o $@ $(ULTRA_PORTABLE_DECODER_SRC) $(LDFLAGS_COMMON)
+endif
 
 $(NOLIBC_TINY_BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(dir $@)
@@ -479,6 +523,7 @@ ENC_NOLIBC_ULTRA_OBJ := $(patsubst src/%.c,$(ENC_NOLIBC_ULTRA_BUILD_DIR)/%.o,$(f
 
 ENC_NOLIBC_ULTRA_CFLAGS := $(NOLIBC_CFLAGS) -DENCODER_ULTRA -fno-inline $(ULTRA_EXTRA_CFLAGS)
 
+ifeq ($(NOLIBC_SUPPORTED),1)
 $(ENC_NOLIBC_ULTRA_BIN): $(ENC_NOLIBC_ULTRA_OBJ)
 	$(CC) $(NOLIBC_LTO) -o $@ $(ENC_NOLIBC_ULTRA_OBJ) $(NOLIBC_LDFLAGS) -lgcc
 
@@ -489,3 +534,9 @@ $(ENC_NOLIBC_ULTRA_BUILD_DIR)/%.o: src/%.c
 $(ENC_NOLIBC_ULTRA_BUILD_DIR)/nolibc/start.o: src/nolibc/start.S
 	@mkdir -p $(dir $@)
 	$(CC) -c $< -o $@
+else
+ULTRA_PORTABLE_ENCODER_SRC := $(filter-out src/nolibc/syscall_glue.c,$(ENC_NOLIBC_ULTRA_SRC))
+
+$(ENC_NOLIBC_ULTRA_BIN): $(ULTRA_PORTABLE_ENCODER_SRC)
+	$(CC) $(CFLAGS_COMMON) -Os -o $@ $(ULTRA_PORTABLE_ENCODER_SRC) $(LDFLAGS_COMMON)
+endif

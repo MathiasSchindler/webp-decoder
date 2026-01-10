@@ -74,7 +74,9 @@ This produces `decoder_nolibc_tiny` (supports `-info`, `-yuv`, `-yuvf`).
 
 ### Ultra (tiny, syscall-only)
 
-On Linux x86_64 you can also build a very small, static, syscall-only binary that writes PNG by default:
+On Linux x86_64 you can also build a very small, static, syscall-only binary that writes PNG by default.
+
+On macOS (or other non-Linux platforms), `make ultra` builds a **portable libc-based** ultra binary with the same CLI/output behavior (but it is not syscall-only/static).
 
 ```sh
 make ultra
