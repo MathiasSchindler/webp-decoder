@@ -39,6 +39,67 @@ typedef enum {
 static inline uint8_t avg3_u8(uint8_t x, uint8_t y, uint8_t z) { return (uint8_t)((x + y + y + z + 2u) >> 2); }
 static inline uint8_t avg2_u8(uint8_t x, uint8_t y) { return (uint8_t)((x + y + 1u) >> 1); }
 
+static inline uint32_t rdo_coeff_mag_cost(int16_t c) {
+	// Very cheap magnitude proxy: 1 + floor(log2(|c|)) for |c|>0, capped.
+	// This tends to correlate better with actual token cost than nnz alone.
+	int32_t v = (int32_t)c;
+	uint32_t a = (v < 0) ? (uint32_t)(-v) : (uint32_t)v;
+	if (a == 0) return 0;
+	uint32_t cost = 1;
+	if (a >= 2) cost += 1;
+	if (a >= 4) cost += 1;
+	if (a >= 8) cost += 1;
+	if (a >= 16) cost += 1;
+	if (a >= 32) cost += 1;
+	return cost;
+}
+
+static inline uint32_t rdo_rate_proxy4x4(const int16_t coeff[16]) {
+	uint32_t rate = 0;
+	// DC tends to be more expensive/important.
+	if (coeff[0] != 0) rate += 1;
+	rate += rdo_coeff_mag_cost(coeff[0]);
+	for (int i = 1; i < 16; ++i) {
+		rate += rdo_coeff_mag_cost(coeff[i]);
+	}
+	return rate;
+}
+
+static inline uint32_t rdo_bmode_signal_cost(Vp8BMode mode) {
+	// Tiny fixed cost for signaling the 4x4 intra mode.
+	// This is a proxy for the entropy-coded mode tree cost.
+	// Kept deliberately small to avoid overpowering coeff magnitude costs.
+	switch (mode) {
+		case B_DC_PRED: return 0;
+		case B_TM_PRED: return 1;
+		case B_VE_PRED: return 1;
+		case B_HE_PRED: return 1;
+		default: return 2;
+	}
+}
+
+static inline uint32_t rdo_uv_mode_signal_cost(Vp8I16Mode mode) {
+	// UV intra mode (same enum as I16 modes). Also entropy-coded in VP8.
+	switch (mode) {
+		case VP8_I16_DC_PRED: return 0;
+		case VP8_I16_V_PRED: return 1;
+		case VP8_I16_H_PRED: return 1;
+		case VP8_I16_TM_PRED: return 1;
+		default: return 1;
+	}
+}
+
+static inline uint32_t rdo_lambda_from_qindex(uint8_t qindex, uint32_t mul, uint32_t div) {
+	// Conservative lambda schedule. Grows with quantization strength.
+	const uint32_t q = (uint32_t)qindex;
+	uint32_t base = (q * q) / 24u + 4u;
+	if (div == 0) div = 1;
+	uint64_t scaled = (uint64_t)base * (uint64_t)mul;
+	scaled = (scaled + (uint64_t)(div / 2u)) / (uint64_t)div;
+	if (scaled > 0xFFFFFFFFull) return 0xFFFFFFFFu;
+	return (uint32_t)scaled;
+}
+
 // 4x4 subblock predictor for B_PRED (keyframe), matching RFC 6386 reference code.
 // A points to the above row with A[-1] valid (top-left), and A[0..7] valid.
 static void bpred4x4(uint8_t out[16], const uint8_t* A, const uint8_t* L, Vp8BMode mode) {
@@ -437,6 +498,7 @@ static void fill4x4_const(uint8_t out4x4[16], uint8_t v) {
 }
 
 static void dequant4x4_inplace(int16_t coeffs[16], int dc_step, int ac_step);
+static void inv_wht4x4(const int16_t* input, int16_t* output);
 static void inv_dct4x4(const int16_t* input, int16_t* output);
 
 static uint32_t sad4x4_u8(const uint8_t a[16], const uint8_t b[16]) {
@@ -448,18 +510,18 @@ static uint32_t sad4x4_u8(const uint8_t a[16], const uint8_t b[16]) {
 	return sad;
 }
 
-static uint32_t sad8x8_plane_src_vs_pred(const uint8_t* plane,
-				     uint32_t stride,
-				     uint32_t w,
-				     uint32_t h,
-				     uint32_t x0,
-				     uint32_t y0,
-				     const uint8_t pred8[8 * 8]) {
+static uint32_t sad8x8_plane_src_vs_pred(const uint8_t* src,
+	                                     uint32_t src_stride,
+	                                     uint32_t w,
+	                                     uint32_t h,
+	                                     uint32_t x0,
+	                                     uint32_t y0,
+	                                     const uint8_t pred[8 * 8]) {
 	uint32_t sad = 0;
 	for (uint32_t dy = 0; dy < 8; dy++) {
 		for (uint32_t dx = 0; dx < 8; dx++) {
-			uint8_t s = load_clamped(plane, stride, w, h, x0 + dx, y0 + dy);
-			uint8_t p = pred8[dy * 8u + dx];
+			uint8_t s = load_clamped(src, src_stride, w, h, x0 + dx, y0 + dy);
+			uint8_t p = pred[(dy * 8u) + dx];
 			int d = (int)s - (int)p;
 			sad += (uint32_t)(d < 0 ? -d : d);
 		}
@@ -467,13 +529,13 @@ static uint32_t sad8x8_plane_src_vs_pred(const uint8_t* plane,
 	return sad;
 }
 
-static void inv_wht4x4(const int16_t* in, int16_t* out) {
+static void inv_wht4x4(const int16_t* input, int16_t* output) {
 	int16_t tmp[16];
 	for (int i = 0; i < 4; i++) {
-		int a1 = in[0 + i] + in[12 + i];
-		int b1 = in[4 + i] + in[8 + i];
-		int c1 = in[4 + i] - in[8 + i];
-		int d1 = in[0 + i] - in[12 + i];
+		int a1 = input[0 + i] + input[12 + i];
+		int b1 = input[4 + i] + input[8 + i];
+		int c1 = input[4 + i] - input[8 + i];
+		int d1 = input[0 + i] - input[12 + i];
 
 		tmp[0 + i] = (int16_t)(a1 + b1);
 		tmp[4 + i] = (int16_t)(c1 + d1);
@@ -486,10 +548,10 @@ static void inv_wht4x4(const int16_t* in, int16_t* out) {
 		int c1 = tmp[4 * i + 1] - tmp[4 * i + 2];
 		int d1 = tmp[4 * i + 0] - tmp[4 * i + 3];
 
-		out[4 * i + 0] = (int16_t)((a1 + b1 + 3) >> 3);
-		out[4 * i + 1] = (int16_t)((c1 + d1 + 3) >> 3);
-		out[4 * i + 2] = (int16_t)((a1 - b1 + 3) >> 3);
-		out[4 * i + 3] = (int16_t)((d1 - c1 + 3) >> 3);
+		output[4 * i + 0] = (int16_t)((a1 + b1 + 3) >> 3);
+		output[4 * i + 1] = (int16_t)((c1 + d1 + 3) >> 3);
+		output[4 * i + 2] = (int16_t)((a1 - b1 + 3) >> 3);
+		output[4 * i + 3] = (int16_t)((d1 - c1 + 3) >> 3);
 	}
 }
 
@@ -1435,6 +1497,385 @@ int enc_vp8_encode_bpred_uv_sad_inloop(const EncYuv420Image* yuv,
 			for (int n = 0; n < 4; ++n) {
 				int16_t block_coeffs[16];
 				for (int i = 0; i < 16; ++i) block_coeffs[i] = vblk[n][i];
+				dequant4x4_inplace(block_coeffs, qf.uv_dc, qf.uv_ac);
+				int16_t res[16];
+				inv_dct4x4(block_coeffs, res);
+				const uint32_t bx = (uint32_t)(n & 1) * 4u;
+				const uint32_t by = (uint32_t)(n >> 1) * 4u;
+				for (uint32_t dy = 0; dy < 4; ++dy) {
+					uint8_t* row = recon.v + (size_t)(uy0 + by + dy) * recon.uv_stride + (size_t)(ux0 + bx);
+					for (uint32_t dx = 0; dx < 4; ++dx) {
+						uint8_t p = pred_v8[(by + dy) * 8u + (bx + dx)];
+						int32_t v = (int32_t)p + (int32_t)res[(int)(dy * 4u + dx)];
+						row[dx] = clamp255_i32(v);
+					}
+				}
+			}
+		}
+	}
+
+	enc_vp8_recon_free(&recon);
+	*y_modes_out = y_modes;
+	*y_modes_count_out = (size_t)mb_total;
+	*b_modes_out = b_modes;
+	*b_modes_count_out = (size_t)mb_total * 16u;
+	*uv_modes_out = uv_modes;
+	*uv_modes_count_out = (size_t)mb_total;
+	*coeffs_out = out;
+	*coeffs_count_out = coeffs_total;
+	return 0;
+}
+
+
+int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
+							 int quality,
+							 uint8_t** y_modes_out,
+							 size_t* y_modes_count_out,
+							 uint8_t** b_modes_out,
+							 size_t* b_modes_count_out,
+							 uint8_t** uv_modes_out,
+							 size_t* uv_modes_count_out,
+							 int16_t** coeffs_out,
+							 size_t* coeffs_count_out,
+							 uint8_t* qindex_out,
+							 const EncBpredRdoTuning* tuning) {
+	// This largely mirrors enc_vp8_encode_bpred_uv_sad_inloop(), but chooses
+	// predictor modes using a quantization-aware distortion estimate:
+	//   ftransform -> quantize -> dequant -> inverse transform -> reconstruct
+	// and then score SSE vs original.
+	if (!y_modes_out || !y_modes_count_out || !b_modes_out || !b_modes_count_out || !uv_modes_out || !uv_modes_count_out ||
+	    !coeffs_out || !coeffs_count_out || !qindex_out) {
+		errno = EINVAL;
+		return -1;
+	}
+	*y_modes_out = NULL;
+	*y_modes_count_out = 0;
+	*b_modes_out = NULL;
+	*b_modes_count_out = 0;
+	*uv_modes_out = NULL;
+	*uv_modes_count_out = 0;
+	*coeffs_out = NULL;
+	*coeffs_count_out = 0;
+	*qindex_out = 0;
+	if (!yuv || !yuv->y || !yuv->u || !yuv->v || yuv->width == 0 || yuv->height == 0) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	const uint32_t w = yuv->width;
+	const uint32_t h = yuv->height;
+	const uint32_t mb_cols = (w + 15u) >> 4;
+	const uint32_t mb_rows = (h + 15u) >> 4;
+	const uint32_t mb_total = mb_cols * mb_rows;
+	const size_t coeffs_per_mb = 16 + (16 * 16) + (4 * 16) + (4 * 16);
+	const size_t coeffs_total = (size_t)mb_total * coeffs_per_mb;
+	if (mb_total == 0 || coeffs_total > (SIZE_MAX / sizeof(int16_t))) {
+		errno = EOVERFLOW;
+		return -1;
+	}
+
+	uint8_t* y_modes = (uint8_t*)malloc((size_t)mb_total);
+	uint8_t* uv_modes = (uint8_t*)malloc((size_t)mb_total);
+	uint8_t* b_modes = (uint8_t*)malloc((size_t)mb_total * 16u);
+	if (!y_modes || !uv_modes || !b_modes) {
+		free(y_modes);
+		free(uv_modes);
+		free(b_modes);
+		errno = ENOMEM;
+		return -1;
+	}
+
+	int16_t* out = (int16_t*)malloc(coeffs_total * sizeof(int16_t));
+	if (!out) {
+		free(y_modes);
+		free(uv_modes);
+		free(b_modes);
+		errno = ENOMEM;
+		return -1;
+	}
+	memset(out, 0, coeffs_total * sizeof(int16_t));
+
+	EncVp8ReconPlanes recon;
+	if (enc_vp8_recon_alloc(w, h, &recon) != 0) {
+		free(out);
+		free(y_modes);
+		free(uv_modes);
+		free(b_modes);
+		return -1;
+	}
+
+	const int qindex = enc_vp8_qindex_from_quality_libwebp(quality);
+	EncVp8QuantFactors qf;
+	enc_vp8_quant_factors_from_qindex(qindex, 0, 0, 0, 0, 0, &qf);
+	*qindex_out = (uint8_t)qf.qindex;
+
+	uint32_t lambda_mul = 1;
+	uint32_t lambda_div = 1;
+	if (tuning) {
+		lambda_mul = tuning->lambda_mul ? tuning->lambda_mul : 1;
+		lambda_div = tuning->lambda_div ? tuning->lambda_div : 1;
+	}
+
+	const uint32_t uv_w = (w + 1u) >> 1;
+	const uint32_t uv_h = (h + 1u) >> 1;
+
+	uint8_t src4[16];
+	uint8_t pred4[16];
+	uint8_t pred_u8[8 * 8];
+	uint8_t pred_v8[8 * 8];
+	uint8_t pred_u_tmp[8 * 8];
+	uint8_t pred_v_tmp[8 * 8];
+
+	for (uint32_t mby = 0; mby < mb_rows; ++mby) {
+		for (uint32_t mbx = 0; mbx < mb_cols; ++mbx) {
+			const uint32_t x0 = mbx * 16u;
+			const uint32_t y0 = mby * 16u;
+			const uint32_t ux0 = mbx * 8u;
+			const uint32_t uy0 = mby * 8u;
+			const size_t mb_index = (size_t)mby * (size_t)mb_cols + (size_t)mbx;
+			y_modes[mb_index] = 4; // B_PRED
+
+			// --- UV (8x8) mode selection (quantization-aware SSE) ---
+			int have_above_c = (mby > 0);
+			int have_left_c = (mbx > 0);
+			uint8_t A8u[8];
+			uint8_t L8u[8];
+			uint8_t A8v[8];
+			uint8_t L8v[8];
+			for (uint32_t i = 0; i < 8; i++) {
+				A8u[i] = have_above_c ? recon.u[(size_t)(uy0 - 1) * recon.uv_stride + (size_t)(ux0 + i)] : 127;
+				A8v[i] = have_above_c ? recon.v[(size_t)(uy0 - 1) * recon.uv_stride + (size_t)(ux0 + i)] : 127;
+				L8u[i] = have_left_c ? recon.u[(size_t)(uy0 + i) * recon.uv_stride + (size_t)(ux0 - 1)] : 129;
+				L8v[i] = have_left_c ? recon.v[(size_t)(uy0 + i) * recon.uv_stride + (size_t)(ux0 - 1)] : 129;
+			}
+			uint8_t above_left_u = 127;
+			uint8_t above_left_v = 127;
+			if (have_above_c && have_left_c) {
+				above_left_u = recon.u[(size_t)(uy0 - 1) * recon.uv_stride + (size_t)(ux0 - 1)];
+				above_left_v = recon.v[(size_t)(uy0 - 1) * recon.uv_stride + (size_t)(ux0 - 1)];
+			} else {
+				uint8_t al = have_above_c ? 129 : 127;
+				above_left_u = al;
+				above_left_v = al;
+			}
+
+			uint32_t best_uv_sse = 0xFFFFFFFFu;
+			Vp8I16Mode best_uv_mode = VP8_I16_DC_PRED;
+			int16_t best_ublk[4][16];
+			int16_t best_vblk[4][16];
+			uint8_t best_pred_u8[8 * 8];
+			uint8_t best_pred_v8[8 * 8];
+			const uint32_t lambda_uv = rdo_lambda_from_qindex(qf.qindex, lambda_mul, lambda_div);
+
+			for (Vp8I16Mode mode = VP8_I16_DC_PRED; mode <= VP8_I16_TM_PRED; mode++) {
+				pred8x8_build(pred_u_tmp, mode, A8u, L8u, have_above_c, have_left_c, 127, 129, above_left_u);
+				pred8x8_build(pred_v_tmp, mode, A8v, L8v, have_above_c, have_left_c, 127, 129, above_left_v);
+
+				uint32_t sse = 0;
+				uint32_t rate = 0;
+				rate += rdo_uv_mode_signal_cost(mode);
+				int16_t ublk_tmp[4][16];
+				int16_t vblk_tmp[4][16];
+
+				for (uint32_t n = 0; n < 4; ++n) {
+					const uint32_t bx = (n & 1u) * 4u;
+					const uint32_t by = (n >> 1) * 4u;
+
+					fill4x4_clamped(src4, yuv->u, yuv->uv_stride, uv_w, uv_h, ux0 + bx, uy0 + by);
+					pred8_fill4x4(pred4, pred_u_tmp, bx, by);
+					enc_vp8_ftransform4x4(src4, 4, pred4, 4, ublk_tmp[n]);
+					enc_vp8_quantize4x4_inplace(ublk_tmp[n], qf.uv_dc, qf.uv_ac);
+					rate += rdo_rate_proxy4x4(ublk_tmp[n]);
+					int16_t deq[16];
+					for (int i = 0; i < 16; i++) deq[i] = ublk_tmp[n][i];
+					dequant4x4_inplace(deq, qf.uv_dc, qf.uv_ac);
+					int16_t res[16];
+					inv_dct4x4(deq, res);
+					for (int i = 0; i < 16; i++) {
+						int32_t v = (int32_t)pred4[i] + (int32_t)res[i];
+						uint8_t r = clamp255_i32(v);
+						int d = (int)src4[i] - (int)r;
+						sse += (uint32_t)(d * d);
+					}
+				}
+				for (uint32_t n = 0; n < 4; ++n) {
+					const uint32_t bx = (n & 1u) * 4u;
+					const uint32_t by = (n >> 1) * 4u;
+
+					fill4x4_clamped(src4, yuv->v, yuv->uv_stride, uv_w, uv_h, ux0 + bx, uy0 + by);
+					pred8_fill4x4(pred4, pred_v_tmp, bx, by);
+					enc_vp8_ftransform4x4(src4, 4, pred4, 4, vblk_tmp[n]);
+					enc_vp8_quantize4x4_inplace(vblk_tmp[n], qf.uv_dc, qf.uv_ac);
+					rate += rdo_rate_proxy4x4(vblk_tmp[n]);
+					int16_t deq[16];
+					for (int i = 0; i < 16; i++) deq[i] = vblk_tmp[n][i];
+					dequant4x4_inplace(deq, qf.uv_dc, qf.uv_ac);
+					int16_t res[16];
+					inv_dct4x4(deq, res);
+					for (int i = 0; i < 16; i++) {
+						int32_t v = (int32_t)pred4[i] + (int32_t)res[i];
+						uint8_t r = clamp255_i32(v);
+						int d = (int)src4[i] - (int)r;
+						sse += (uint32_t)(d * d);
+					}
+				}
+
+				uint32_t cost = sse + (uint32_t)((uint64_t)lambda_uv * (uint64_t)rate);
+				if (cost < best_uv_sse) {
+					best_uv_sse = cost;
+					best_uv_mode = mode;
+					memcpy(best_pred_u8, pred_u_tmp, sizeof(best_pred_u8));
+					memcpy(best_pred_v8, pred_v_tmp, sizeof(best_pred_v8));
+					for (int n = 0; n < 4; n++) {
+						for (int i = 0; i < 16; i++) best_ublk[n][i] = ublk_tmp[n][i];
+						for (int i = 0; i < 16; i++) best_vblk[n][i] = vblk_tmp[n][i];
+					}
+				}
+			}
+
+			memcpy(pred_u8, best_pred_u8, sizeof(pred_u8));
+			memcpy(pred_v8, best_pred_v8, sizeof(pred_v8));
+			uv_modes[mb_index] = (uint8_t)best_uv_mode;
+
+			// --- Luma (4x4) mode selection (quantization-aware SSE) ---
+			for (uint32_t sb_r = 0; sb_r < 4; sb_r++) {
+				for (uint32_t sb_c = 0; sb_c < 4; sb_c++) {
+					const uint32_t sx = x0 + sb_c * 4u;
+					const uint32_t sy = y0 + sb_r * 4u;
+
+					uint8_t A8[9];
+					uint8_t L4[4];
+					if (sy == 0) A8[0] = 127;
+					else if (sx == 0) A8[0] = 129;
+					else A8[0] = recon.y[(size_t)(sy - 1) * recon.y_stride + (size_t)(sx - 1)];
+
+					for (uint32_t i = 0; i < 8; i++) {
+						if (sy == 0) {
+							A8[1 + i] = 127;
+							continue;
+						}
+						uint32_t row = sy - 1;
+						uint32_t col;
+						if (sb_c == 3 && i >= 4) {
+							if (y0 == 0) {
+								A8[1 + i] = 127;
+								continue;
+							}
+							row = y0 - 1;
+							col = x0 + 16u + (i - 4u);
+						} else {
+							col = sx + i;
+						}
+						uint32_t max_row = recon.mb_rows * 16u;
+						uint32_t max_col = recon.mb_cols * 16u;
+						if (max_row && row >= max_row) row = max_row - 1u;
+						if (max_col && col >= max_col) col = max_col - 1u;
+						A8[1 + i] = recon.y[(size_t)row * recon.y_stride + (size_t)col];
+					}
+
+					if (sx == 0) {
+						for (uint32_t i = 0; i < 4; i++) L4[i] = 129;
+					} else {
+						for (uint32_t i = 0; i < 4; i++) {
+							uint32_t row = sy + i;
+							uint32_t max_row = recon.mb_rows * 16u;
+							if (max_row && row >= max_row) row = max_row - 1u;
+							L4[i] = recon.y[(size_t)row * recon.y_stride + (size_t)(sx - 1)];
+						}
+					}
+
+					fill4x4_clamped(src4, yuv->y, yuv->y_stride, w, h, sx, sy);
+
+					uint32_t best_sse = 0xFFFFFFFFu;
+					Vp8BMode best_mode = B_DC_PRED;
+					int16_t best_coeff[16];
+					uint8_t best_pred4[16];
+					const uint32_t lambda_y = rdo_lambda_from_qindex(qf.qindex, lambda_mul, lambda_div);
+
+					for (Vp8BMode mode = B_DC_PRED; mode <= B_HU_PRED; mode++) {
+						bpred4x4(pred4, &A8[1], L4, mode);
+						int16_t coeff[16];
+						enc_vp8_ftransform4x4(src4, 4, pred4, 4, coeff);
+						enc_vp8_quantize4x4_inplace(coeff, qf.y1_dc, qf.y1_ac);
+						uint32_t rate = rdo_bmode_signal_cost(mode) + rdo_rate_proxy4x4(coeff);
+
+						int16_t deq[16];
+						for (int i = 0; i < 16; i++) deq[i] = coeff[i];
+						dequant4x4_inplace(deq, qf.y1_dc, qf.y1_ac);
+						int16_t res[16];
+						inv_dct4x4(deq, res);
+						uint32_t sse = 0;
+						for (int i = 0; i < 16; i++) {
+							int32_t v = (int32_t)pred4[i] + (int32_t)res[i];
+							uint8_t r = clamp255_i32(v);
+							int d = (int)src4[i] - (int)r;
+							sse += (uint32_t)(d * d);
+						}
+						uint32_t cost = sse + (uint32_t)((uint64_t)lambda_y * (uint64_t)rate);
+						if (cost < best_sse) {
+							best_sse = cost;
+							best_mode = mode;
+							for (int i = 0; i < 16; i++) best_coeff[i] = coeff[i];
+							for (int i = 0; i < 16; i++) best_pred4[i] = pred4[i];
+						}
+					}
+
+					b_modes[mb_index * 16u + (size_t)(sb_r * 4u + sb_c)] = (uint8_t)best_mode;
+
+					// Store coeffs: Y2 is not coded; keep it 0. Y blocks start at +16.
+					int16_t* mbdst = out + mb_index * coeffs_per_mb;
+					int16_t* ydst = mbdst + 16;
+					const size_t blk = (size_t)(sb_r * 4u + sb_c);
+					for (int i = 0; i < 16; i++) ydst[blk * 16u + (size_t)i] = best_coeff[i];
+
+					// Reconstruct into recon.y
+					int16_t deq[16];
+					for (int i = 0; i < 16; i++) deq[i] = best_coeff[i];
+					dequant4x4_inplace(deq, qf.y1_dc, qf.y1_ac);
+					int16_t res[16];
+					inv_dct4x4(deq, res);
+					for (uint32_t dy = 0; dy < 4; dy++) {
+						uint8_t* row = recon.y + (size_t)(sy + dy) * recon.y_stride + (size_t)sx;
+						for (uint32_t dx = 0; dx < 4; dx++) {
+							int32_t v = (int32_t)best_pred4[dy * 4u + dx] + (int32_t)res[(int)(dy * 4u + dx)];
+							row[dx] = clamp255_i32(v);
+						}
+					}
+				}
+			}
+
+			// Store U/V coeffs after Y.
+			int16_t* dst = out + mb_index * coeffs_per_mb + 16 + (16 * 16);
+			for (int n = 0; n < 4; ++n) {
+				for (int i = 0; i < 16; ++i) dst[i] = best_ublk[n][i];
+				dst += 16;
+			}
+			for (int n = 0; n < 4; ++n) {
+				for (int i = 0; i < 16; ++i) dst[i] = best_vblk[n][i];
+				dst += 16;
+			}
+
+			// Reconstruct U/V.
+			for (int n = 0; n < 4; ++n) {
+				int16_t block_coeffs[16];
+				for (int i = 0; i < 16; ++i) block_coeffs[i] = best_ublk[n][i];
+				dequant4x4_inplace(block_coeffs, qf.uv_dc, qf.uv_ac);
+				int16_t res[16];
+				inv_dct4x4(block_coeffs, res);
+				const uint32_t bx = (uint32_t)(n & 1) * 4u;
+				const uint32_t by = (uint32_t)(n >> 1) * 4u;
+				for (uint32_t dy = 0; dy < 4; ++dy) {
+					uint8_t* row = recon.u + (size_t)(uy0 + by + dy) * recon.uv_stride + (size_t)(ux0 + bx);
+					for (uint32_t dx = 0; dx < 4; ++dx) {
+						uint8_t p = pred_u8[(by + dy) * 8u + (bx + dx)];
+						int32_t v = (int32_t)p + (int32_t)res[(int)(dy * 4u + dx)];
+						row[dx] = clamp255_i32(v);
+					}
+				}
+			}
+			for (int n = 0; n < 4; ++n) {
+				int16_t block_coeffs[16];
+				for (int i = 0; i < 16; ++i) block_coeffs[i] = best_vblk[n][i];
 				dequant4x4_inplace(block_coeffs, qf.uv_dc, qf.uv_ac);
 				int16_t res[16];
 				inv_dct4x4(block_coeffs, res);

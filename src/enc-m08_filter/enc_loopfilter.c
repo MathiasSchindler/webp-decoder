@@ -14,21 +14,32 @@ void enc_vp8_loopfilter_from_qindex(uint8_t qindex, EncVp8LoopFilterParams* out)
 		return;
 	}
 
-	// qindex is 0..127. Map it to VP8 filter_level 0..63.
-	// This is a deterministic heuristic tuned to be a bit stronger in the mid
-	// range than a simple linear /2 mapping, which helps reduce blocking.
+	// qindex is 0..127. Map it deterministically to VP8 loopfilter params.
 	//
-	// - qindex==0   => level==0
-	// - qindex>=96  => level saturates to 63
-	int level = ((int)qindex * 63 + 48) / 96;
-	if (level > 63) level = 63;
-
-	// Sharpness is a small knob (0..7) that reduces interior filtering.
-	// Keep it conservative; increase a bit for very low quality.
-	int sharpness = 0;
-	if (qindex >= 96) sharpness = 3;
-	else if (qindex >= 64) sharpness = 2;
-	else if (qindex >= 32) sharpness = 1;
+	// Goals:
+	// - High qindex (low quality): stronger filtering to reduce blocking.
+	// - Low qindex (high quality): lighter filtering and higher sharpness to
+	//   avoid unnecessary blur.
+	//
+	// This is a simple piecewise-linear mapping in qindex space.
+	int level;
+	int sharpness;
+	if (qindex < 16) {
+		level = ((int)qindex * 10 + 8) / 16; // 0..10
+		sharpness = 0;
+	} else if (qindex < 32) {
+		level = 10 + (((int)qindex - 16) * 10 + 8) / 16; // 10..20
+		sharpness = 0;
+	} else if (qindex < 64) {
+		level = 20 + (((int)qindex - 32) * 16 + 16) / 32; // 20..36
+		sharpness = 1;
+	} else if (qindex < 96) {
+		level = 36 + (((int)qindex - 64) * 16 + 16) / 32; // 36..52
+		sharpness = 2;
+	} else {
+		level = 52 + (((int)qindex - 96) * 11 + 15) / 31; // 52..63
+		sharpness = 3;
+	}
 
 	*out = (EncVp8LoopFilterParams){
 		.use_simple = 0,

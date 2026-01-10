@@ -12,20 +12,23 @@
 
 typedef enum {
 	ENC_MODE_BPRED = 0,
-	ENC_MODE_I16 = 1,
-	ENC_MODE_DC = 2,
+	ENC_MODE_BPRED_RDO = 1,
+	ENC_MODE_I16 = 2,
+	ENC_MODE_DC = 3,
 } EncMode;
 
 static void usage(const char* argv0) {
 	fprintf(stderr,
-	        "Usage: %s [--q <0..100>] [--mode <bpred|i16|dc>] [--loopfilter] <in.png> <out.webp>\n"
+	        "Usage: %s [--q <0..100>] [--mode <bpred|bpred-rdo|i16|dc>] [--loopfilter] [--bpred-rdo-lambda-mul N] [--bpred-rdo-lambda-div N] <in.png> <out.webp>\n"
 	        "\n"
 	        "Standalone VP8 keyframe (lossy) encoder producing a simple WebP container.\n"
 	        "\n"
 	        "Options:\n"
 	        "  --q <0..100>           Quality (mapped to VP8 qindex). Default: 75\n"
-	        "  --mode <bpred|i16|dc>  Intra mode strategy. Default: bpred\n"
-	        "  --loopfilter | --lf    Write deterministic loopfilter header params derived from qindex\n",
+	        "  --mode <bpred|bpred-rdo|i16|dc>  Intra mode strategy. Default: bpred\n"
+	        "  --loopfilter | --lf    Write deterministic loopfilter header params derived from qindex\n"
+			"  --bpred-rdo-lambda-mul N  Tune bpred-rdo: multiply lambda(qindex) by N (default 6)\n"
+			"  --bpred-rdo-lambda-div N  Tune bpred-rdo: divide lambda(qindex) by N (default 1)\n",
 	        argv0);
 }
 
@@ -43,6 +46,10 @@ static int parse_mode(const char* s, EncMode* out) {
 		*out = ENC_MODE_BPRED;
 		return 0;
 	}
+	if (strcmp(s, "bpred-rdo") == 0 || strcmp(s, "bpred_rdo") == 0) {
+		*out = ENC_MODE_BPRED_RDO;
+		return 0;
+	}
 	if (strcmp(s, "i16") == 0 || strcmp(s, "i16x16") == 0) {
 		*out = ENC_MODE_I16;
 		return 0;
@@ -58,6 +65,8 @@ int main(int argc, char** argv) {
 	int quality = 75;
 	int enable_loopfilter = 0;
 	EncMode mode = ENC_MODE_BPRED;
+	int bpred_rdo_lambda_mul = 6;
+	int bpred_rdo_lambda_div = 1;
 
 	int argi = 1;
 	while (argi < argc) {
@@ -80,6 +89,22 @@ int main(int argc, char** argv) {
 		if (strcmp(argv[argi], "--loopfilter") == 0 || strcmp(argv[argi], "--lf") == 0) {
 			enable_loopfilter = 1;
 			argi += 1;
+			continue;
+		}
+		if (argi + 1 < argc && strcmp(argv[argi], "--bpred-rdo-lambda-mul") == 0) {
+			if (parse_int(argv[argi + 1], &bpred_rdo_lambda_mul) != 0 || bpred_rdo_lambda_mul <= 0) {
+				usage(argv[0]);
+				return 2;
+			}
+			argi += 2;
+			continue;
+		}
+		if (argi + 1 < argc && strcmp(argv[argi], "--bpred-rdo-lambda-div") == 0) {
+			if (parse_int(argv[argi + 1], &bpred_rdo_lambda_div) != 0 || bpred_rdo_lambda_div <= 0) {
+				usage(argv[0]);
+				return 2;
+			}
+			argi += 2;
 			continue;
 		}
 		break;
@@ -138,6 +163,22 @@ int main(int argc, char** argv) {
 		                                         &coeffs,
 		                                         &coeffs_count,
 		                                         &qindex);
+	} else if (mode == ENC_MODE_BPRED_RDO) {
+		EncBpredRdoTuning tuning;
+		tuning.lambda_mul = (uint32_t)bpred_rdo_lambda_mul;
+		tuning.lambda_div = (uint32_t)bpred_rdo_lambda_div;
+		rc = enc_vp8_encode_bpred_uv_rdo_inloop(&yuv,
+		                                       quality,
+		                                       &y_modes,
+		                                       &y_modes_count,
+		                                       &b_modes,
+		                                       &b_modes_count,
+		                                       &uv_modes,
+		                                       &uv_modes_count,
+		                                       &coeffs,
+		                                       &coeffs_count,
+									   &qindex,
+									   &tuning);
 	} else {
 		rc = enc_vp8_encode_bpred_uv_sad_inloop(&yuv,
 		                                       quality,

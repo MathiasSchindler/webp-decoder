@@ -9,8 +9,14 @@ cd "$ROOT_DIR"
 require_libwebp_cwebp
 require_libwebp_dwebp
 
-if ! command -v magick >/dev/null 2>&1; then
-	die "ImageMagick 'magick' not found (needed for resize/format conversion)"
+have_magick=0
+have_sips=0
+if command -v magick >/dev/null 2>&1; then
+    have_magick=1
+elif command -v sips >/dev/null 2>&1; then
+    have_sips=1
+else
+    die "Neither ImageMagick 'magick' nor macOS 'sips' found (needed for resize/format conversion)"
 fi
 
 make -s all enc_png2ppm enc_quality_metrics >/dev/null
@@ -48,8 +54,15 @@ results_tsv="$tmpdir/results.tsv"
 			derived_png="$tmpdir/${src_stem}_${s}.png"
 			ref_ppm="$tmpdir/${src_stem}_${s}.ref.ppm"
 
-			# Preserve aspect ratio; constrain max dimension to s.
-			magick "$src" -auto-orient -resize "${s}x${s}>" -strip "$derived_png"
+            # Preserve aspect ratio; constrain max dimension to s.
+            if [ "$have_magick" -eq 1 ]; then
+                magick "$src" -auto-orient -resize "${s}x${s}>" -strip "$derived_png"
+            else
+                # macOS fallback (no ImageMagick): sips can resize and convert.
+                # Note: this may not exactly match ImageMagick's auto-orient behavior, but
+                # keeps the harness runnable on a stock macOS setup.
+                sips -Z "$s" -s format png "$src" --out "$derived_png" >/dev/null
+            fi
 			./build/enc_png2ppm "$derived_png" "$ref_ppm" >/dev/null
 
 			for q in $qs_str; do

@@ -21,6 +21,13 @@ typedef struct {
 	uint8_t* v;
 } EncVp8ReconPlanes;
 
+typedef struct {
+	// Scales the internal lambda(qindex) used by bpred-rdo's RDO-lite cost.
+	// Effective lambda = base_lambda(qindex) * lambda_mul / lambda_div.
+	uint32_t lambda_mul;
+	uint32_t lambda_div;
+} EncBpredRdoTuning;
+
 int enc_vp8_recon_alloc(uint32_t width, uint32_t height, EncVp8ReconPlanes* out);
 void enc_vp8_recon_free(EncVp8ReconPlanes* p);
 
@@ -95,6 +102,25 @@ int enc_vp8_encode_bpred_uv_sad_inloop(const EncYuv420Image* yuv,
 								 int16_t** coeffs_out,
 								 size_t* coeffs_count_out,
 								 uint8_t* qindex_out);
+
+// Experimental: like enc_vp8_encode_bpred_uv_sad_inloop(), but chooses modes
+// using a quantization-aware distortion estimate.
+//
+// For each candidate predictor mode, it runs ftransform -> quantize -> dequant
+// -> inverse transform, reconstructs pixels, and scores SSE vs original.
+// This is an RDO-lite distortion term (no explicit rate term yet).
+int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
+				 int quality,
+				 uint8_t** y_modes_out,
+				 size_t* y_modes_count_out,
+				 uint8_t** b_modes_out,
+				 size_t* b_modes_count_out,
+				 uint8_t** uv_modes_out,
+				 size_t* uv_modes_count_out,
+				 int16_t** coeffs_out,
+				 size_t* coeffs_count_out,
+				 uint8_t* qindex_out,
+				 const EncBpredRdoTuning* tuning);
 
 #ifdef __cplusplus
 }

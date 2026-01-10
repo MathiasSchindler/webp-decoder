@@ -518,12 +518,14 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 		errno = EINVAL;
 		return -1;
 	}
-	if (bit_depth != 8) {
+	if (!(bit_depth == 8 || bit_depth == 16)) {
 		free(idat);
 		errno = ENOTSUP;
 		return -1;
 	}
-	if (!(color_type == 2 || color_type == 6)) {
+	// Some converters (notably macOS `sips`) emit grayscale PNGs for
+	// monochrome sources. Accept grayscale/grayscale+alpha too.
+	if (!(color_type == 0 || color_type == 2 || color_type == 4 || color_type == 6)) {
 		free(idat);
 		errno = ENOTSUP;
 		return -1;
@@ -534,9 +536,23 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 		return -1;
 	}
 
-	int channels = (color_type == 2) ? 3 : 4;
-	size_t stride = (size_t)width * (size_t)channels;
-	size_t scan = 1 + stride;
+	const int bytes_per_sample = (bit_depth == 16) ? 2 : 1;
+	int src_channels = 0;
+	switch (color_type) {
+		case 0: src_channels = 1; break; // gray
+		case 2: src_channels = 3; break; // rgb
+		case 4: src_channels = 2; break; // gray+alpha
+		case 6: src_channels = 4; break; // rgba
+		default: src_channels = 0; break;
+	}
+	if (src_channels == 0) {
+		free(idat);
+		errno = ENOTSUP;
+		return -1;
+	}
+
+	size_t src_stride = (size_t)width * (size_t)src_channels * (size_t)bytes_per_sample;
+	size_t scan = 1 + src_stride;
 	if (height > (SIZE_MAX / scan)) {
 		free(idat);
 		return -1;
@@ -558,23 +574,81 @@ int enc_png_read_file(const char* path, EncPngImage* out_img) {
 	}
 	free(idat);
 
-	uint8_t* pix = (uint8_t*)malloc((size_t)height * stride);
-	if (!pix) {
+	uint8_t* raw = (uint8_t*)malloc((size_t)height * src_stride);
+	if (!raw) {
 		free(inflated);
 		errno = ENOMEM;
 		return -1;
 	}
-	if (unfilter(pix, inflated, width, height, channels) != 0) {
-		free(pix);
+	if (unfilter(raw, inflated, width, height, src_channels * bytes_per_sample) != 0) {
+		free(raw);
 		free(inflated);
 		errno = EINVAL;
 		return -1;
 	}
 	free(inflated);
 
+	// Convert to 8-bit samples if needed.
+	uint8_t* src8 = NULL;
+	if (bytes_per_sample == 1) {
+		src8 = raw;
+	} else {
+		size_t src8_size = (size_t)height * (size_t)width * (size_t)src_channels;
+		uint8_t* tmp = (uint8_t*)malloc(src8_size);
+		if (!tmp) {
+			free(raw);
+			errno = ENOMEM;
+			return -1;
+		}
+		// PNG stores 16-bit samples big-endian; keep the MSB.
+		for (size_t i = 0; i < src8_size; ++i) tmp[i] = raw[i * 2u];
+		free(raw);
+		src8 = tmp;
+	}
+
+	// Expand to RGB/RGBA so downstream stays unchanged.
+	int dst_channels = (src_channels == 2 || src_channels == 4) ? 4 : 3;
+	size_t dst_stride = (size_t)width * (size_t)dst_channels;
+	uint8_t* pix = (uint8_t*)malloc((size_t)height * dst_stride);
+	if (!pix) {
+		free(src8);
+		errno = ENOMEM;
+		return -1;
+	}
+	if (src_channels == 3 || src_channels == 4) {
+		memcpy(pix, src8, (size_t)height * dst_stride);
+		free(src8);
+	} else if (src_channels == 1) {
+		for (uint32_t y = 0; y < height; ++y) {
+			const uint8_t* srow = src8 + (size_t)y * (size_t)width;
+			uint8_t* drow = pix + (size_t)y * dst_stride;
+			for (uint32_t x = 0; x < width; ++x) {
+				uint8_t g = srow[x];
+				drow[x * 3u + 0u] = g;
+				drow[x * 3u + 1u] = g;
+				drow[x * 3u + 2u] = g;
+			}
+		}
+		free(src8);
+	} else {
+		for (uint32_t y = 0; y < height; ++y) {
+			const uint8_t* srow = src8 + (size_t)y * (size_t)width * 2u;
+			uint8_t* drow = pix + (size_t)y * dst_stride;
+			for (uint32_t x = 0; x < width; ++x) {
+				uint8_t g = srow[x * 2u + 0u];
+				uint8_t a = srow[x * 2u + 1u];
+				drow[x * 4u + 0u] = g;
+				drow[x * 4u + 1u] = g;
+				drow[x * 4u + 2u] = g;
+				drow[x * 4u + 3u] = a;
+			}
+		}
+		free(src8);
+	}
+
 	out_img->width = width;
 	out_img->height = height;
-	out_img->channels = (uint8_t)channels;
+	out_img->channels = (uint8_t)dst_channels;
 	out_img->data = pix;
 	return 0;
 }

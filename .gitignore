@@ -9,7 +9,7 @@
 
 # Images / corpora (large, often local)
 # /images/
-
+/images/commons-hq/
 # Common C/C++ artifacts
 *.o
 *.a
