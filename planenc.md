@@ -60,9 +60,11 @@ This project is intentionally “oracle-driven” and test-gated.
 
 Current CLI (can evolve):
 
-- `./encoder <in.png> <out.webp>` encodes lossy VP8 (defaults: `--q 75`, `--mode bpred`)
-- `./encoder --q <0..100> --mode <dc|i16|bpred> <in.png> <out.webp>` selects quality and intra mode
+- `./encoder <in.png> <out.webp>` encodes lossy VP8 (defaults: `--q 75`, `--mode bpred-rdo`)
+- `./encoder --q <0..100> --mode <bpred-rdo|bpred|i16|dc> <in.png> <out.webp>` selects quality and intra mode
 - `./encoder --loopfilter <in.png> <out.webp>` opt-in: writes loopfilter header params (derived deterministically from qindex)
+
+Use `--mode bpred` for the simple baseline.
 
 Notes:
 

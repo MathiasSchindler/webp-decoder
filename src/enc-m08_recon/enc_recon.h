@@ -29,6 +29,17 @@ typedef struct {
 	// 0: use the existing cheap magnitude proxy (default)
 	// 1: use an entropy-style token cost estimator (experimental)
 	uint32_t rate_mode;
+	// Mode signaling rate term:
+	// 0: use the existing tiny fixed proxy costs (default)
+	// 1: add entropy-style mode signaling bit-costs (experimental)
+	uint32_t signal_mode;
+	// 0: default quantization (shared with other modes)
+	// 1: AC deadzone quantization (experimental; bpred-rdo only)
+	uint32_t quant_mode;
+	// Only used when quant_mode=1.
+	// AC coefficients with |v| < (ac_deadzone_pct/100)*step are quantized to 0.
+	// If 0, an internal default is used.
+	uint32_t ac_deadzone_pct;
 } EncBpredRdoTuning;
 
 int enc_vp8_recon_alloc(uint32_t width, uint32_t height, EncVp8ReconPlanes* out);

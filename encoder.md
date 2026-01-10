@@ -19,8 +19,10 @@ Overall: ΔPSNR=-4.835 dB  ΔSSIM=-0.02999  bytes_ratio@SSIM=1.697
 
 ## Start here (TL;DR)
 
-- If you’re new: start with the default `--mode bpred` (this is the baseline and the only “supported” path).
-- We intentionally keep exactly one experimental alternative: `--mode bpred-rdo` (no other bpred variants).
+- Default encoder mode is now `--mode bpred-rdo`.
+- Use `--mode bpred` when you want the simple baseline/reference path.
+
+Note: older log entries below sometimes mention the then-default `--mode bpred`.
 - Quick compare (prints both Overalls):
 
 ```sh
@@ -91,7 +93,7 @@ We want to move these metrics in the right direction:
    - Command:
      - `MODE=bpred` baseline (already done)
      - Add a loopfilter variant by running:
-       - our side: `./encoder --loopfilter ...`
+          - our side (explicit baseline mode): `./encoder --mode bpred --loopfilter ...`
        - (if needed, extend `scripts/enc_vs_cwebp_quality.sh` to optionally pass `--loopfilter`)
 
 Implementation touchpoints:
@@ -99,7 +101,7 @@ Implementation touchpoints:
 - Encoder CLI flag: `src/encoder_main.c` (`--loopfilter|--lf`).
 
 2) Decide a standard for comparisons for the week:
-   - Recommend: keep `MODE=bpred` fixed, and always enable `--loopfilter` during quality comparisons.
+   - Recommend: keep `MODE=bpred` fixed (set it explicitly; don’t rely on encoder defaults), and always enable `--loopfilter` during quality comparisons.
 
 Deliverable:
 - A documented “standard comparison command” to re-run after each change.
@@ -267,7 +269,7 @@ Broader (still small) micro-corpus:
    - Result: `make test` caught regressions via `enc_quality_check.sh` (so this is **not** enabled by default).
    - Follow-up: added an **experimental** mode `--mode bpred-rdo` that is quantization-aware:
       - For each candidate predictor mode, it simulates `ftransform → quantize → dequant → inverse → reconstruct` and scores SSE vs original.
-      - Default `--mode bpred` remains unchanged and all tests stay green.
+      - At the time, the default mode was still `--mode bpred` and all tests stayed green (today default is `--mode bpred-rdo`).
    - Files:
       - [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c) (new `enc_vp8_encode_bpred_uv_rdo_inloop()`)
       - [src/encoder_main.c](src/encoder_main.c) (new `--mode bpred-rdo`)
@@ -297,11 +299,24 @@ Broader (still small) micro-corpus:
       - `--bpred-rdo-lambda-mul N`
       - `--bpred-rdo-lambda-div N`
    - Design note: we intentionally keep only two intra strategies (`bpred` and experimental `bpred-rdo`) to avoid mode sprawl.
-   - Current defaults (only used when `--mode bpred-rdo`): `mul=8`, `div=1`, `rate=entropy`.
+   - Current defaults (only used when `--mode bpred-rdo`): `mul=8`, `div=1`, `rate=entropy`, `quant=ac-deadzone`, `ac-deadzone=60`.
    - Files:
       - [src/encoder_main.c](src/encoder_main.c)
       - [src/enc-m08_recon/enc_recon.h](src/enc-m08_recon/enc_recon.h)
       - [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c)
+
+- 2026-01-10 `bpred-rdo` tuning knob: experimental quant tweak (AC deadzone):
+   - New flag (only affects `--mode bpred-rdo`): `--bpred-rdo-quant <default|ac-deadzone>`.
+   - Intent: encourage more zero AC coefficients during RDO evaluation (rate win) at some distortion cost.
+   - New flag: `--bpred-rdo-ac-deadzone N` (threshold percent of step; higher => stronger deadzone).
+   - Results vs libwebp, 3-image set (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`):
+      - Default quant:          Overall: ΔPSNR=-0.778 dB  ΔSSIM=-0.00630  bytes_ratio@SSIM=1.320
+      - AC deadzone @75%:       Overall: ΔPSNR=-0.541 dB  ΔSSIM=-0.00875  bytes_ratio@SSIM=1.117
+      - AC deadzone @60%:       Overall: ΔPSNR=-0.313 dB  ΔSSIM=-0.00292  bytes_ratio@SSIM=1.206
+   - Validation vs libwebp, commons-hq (12 photos, 256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`):
+      - Default quant:          Overall: ΔPSNR=-0.622 dB  ΔSSIM=-0.00635  bytes_ratio@SSIM=1.281
+      - AC deadzone @60%:       Overall: ΔPSNR=-0.537 dB  ΔSSIM=-0.00613  bytes_ratio@SSIM=1.185
+   - Conclusion: @60% is a consistent improvement in bytes_ratio@SSIM without hurting SSIM overall; make this the default for `bpred-rdo`.
 
 - 2026-01-10 `bpred-rdo` tuning harness + new photo corpus:
    - Added a small, photo-heavy in-repo corpus: [images/commons-hq/README.md](images/commons-hq/README.md)
@@ -369,7 +384,7 @@ Broader (still small) micro-corpus:
 
 - 2026-01-10 Step 2 continuation: `bpred-rdo` can choose I16 vs B_PRED (RDO-lite at macroblock level):
    - Change: extend `--mode bpred-rdo` to decide per macroblock between I16 (modes 0..3) and B_PRED (mode 4), using the same quant-aware $J=D+\lambda R$ scoring.
-   - Safety: `make test` stays green because default `--mode bpred` is unchanged.
+   - Safety: `make test` stays green because this work was isolated behind `--mode bpred-rdo` (at the time, the default mode was still `--mode bpred`).
    - Vs libwebp on the original 3-image set (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`):
       - Baseline `MODE=bpred`: Overall: ΔPSNR=-5.645 dB  ΔSSIM=-0.02894  bytes_ratio@SSIM=1.694
       - `MODE=bpred-rdo` (proxy-era defaults at the time: `--bpred-rdo-lambda-mul 6 --bpred-rdo-lambda-div 1`): Overall: ΔPSNR=-3.560 dB  ΔSSIM=-0.01527  bytes_ratio@SSIM=1.422
@@ -421,5 +436,48 @@ Broader (still small) micro-corpus:
 
 - 2026-01-10 tooling: lambda sweep script supports `--rate`:
    - Change: [scripts/enc_bpred_rdo_lambda_sweep.py](scripts/enc_bpred_rdo_lambda_sweep.py) now supports `--rate proxy|entropy` to sweep lambda for either rate estimator.
+
+- 2026-01-10 larger Commons/Commons-HQ focus (512/1024px QS 40/60/80, `OURS_FLAGS="--loopfilter"`):
+   - `images/commons/*.{jpg,png}` (7 images):
+      - `MODE=bpred`:     Overall: ΔPSNR=-9.913 dB  ΔSSIM=-0.04541  bytes_ratio@SSIM=1.984
+      - `MODE=bpred-rdo`: Overall: ΔPSNR=-0.657 dB  ΔSSIM=-0.00566  bytes_ratio@SSIM=1.212
+   - `images/commons-hq/*.jpg` (12 images):
+      - `MODE=bpred`:     Overall: ΔPSNR=-10.166 dB  ΔSSIM=-0.05335  bytes_ratio@SSIM=2.008
+      - `MODE=bpred-rdo`: Overall: ΔPSNR=-0.718 dB  ΔSSIM=-0.00501  bytes_ratio@SSIM=1.233
+
+- 2026-01-10 loopfilter param mapping v2 (aligned to libwebp defaults):
+   - Updated [src/enc-m08_filter/enc_loopfilter.c](src/enc-m08_filter/enc_loopfilter.c) to better match `cwebp`’s default keyframe loopfilter fields (notably `sharpness=0` and lower `level` for most qindex values).
+   - Updated the pinned header-field gate in [scripts/enc_m10_loopfilter_expected.txt](scripts/enc_m10_loopfilter_expected.txt).
+   - Rerun vs libwebp on larger Commons/Commons-HQ (512/1024px QS 40/60/80, `OURS_FLAGS="--loopfilter"`):
+      - `images/commons/*.{jpg,png}`:
+         - `MODE=bpred`:     Overall: ΔPSNR=-9.912 dB  ΔSSIM=-0.04558  bytes_ratio@SSIM=1.983
+         - `MODE=bpred-rdo`: Overall: ΔPSNR=-0.650 dB  ΔSSIM=-0.00584  bytes_ratio@SSIM=1.212
+      - `images/commons-hq/*.jpg`:
+         - `MODE=bpred`:     Overall: ΔPSNR=-10.167 dB  ΔSSIM=-0.05350  bytes_ratio@SSIM=2.008
+         - `MODE=bpred-rdo`: Overall: ΔPSNR=-0.718 dB  ΔSSIM=-0.00524  bytes_ratio@SSIM=1.233
+   - Conclusion: essentially neutral on these corpora; keep for closer apples-to-apples with libwebp.
+
+- 2026-01-10 Step 5 (token coding efficiency): adaptive coefficient probabilities (experimental flag)
+   - Implemented `--token-probs <default|adaptive>` in [src/encoder_main.c](src/encoder_main.c).
+   - Added keyframe coefficient probability adaptation (counts token branches, emits selective prob updates, then encodes tokens using the updated tables):
+      - [src/enc-m07_tokens/enc_vp8_tokens.c](src/enc-m07_tokens/enc_vp8_tokens.c)
+      - [src/enc-m07_tokens/enc_vp8_tokens.h](src/enc-m07_tokens/enc_vp8_tokens.h)
+   - Safety: `make test` stays green; default output unchanged unless the flag is used.
+   - Vs libwebp on larger Commons/Commons-HQ with `OURS_FLAGS="--loopfilter --token-probs adaptive"` (512/1024px QS 40/60/80):
+      - `images/commons/*.{jpg,png}`:
+         - `MODE=bpred`:     Overall: ΔPSNR=-9.794 dB  ΔSSIM=-0.04505  bytes_ratio@SSIM=1.839
+         - `MODE=bpred-rdo`: Overall: ΔPSNR=-0.417 dB  ΔSSIM=-0.00342  bytes_ratio@SSIM=1.151
+      - `images/commons-hq/*.jpg`:
+         - `MODE=bpred`:     Overall: ΔPSNR=-9.945 dB  ΔSSIM=-0.05178  bytes_ratio@SSIM=1.891
+         - `MODE=bpred-rdo`: Overall: ΔPSNR=-0.634 dB  ΔSSIM=-0.00456  bytes_ratio@SSIM=1.181
+   - Conclusion: clear win in bytes_ratio@SSIM (and slightly better ΔPSNR/ΔSSIM) on large photo corpora.
+
+- 2026-01-10 Step 5 follow-up: make adaptive coeff probs more stable
+   - Change: added simple smoothing/prior toward default probs and ignored tiny prob changes to reduce overfitting/noisy updates in `--token-probs adaptive`.
+   - File: [src/enc-m07_tokens/enc_vp8_tokens.c](src/enc-m07_tokens/enc_vp8_tokens.c)
+   - Safety: `make test` stays green; still opt-in.
+   - Sanity run vs libwebp on the default micro corpus (5 images, 512/1024px QS 40/60/80, `OURS_FLAGS="--loopfilter --token-probs adaptive"`):
+      - `MODE=bpred`:     Overall: ΔPSNR=-9.049 dB  ΔSSIM=-0.04631  bytes_ratio@SSIM=1.722
+      - `MODE=bpred-rdo`: Overall: ΔPSNR=-0.718 dB  ΔSSIM=-0.00460  bytes_ratio@SSIM=1.178
 
 (append new entries here as we improve)

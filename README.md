@@ -118,8 +118,11 @@ progress**.
 Basic usage:
 
 ```sh
-# Encode PNG -> WebP (default: --mode bpred, --q 75)
+# Encode PNG -> WebP (default: --mode bpred-rdo, --q 75)
 ./encoder input.png out.webp
+
+# Explicit baseline mode (simple reference)
+./encoder --mode bpred input.png out.webp
 
 # Choose quality and intra mode
 ./encoder --q 90 --mode i16 input.png out.webp

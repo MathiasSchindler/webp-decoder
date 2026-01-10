@@ -607,6 +607,87 @@ static int enc_block(EncBoolEncoder* e,
 	return current_has_coeffs;
 }
 
+// --- Coefficient probability adaptation (keyframes only) ---
+
+static void count_treed_path(uint32_t node_counts[num_dct_tokens - 1][2], const int8_t* tree, int start_node, int symbol) {
+	int node = start_node;
+	for (;;) {
+		const int8_t left = tree[node + 0];
+		const int8_t right = tree[node + 1];
+
+		int go_right = 0;
+		if (left <= 0) {
+			go_right = (-left == symbol) ? 0 : 1;
+		} else {
+			go_right = tree_contains_symbol(tree, (int)left, symbol) ? 0 : 1;
+		}
+
+		unsigned idx = (unsigned)node >> 1;
+		if (idx < (unsigned)(num_dct_tokens - 1)) {
+			node_counts[idx][(unsigned)go_right]++;
+		}
+
+		const int next = go_right ? (int)right : (int)left;
+		if (next <= 0) return;
+		node = next;
+	}
+}
+
+static int count_block_coeff_prob_branches(uint32_t counts[4][8][3][num_dct_tokens - 1][2],
+					  int coeff_plane,
+					  int first_coeff,
+					  uint8_t left_has,
+					  uint8_t above_has,
+					  const int16_t block[16]) {
+	int ctx3 = (int)left_has + (int)above_has;
+	int prev_token_was_zero = 0;
+	int current_has_coeffs = 0;
+
+	int last_nz = -1;
+	for (int i = first_coeff; i < 16; i++) {
+		int v = (int)block[zigzag[i]];
+		if (v != 0) last_nz = i;
+	}
+
+	// All remaining coefficients are 0 => immediate EOB.
+	if (last_nz < 0) {
+		int band = (int)coeff_bands[first_coeff];
+		count_treed_path(counts[coeff_plane][band][ctx3], coeff_tree, /*start_node=*/0, dct_eob);
+		return 0;
+	}
+
+	for (int i = first_coeff; i <= last_nz; i++) {
+		int band = (int)coeff_bands[i];
+
+		int v = (int)block[zigzag[i]];
+		int abs_value = (v < 0) ? -v : v;
+
+		uint32_t extra = 0;
+		const uint8_t* extra_probs = NULL;
+		dct_token tok = token_for_abs(abs_value, &extra, &extra_probs);
+
+		int start_node = prev_token_was_zero ? 2 : 0;
+		count_treed_path(counts[coeff_plane][band][ctx3], coeff_tree, start_node, (int)tok);
+
+		if (abs_value != 0) current_has_coeffs = 1;
+
+		if (abs_value == 0) ctx3 = 0;
+		else if (abs_value == 1) ctx3 = 1;
+		else ctx3 = 2;
+
+		prev_token_was_zero = (tok == DCT_0);
+	}
+
+	// If we didn't end exactly at the last coefficient, emit EOB (always from root).
+	if (last_nz < 15) {
+		int i = last_nz + 1;
+		int band = (int)coeff_bands[i];
+		count_treed_path(counts[coeff_plane][band][ctx3], coeff_tree, /*start_node=*/0, dct_eob);
+	}
+
+	return current_has_coeffs;
+}
+
 static void enc_part0_for_grid(EncBoolEncoder* e,
 							  uint32_t mb_cols,
 							  uint32_t mb_rows,
@@ -616,10 +697,13 @@ static void enc_part0_for_grid(EncBoolEncoder* e,
 							  int8_t y2_ac_delta_q,
 							  int8_t uv_dc_delta_q,
 							  int8_t uv_ac_delta_q,
+					  const uint8_t* mb_skip_coeff,
+					  uint8_t prob_skip_false,
 							  const uint8_t* y_modes,
 							  const uint8_t* uv_modes,
 							  const uint8_t* b_modes,
-							  const EncVp8LoopFilterParams* lf) {
+							  const EncVp8LoopFilterParams* lf,
+							  const uint8_t coeff_probs_override[4][8][3][num_dct_tokens - 1]) {
 	// Match decoder parse order in src/m05_tokens/vp8_tokens.c.
 	enc_bool_put(e, 128, 0);        // color_space
 	enc_bool_put(e, 128, 0);        // clamping_type
@@ -650,18 +734,32 @@ static void enc_part0_for_grid(EncBoolEncoder* e,
 
 	enc_bool_put(e, 128, 0); // refresh_entropy_probs
 
-	// Token prob updates: all 0.
+	// Token prob updates.
 	for (int i = 0; i < 4; i++) {
 		for (int j = 0; j < 8; j++) {
 			for (int k = 0; k < 3; k++) {
 				for (int t = 0; t < (NUM_DCT_TOKENS - 1); t++) {
-					enc_bool_put(e, coeff_update_probs[i][j][k][t], 0);
+					uint8_t upd = 0;
+					uint8_t newp = 0;
+					if (coeff_probs_override) {
+						newp = coeff_probs_override[i][j][k][t];
+						if (newp != default_coeff_probs[i][j][k][t]) upd = 1;
+					}
+					enc_bool_put(e, coeff_update_probs[i][j][k][t], upd);
+					if (upd) {
+						enc_bool_put_literal(e, newp, 8);
+					}
 				}
 			}
 		}
 	}
 
-	enc_bool_put(e, 128, 0); // mb_no_skip_coeff = 0
+	if (mb_skip_coeff) {
+		enc_bool_put(e, 128, 1); // mb_no_skip_coeff = 1 => mb_skip_coeff present
+		enc_bool_put_literal(e, prob_skip_false, 8);
+	} else {
+		enc_bool_put(e, 128, 0); // mb_no_skip_coeff = 0
+	}
 
 	// Subblock mode context predictors (only needed for B_PRED).
 	intra_bmode* above_bmodes = (intra_bmode*)malloc((size_t)mb_cols * 4u * sizeof(intra_bmode));
@@ -675,6 +773,11 @@ static void enc_part0_for_grid(EncBoolEncoder* e,
 		intra_bmode left_bmodes[4] = {B_DC_PRED, B_DC_PRED, B_DC_PRED, B_DC_PRED};
 		for (uint32_t mb_c = 0; mb_c < mb_cols; mb_c++) {
 			uint32_t mb_index = mb_r * mb_cols + mb_c;
+
+			if (mb_skip_coeff) {
+				uint8_t skip = mb_skip_coeff[mb_index] ? 1u : 0u;
+				enc_bool_put(e, prob_skip_false, skip);
+			}
 
 			int ymode = y_modes ? (int)y_modes[mb_index] : 0;
 			int uvmode = uv_modes ? (int)uv_modes[mb_index] : 0;
@@ -716,7 +819,10 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 							uint32_t mb_cols,
 							uint32_t mb_rows,
 							const uint8_t* y_modes,
-							const int16_t* coeffs) {
+						const int16_t* coeffs,
+					const uint8_t coeff_probs_override[4][8][3][num_dct_tokens - 1],
+					const uint8_t* mb_skip_coeff) {
+	const uint8_t (*coeff_probs)[8][3][num_dct_tokens - 1] = coeff_probs_override ? coeff_probs_override : default_coeff_probs;
 	uint8_t* above_y = (uint8_t*)calloc((size_t)mb_cols * 4u, 1);
 	uint8_t* above_u = (uint8_t*)calloc((size_t)mb_cols * 2u, 1);
 	uint8_t* above_v = (uint8_t*)calloc((size_t)mb_cols * 2u, 1);
@@ -747,6 +853,19 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 			const size_t mb_index = (size_t)mb_r * (size_t)mb_cols + (size_t)mb_c;
 			const int16_t* mb = coeffs + mb_index * coeffs_per_mb;
 
+			if (mb_skip_coeff && mb_skip_coeff[mb_index]) {
+					// Skipped macroblocks have no coefficients; reset contexts as if all blocks were all-zero.
+					above_y2[mb_c] = 0;
+					left_y2_flag = 0;
+					for (int cc = 0; cc < 4; cc++) above_y[mb_c * 4u + (uint32_t)cc] = 0;
+					for (int rr = 0; rr < 4; rr++) left_y[rr] = 0;
+					for (int cc = 0; cc < 2; cc++) above_u[mb_c * 2u + (uint32_t)cc] = 0;
+					for (int rr = 0; rr < 2; rr++) left_u[rr] = 0;
+					for (int cc = 0; cc < 2; cc++) above_v[mb_c * 2u + (uint32_t)cc] = 0;
+					for (int rr = 0; rr < 2; rr++) left_v[rr] = 0;
+					continue;
+			}
+
 			int ymode = y_modes ? (int)y_modes[mb_index] : 0;
 			int has_y2 = (ymode != (int)VP8_B_PRED);
 
@@ -754,7 +873,7 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 			if (has_y2) {
 				uint8_t left_has = left_y2_flag;
 				uint8_t above_has = above_y2[mb_c];
-				int has = enc_block(e, default_coeff_probs[1], 0, left_has, above_has, mb);
+				int has = enc_block(e, coeff_probs[1], 0, left_has, above_has, mb);
 				above_y2[mb_c] = (uint8_t)has;
 				left_y2_flag = (uint8_t)has;
 			} else {
@@ -775,7 +894,7 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 				for (int cc = 0; cc < 4; cc++) {
 					uint8_t left_has = (cc == 0) ? left_y[rr] : y_has[rr][cc - 1];
 					uint8_t above_has = (rr == 0) ? above_y[mb_c * 4u + (uint32_t)cc] : y_has[rr - 1][cc];
-					int has = enc_block(e, default_coeff_probs[y_plane], first_coeff, left_has, above_has, y + (rr * 4 + cc) * 16);
+					int has = enc_block(e, coeff_probs[y_plane], first_coeff, left_has, above_has, y + (rr * 4 + cc) * 16);
 					y_has[rr][cc] = (uint8_t)has;
 				}
 			}
@@ -789,7 +908,7 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 				for (int cc = 0; cc < 2; cc++) {
 					uint8_t left_has = (cc == 0) ? left_u[rr] : u_has[rr][cc - 1];
 					uint8_t above_has = (rr == 0) ? above_u[mb_c * 2u + (uint32_t)cc] : u_has[rr - 1][cc];
-					int has = enc_block(e, default_coeff_probs[2], 0, left_has, above_has, u + (rr * 2 + cc) * 16);
+					int has = enc_block(e, coeff_probs[2], 0, left_has, above_has, u + (rr * 2 + cc) * 16);
 					u_has[rr][cc] = (uint8_t)has;
 				}
 			}
@@ -803,7 +922,7 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 				for (int cc = 0; cc < 2; cc++) {
 					uint8_t left_has = (cc == 0) ? left_v[rr] : v_has[rr][cc - 1];
 					uint8_t above_has = (rr == 0) ? above_v[mb_c * 2u + (uint32_t)cc] : v_has[rr - 1][cc];
-					int has = enc_block(e, default_coeff_probs[2], 0, left_has, above_has, v + (rr * 2 + cc) * 16);
+					int has = enc_block(e, coeff_probs[2], 0, left_has, above_has, v + (rr * 2 + cc) * 16);
 					v_has[rr][cc] = (uint8_t)has;
 				}
 			}
@@ -816,6 +935,159 @@ static void enc_tokens_for_grid(EncBoolEncoder* e,
 	free(above_u);
 	free(above_v);
 	free(above_y2);
+}
+
+static void enc_compute_adaptive_coeff_probs(uint8_t out_probs[4][8][3][num_dct_tokens - 1],
+							  uint32_t mb_cols,
+							  uint32_t mb_rows,
+							  const uint8_t* y_modes,
+							  const int16_t* coeffs) {
+	memcpy(out_probs, default_coeff_probs, sizeof(default_coeff_probs));
+
+	uint32_t counts[4][8][3][num_dct_tokens - 1][2];
+	memset(counts, 0, sizeof(counts));
+
+	uint8_t* above_y = (uint8_t*)calloc((size_t)mb_cols * 4u, 1);
+	uint8_t* above_u = (uint8_t*)calloc((size_t)mb_cols * 2u, 1);
+	uint8_t* above_v = (uint8_t*)calloc((size_t)mb_cols * 2u, 1);
+	uint8_t* above_y2 = (uint8_t*)calloc((size_t)mb_cols, 1);
+	uint8_t left_y[4] = {0, 0, 0, 0};
+	uint8_t left_u[2] = {0, 0};
+	uint8_t left_v[2] = {0, 0};
+	uint8_t left_y2_flag = 0;
+
+	if (!above_y || !above_u || !above_v || !above_y2) {
+		free(above_y);
+		free(above_u);
+		free(above_v);
+		free(above_y2);
+		return;
+	}
+
+	const size_t coeffs_per_mb = 16 + (16 * 16) + (4 * 16) + (4 * 16);
+
+	for (uint32_t mb_r = 0; mb_r < mb_rows; mb_r++) {
+		left_y[0] = left_y[1] = left_y[2] = left_y[3] = 0;
+		left_u[0] = left_u[1] = 0;
+		left_v[0] = left_v[1] = 0;
+		left_y2_flag = 0;
+
+		for (uint32_t mb_c = 0; mb_c < mb_cols; mb_c++) {
+			const size_t mb_index = (size_t)mb_r * (size_t)mb_cols + (size_t)mb_c;
+			const int16_t* mb = coeffs + mb_index * coeffs_per_mb;
+
+			int ymode = y_modes ? (int)y_modes[mb_index] : 0;
+			int has_y2 = (ymode != (int)VP8_B_PRED);
+
+			// Y2
+			if (has_y2) {
+				uint8_t left_has = left_y2_flag;
+				uint8_t above_has = above_y2[mb_c];
+				int has = count_block_coeff_prob_branches(counts, 1, 0, left_has, above_has, mb);
+				above_y2[mb_c] = (uint8_t)has;
+				left_y2_flag = (uint8_t)has;
+			} else {
+				above_y2[mb_c] = 0;
+				left_y2_flag = 0;
+			}
+
+			// Y blocks.
+			uint8_t y_has[4][4];
+			for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) y_has[rr][cc] = 0;
+
+			const int y_plane = has_y2 ? 0 : 3;
+			const int first_coeff = has_y2 ? 1 : 0;
+
+			const int16_t* y = mb + 16;
+			for (int rr = 0; rr < 4; rr++) {
+				for (int cc = 0; cc < 4; cc++) {
+					uint8_t left_has = (cc == 0) ? left_y[rr] : y_has[rr][cc - 1];
+					uint8_t above_has = (rr == 0) ? above_y[mb_c * 4u + (uint32_t)cc] : y_has[rr - 1][cc];
+					int has = count_block_coeff_prob_branches(
+					    counts, y_plane, first_coeff, left_has, above_has, y + (rr * 4 + cc) * 16);
+					y_has[rr][cc] = (uint8_t)has;
+				}
+			}
+			for (int cc = 0; cc < 4; cc++) above_y[mb_c * 4u + (uint32_t)cc] = y_has[3][cc];
+			for (int rr = 0; rr < 4; rr++) left_y[rr] = y_has[rr][3];
+
+			// U blocks (2x2)
+			uint8_t u_has[2][2] = {{0, 0}, {0, 0}};
+			const int16_t* u = y + (16 * 16);
+			for (int rr = 0; rr < 2; rr++) {
+				for (int cc = 0; cc < 2; cc++) {
+					uint8_t left_has = (cc == 0) ? left_u[rr] : u_has[rr][cc - 1];
+					uint8_t above_has = (rr == 0) ? above_u[mb_c * 2u + (uint32_t)cc] : u_has[rr - 1][cc];
+					int has = count_block_coeff_prob_branches(counts, 2, 0, left_has, above_has, u + (rr * 2 + cc) * 16);
+					u_has[rr][cc] = (uint8_t)has;
+				}
+			}
+			for (int cc = 0; cc < 2; cc++) above_u[mb_c * 2u + (uint32_t)cc] = u_has[1][cc];
+			for (int rr = 0; rr < 2; rr++) left_u[rr] = u_has[rr][1];
+
+			// V blocks (2x2)
+			uint8_t v_has[2][2] = {{0, 0}, {0, 0}};
+			const int16_t* v = u + (4 * 16);
+			for (int rr = 0; rr < 2; rr++) {
+				for (int cc = 0; cc < 2; cc++) {
+					uint8_t left_has = (cc == 0) ? left_v[rr] : v_has[rr][cc - 1];
+					uint8_t above_has = (rr == 0) ? above_v[mb_c * 2u + (uint32_t)cc] : v_has[rr - 1][cc];
+					int has = count_block_coeff_prob_branches(counts, 2, 0, left_has, above_has, v + (rr * 2 + cc) * 16);
+					v_has[rr][cc] = (uint8_t)has;
+				}
+			}
+			for (int cc = 0; cc < 2; cc++) above_v[mb_c * 2u + (uint32_t)cc] = v_has[1][cc];
+			for (int rr = 0; rr < 2; rr++) left_v[rr] = v_has[rr][1];
+		}
+	}
+
+	free(above_y);
+	free(above_u);
+	free(above_v);
+	free(above_y2);
+
+	// Decide updates per probability (net savings vs update signaling cost).
+	const uint32_t min_total = 32;
+	// Simple smoothing to avoid overfitting low-count symbols.
+	// Treat the default probability as a weak prior of this total strength.
+	const uint32_t prior_strength = 64;
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 8; j++) {
+			for (int k = 0; k < 3; k++) {
+				for (int t = 0; t < (num_dct_tokens - 1); t++) {
+					uint32_t left = counts[i][j][k][t][0];
+					uint32_t right = counts[i][j][k][t][1];
+					uint32_t total = left + right;
+					if (total < min_total) continue;
+
+					uint32_t oldp = (uint32_t)default_coeff_probs[i][j][k][t];
+					uint32_t left_prior = (oldp * prior_strength + 128u) / 256u;
+					uint32_t right_prior = prior_strength - left_prior;
+					uint32_t total2 = total + prior_strength;
+					uint32_t left2 = left + left_prior;
+					uint32_t right2 = right + right_prior;
+					uint32_t newp = (left2 * 256u + (total2 / 2u)) / total2;
+					if (newp <= 0u) newp = 1u;
+					if (newp >= 256u) newp = 255u;
+					if (newp + 1u >= oldp && oldp + 1u >= newp) continue; // Ignore tiny changes.
+					if (newp == oldp) continue;
+
+					uint64_t old_cost = (uint64_t)left2 * (uint64_t)cost_prob_q8(oldp) +
+					                    (uint64_t)right2 * (uint64_t)cost_prob_q8(256u - oldp);
+					uint64_t new_cost = (uint64_t)left2 * (uint64_t)cost_prob_q8(newp) +
+					                    (uint64_t)right2 * (uint64_t)cost_prob_q8(256u - newp);
+
+					uint8_t up = coeff_update_probs[i][j][k][t];
+					uint64_t delta_update_cost = (uint64_t)cost_bool_put_q8(up, 1) + (uint64_t)(8u * 256u) -
+					                         (uint64_t)cost_bool_put_q8(up, 0);
+
+					if (old_cost > new_cost + delta_update_cost) {
+						out_probs[i][j][k][t] = (uint8_t)newp;
+					}
+				}
+			}
+		}
+	}
 }
 
 int enc_vp8_build_keyframe_dc_coeffs(uint32_t width,
@@ -929,6 +1201,7 @@ int enc_vp8_build_keyframe_i16_coeffs_ex(uint32_t width,
 												y2_ac_delta_q,
 												uv_dc_delta_q,
 												uv_ac_delta_q,
+									/*enable_mb_skip=*/0,
 												y_modes,
 												uv_modes,
 												/*b_modes=*/NULL,
@@ -962,6 +1235,7 @@ int enc_vp8_build_keyframe_intra_coeffs(uint32_t width,
 											y2_ac_delta_q,
 											uv_dc_delta_q,
 											uv_ac_delta_q,
+									/*enable_mb_skip=*/0,
 											y_modes,
 											uv_modes,
 											b_modes,
@@ -980,6 +1254,7 @@ int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
 									  int8_t y2_ac_delta_q,
 									  int8_t uv_dc_delta_q,
 									  int8_t uv_ac_delta_q,
+							  int enable_mb_skip,
 									  const uint8_t* y_modes,
 									  const uint8_t* uv_modes,
 									  const uint8_t* b_modes,
@@ -1014,6 +1289,35 @@ int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
 		return -1;
 	}
 
+	uint8_t* mb_skip_coeff = NULL;
+	uint8_t prob_skip_false = 255;
+	if (enable_mb_skip) {
+		mb_skip_coeff = (uint8_t*)malloc((size_t)mb_total);
+		if (!mb_skip_coeff) {
+			errno = ENOMEM;
+			return -1;
+		}
+		uint32_t non_skipped = 0;
+		for (uint32_t mb_i = 0; mb_i < mb_total; mb_i++) {
+			const int16_t* mb = coeffs + (size_t)mb_i * coeffs_per_mb;
+			int any = 0;
+			for (size_t i = 0; i < coeffs_per_mb; i++) {
+				if (mb[i] != 0) {
+					any = 1;
+					break;
+				}
+			}
+			mb_skip_coeff[mb_i] = any ? 0u : 1u;
+			if (any) non_skipped++;
+		}
+		uint32_t total = mb_total;
+		uint32_t num = non_skipped * 256u + (total / 2u);
+		uint32_t p = (total ? (num / total) : 255u);
+		if (p <= 0u) p = 1u;
+		if (p >= 256u) p = 255u;
+		prob_skip_false = (uint8_t)p;
+	}
+
 	EncBoolEncoder p0;
 	enc_bool_init(&p0);
 	enc_part0_for_grid(&p0,
@@ -1025,13 +1329,17 @@ int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
 							y2_ac_delta_q,
 							uv_dc_delta_q,
 							uv_ac_delta_q,
+							mb_skip_coeff,
+							prob_skip_false,
 							y_modes,
 							uv_modes,
 							b_modes,
-							lf);
+							lf,
+							/*coeff_probs_override=*/NULL);
 	enc_bool_finish(&p0);
 	if (enc_bool_error(&p0)) {
 		enc_bool_free(&p0);
+		free(mb_skip_coeff);
 		errno = EINVAL;
 		return -1;
 	}
@@ -1044,11 +1352,12 @@ int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
 
 	EncBoolEncoder tok;
 	enc_bool_init(&tok);
-	enc_tokens_for_grid(&tok, mb_cols, mb_rows, y_modes, coeffs);
+	enc_tokens_for_grid(&tok, mb_cols, mb_rows, y_modes, coeffs, /*coeff_probs_override=*/NULL, mb_skip_coeff);
 	enc_bool_finish(&tok);
 	if (enc_bool_error(&tok)) {
 		enc_bool_free(&tok);
 		enc_bool_free(&p0);
+		free(mb_skip_coeff);
 		errno = EINVAL;
 		return -1;
 	}
@@ -1060,6 +1369,7 @@ int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
 	if (!buf) {
 		enc_bool_free(&tok);
 		enc_bool_free(&p0);
+		free(mb_skip_coeff);
 		errno = ENOMEM;
 		return -1;
 	}
@@ -1071,6 +1381,173 @@ int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
 
 	enc_bool_free(&tok);
 	enc_bool_free(&p0);
+	free(mb_skip_coeff);
+
+	*out_payload = buf;
+	*out_size = total;
+	return 0;
+}
+
+int enc_vp8_build_keyframe_intra_coeffs_ex_probs(uint32_t width,
+										  uint32_t height,
+										  uint8_t q_index,
+										  int8_t y1_dc_delta_q,
+										  int8_t y2_dc_delta_q,
+										  int8_t y2_ac_delta_q,
+										  int8_t uv_dc_delta_q,
+										  int8_t uv_ac_delta_q,
+							  int enable_mb_skip,
+										  const uint8_t* y_modes,
+										  const uint8_t* uv_modes,
+										  const uint8_t* b_modes,
+										  const EncVp8LoopFilterParams* lf,
+										  EncVp8TokenProbsMode probs_mode,
+										  const int16_t* coeffs,
+										  size_t coeffs_count,
+										  uint8_t** out_payload,
+										  size_t* out_size) {
+	if (probs_mode == ENC_VP8_TOKEN_PROBS_DEFAULT) {
+		return enc_vp8_build_keyframe_intra_coeffs_ex(width,
+		                                            height,
+		                                            q_index,
+		                                            y1_dc_delta_q,
+		                                            y2_dc_delta_q,
+		                                            y2_ac_delta_q,
+		                                            uv_dc_delta_q,
+		                                            uv_ac_delta_q,
+		                                            enable_mb_skip,
+		                                            y_modes,
+		                                            uv_modes,
+		                                            b_modes,
+		                                            lf,
+		                                            coeffs,
+		                                            coeffs_count,
+		                                            out_payload,
+		                                            out_size);
+	}
+
+	if (!out_payload || !out_size) {
+		errno = EINVAL;
+		return -1;
+	}
+	*out_payload = NULL;
+	*out_size = 0;
+	if (!coeffs) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	uint32_t mb_cols = 0, mb_rows = 0;
+	if (enc_vp8_mb_grid(width, height, &mb_cols, &mb_rows) != 0) return -1;
+	uint64_t mb_total64 = (uint64_t)mb_cols * (uint64_t)mb_rows;
+	if (mb_total64 == 0 || mb_total64 > (1u << 20)) {
+		errno = EOVERFLOW;
+		return -1;
+	}
+	uint32_t mb_total = (uint32_t)mb_total64;
+
+	const size_t coeffs_per_mb = 16 + (16 * 16) + (4 * 16) + (4 * 16);
+	if (coeffs_count != (size_t)mb_total * coeffs_per_mb) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	uint8_t* mb_skip_coeff = NULL;
+	uint8_t prob_skip_false = 255;
+	if (enable_mb_skip) {
+		mb_skip_coeff = (uint8_t*)malloc((size_t)mb_total);
+		if (!mb_skip_coeff) {
+			errno = ENOMEM;
+			return -1;
+		}
+		uint32_t non_skipped = 0;
+		for (uint32_t mb_i = 0; mb_i < mb_total; mb_i++) {
+			const int16_t* mb = coeffs + (size_t)mb_i * coeffs_per_mb;
+			int any = 0;
+			for (size_t i = 0; i < coeffs_per_mb; i++) {
+				if (mb[i] != 0) {
+					any = 1;
+					break;
+				}
+			}
+			mb_skip_coeff[mb_i] = any ? 0u : 1u;
+			if (any) non_skipped++;
+		}
+		uint32_t total = mb_total;
+		uint32_t num = non_skipped * 256u + (total / 2u);
+		uint32_t p = (total ? (num / total) : 255u);
+		if (p <= 0u) p = 1u;
+		if (p >= 256u) p = 255u;
+		prob_skip_false = (uint8_t)p;
+	}
+
+	uint8_t coeff_probs[4][8][3][num_dct_tokens - 1];
+	enc_compute_adaptive_coeff_probs(coeff_probs, mb_cols, mb_rows, y_modes, coeffs);
+
+	EncBoolEncoder p0;
+	enc_bool_init(&p0);
+	enc_part0_for_grid(&p0,
+	                   mb_cols,
+	                   mb_rows,
+	                   q_index,
+	                   y1_dc_delta_q,
+	                   y2_dc_delta_q,
+	                   y2_ac_delta_q,
+	                   uv_dc_delta_q,
+	                   uv_ac_delta_q,
+	                   mb_skip_coeff,
+	                   prob_skip_false,
+	                   y_modes,
+	                   uv_modes,
+	                   b_modes,
+	                   lf,
+	                   coeff_probs);
+	enc_bool_finish(&p0);
+	if (enc_bool_error(&p0)) {
+		enc_bool_free(&p0);
+		free(mb_skip_coeff);
+		errno = EINVAL;
+		return -1;
+	}
+	const size_t p0_size = enc_bool_size(&p0);
+	if (p0_size > 0x7FFFFu) {
+		enc_bool_free(&p0);
+		errno = EINVAL;
+		return -1;
+	}
+
+	EncBoolEncoder tok;
+	enc_bool_init(&tok);
+	enc_tokens_for_grid(&tok, mb_cols, mb_rows, y_modes, coeffs, coeff_probs, mb_skip_coeff);
+	enc_bool_finish(&tok);
+	if (enc_bool_error(&tok)) {
+		enc_bool_free(&tok);
+		enc_bool_free(&p0);
+		free(mb_skip_coeff);
+		errno = EINVAL;
+		return -1;
+	}
+	const size_t tok_size = enc_bool_size(&tok);
+
+	const size_t uncompressed = 10;
+	size_t total = uncompressed + p0_size + tok_size;
+	uint8_t* buf = (uint8_t*)malloc(total);
+	if (!buf) {
+		enc_bool_free(&tok);
+		enc_bool_free(&p0);
+		free(mb_skip_coeff);
+		errno = ENOMEM;
+		return -1;
+	}
+
+	write_vp8_frame_tag(&buf[0], (uint32_t)p0_size);
+	write_keyframe_start_code_and_dims(&buf[3], (uint16_t)width, (uint16_t)height);
+	memcpy(&buf[uncompressed], enc_bool_data(&p0), p0_size);
+	memcpy(&buf[uncompressed + p0_size], enc_bool_data(&tok), tok_size);
+
+	enc_bool_free(&tok);
+	enc_bool_free(&p0);
+	free(mb_skip_coeff);
 
 	*out_payload = buf;
 	*out_size = total;

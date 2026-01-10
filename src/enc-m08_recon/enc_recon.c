@@ -40,6 +40,54 @@ typedef enum {
 static inline uint8_t avg3_u8(uint8_t x, uint8_t y, uint8_t z) { return (uint8_t)((x + y + y + z + 2u) >> 2); }
 static inline uint8_t avg2_u8(uint8_t x, uint8_t y) { return (uint8_t)((x + y + 1u) >> 1); }
 
+static inline int16_t rdo_quant_one(int16_t c, int step) {
+	// Match enc_vp8_quantize4x4_inplace() rounding.
+	if (step <= 0) return 0;
+	int v = (int)c;
+	int sign = 1;
+	if (v < 0) {
+		sign = -1;
+		v = -v;
+	}
+	const int q = (v + (step >> 1)) / step;
+	const int r = sign * q;
+	if (r < -32768) return (int16_t)-32768;
+	if (r > 32767) return (int16_t)32767;
+	return (int16_t)r;
+}
+
+static inline int16_t rdo_quant_one_ac_deadzone_pct(int16_t c, int step, uint32_t deadzone_pct) {
+	// Experimental AC quant: enlarge the zero bin to (deadzone_pct/100)*step.
+	// This is intentionally used only in bpred-rdo (tuning knob) to avoid
+	// perturbing baseline encoders and tests.
+	if (step <= 0) return 0;
+	if (deadzone_pct == 0) deadzone_pct = 60;
+	if (deadzone_pct > 99) deadzone_pct = 99;
+	int v = (int)c;
+	int sign = 1;
+	if (v < 0) {
+		sign = -1;
+		v = -v;
+	}
+	// If |v| < deadzone_pct% of step => quantize to 0.
+	if ((int64_t)v * 100 < (int64_t)step * (int64_t)deadzone_pct) return 0;
+	const int q = (v + (step >> 1)) / step;
+	const int r = sign * q;
+	if (r < -32768) return (int16_t)-32768;
+	if (r > 32767) return (int16_t)32767;
+	return (int16_t)r;
+}
+
+static inline void rdo_quantize4x4_inplace(int16_t coeffs[16], int dc_step, int ac_step, int quant_mode, uint32_t ac_deadzone_pct) {
+	if (!coeffs) return;
+	coeffs[0] = rdo_quant_one(coeffs[0], dc_step);
+	if (quant_mode == 1) {
+		for (int i = 1; i < 16; ++i) coeffs[i] = rdo_quant_one_ac_deadzone_pct(coeffs[i], ac_step, ac_deadzone_pct);
+	} else {
+		for (int i = 1; i < 16; ++i) coeffs[i] = rdo_quant_one(coeffs[i], ac_step);
+	}
+}
+
 static inline uint32_t rdo_coeff_mag_cost(int16_t c) {
 	// Very cheap magnitude proxy: 1 + floor(log2(|c|)) for |c|>0, capped.
 	// This tends to correlate better with actual token cost than nnz alone.
@@ -70,6 +118,15 @@ static inline uint32_t rdo_rate_from_token_bits_q8(uint32_t bits_q8) {
 	// Convert Q8 bits to a small integer proxy.
 	// Downscale by 8 to keep lambda tuning in-range.
 	return (bits_q8 >> 11);
+}
+
+static inline uint32_t rdo_rate_from_mode_bits_q8(uint32_t bits_q8) {
+	// Mode signaling costs are only a handful of bits. If we downscale them the same
+	// way as coefficient token bits, they frequently quantize to zero and effectively
+	// disappear from the rate term. Use a ceil(bits/8) mapping so they stay non-zero
+	// but remain comparable in scale.
+	const uint32_t bits = (bits_q8 >> 8);
+	return (bits + 7u) >> 3;
 }
 
 static inline uint32_t rdo_bmode_signal_cost(Vp8BMode mode) {
@@ -107,6 +164,19 @@ static inline uint32_t rdo_ymode_signal_cost(uint8_t ymode) {
 		case 3: return 1; // I16 TM
 		case 4: return 2; // B_PRED is typically more expensive than DC.
 		default: return 2;
+	}
+}
+
+static inline int rdo_mbymode_to_bmode(int ymode) {
+	// Match the mapping used by the VP8 keyframe decoder/bitstream:
+	// when a neighbor macroblock is not B_PRED, its subblock modes are implied
+	// by the macroblock mode for purposes of bmode contexts.
+	switch (ymode) {
+		case VP8_I16_DC_PRED: return B_DC_PRED;
+		case VP8_I16_V_PRED: return B_VE_PRED;
+		case VP8_I16_H_PRED: return B_HE_PRED;
+		case VP8_I16_TM_PRED: return B_TM_PRED;
+		default: return B_DC_PRED;
 	}
 }
 
@@ -1702,10 +1772,16 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 	uint32_t lambda_mul = 1;
 	uint32_t lambda_div = 1;
 	int use_entropy_rate = 0;
+	int use_entropy_signal = 0;
+	int quant_mode = 0;
+	uint32_t ac_deadzone_pct = 0;
 	if (tuning) {
 		lambda_mul = tuning->lambda_mul ? tuning->lambda_mul : 1;
 		lambda_div = tuning->lambda_div ? tuning->lambda_div : 1;
 		use_entropy_rate = (tuning->rate_mode == 1);
+		use_entropy_signal = (tuning->signal_mode == 1);
+		quant_mode = (tuning->quant_mode == 1) ? 1 : 0;
+		ac_deadzone_pct = tuning->ac_deadzone_pct;
 	}
 
 	const uint32_t uv_w = (w + 1u) >> 1;
@@ -1766,6 +1842,9 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 				uint32_t sse = 0;
 				uint32_t rate = 0;
 				rate += rdo_uv_mode_signal_cost(mode);
+				if (use_entropy_rate && use_entropy_signal) {
+					rate += rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_uv_mode_bits_q8((int)mode));
+				}
 				uint8_t u_has[2][2] = {{0, 0}, {0, 0}};
 				uint8_t v_has[2][2] = {{0, 0}, {0, 0}};
 				int16_t ublk_tmp[4][16];
@@ -1778,7 +1857,7 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 					fill4x4_clamped(src4, yuv->u, yuv->uv_stride, uv_w, uv_h, ux0 + bx, uy0 + by);
 					pred8_fill4x4(pred4, pred_u_tmp, bx, by);
 					enc_vp8_ftransform4x4(src4, 4, pred4, 4, ublk_tmp[n]);
-					enc_vp8_quantize4x4_inplace(ublk_tmp[n], qf.uv_dc, qf.uv_ac);
+					rdo_quantize4x4_inplace(ublk_tmp[n], qf.uv_dc, qf.uv_ac, quant_mode, ac_deadzone_pct);
 					refine_dc_quant4x4(ublk_tmp[n], qf.uv_dc, qf.uv_ac, src4, pred4);
 					if (use_entropy_rate) {
 						uint8_t has = 0;
@@ -1809,7 +1888,7 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 					fill4x4_clamped(src4, yuv->v, yuv->uv_stride, uv_w, uv_h, ux0 + bx, uy0 + by);
 					pred8_fill4x4(pred4, pred_v_tmp, bx, by);
 					enc_vp8_ftransform4x4(src4, 4, pred4, 4, vblk_tmp[n]);
-					enc_vp8_quantize4x4_inplace(vblk_tmp[n], qf.uv_dc, qf.uv_ac);
+					rdo_quantize4x4_inplace(vblk_tmp[n], qf.uv_dc, qf.uv_ac, quant_mode, ac_deadzone_pct);
 					refine_dc_quant4x4(vblk_tmp[n], qf.uv_dc, qf.uv_ac, src4, pred4);
 					if (use_entropy_rate) {
 						uint8_t has = 0;
@@ -1916,6 +1995,7 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 					}
 
 					fill4x4_clamped(src4, yuv->y, yuv->y_stride, w, h, sx, sy);
+					const uint32_t blk = sb_r * 4u + sb_c;
 
 					uint32_t best_cost = 0xFFFFFFFFu;
 					Vp8BMode best_mode = B_DC_PRED;
@@ -1929,14 +2009,44 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 						bpred4x4(pred4, &A8[1], L4, mode);
 						int16_t coeff[16];
 						enc_vp8_ftransform4x4(src4, 4, pred4, 4, coeff);
-						enc_vp8_quantize4x4_inplace(coeff, qf.y1_dc, qf.y1_ac);
+						rdo_quantize4x4_inplace(coeff, qf.y1_dc, qf.y1_ac, quant_mode, ac_deadzone_pct);
 						refine_dc_quant4x4(coeff, qf.y1_dc, qf.y1_ac, src4, pred4);
-						uint32_t rate = rdo_bmode_signal_cost(mode);
+						uint32_t rate = 0;
 						uint8_t has = 0;
 						if (use_entropy_rate) {
+							int left_bmode = 0;
+							int above_bmode = 0;
+							if (sb_c > 0) {
+								left_bmode = (int)cand_b_modes[blk - 1u];
+							} else if (mbx > 0) {
+								const uint32_t mb_left_index = mb_index - 1u;
+								const int left_ymode = (int)y_modes[mb_left_index];
+								if (left_ymode == 4) {
+									left_bmode = (int)b_modes[mb_left_index * 16u + (sb_r * 4u + 3u)];
+								} else {
+									left_bmode = rdo_mbymode_to_bmode(left_ymode);
+								}
+							}
+							if (sb_r > 0) {
+								above_bmode = (int)cand_b_modes[blk - 4u];
+							} else if (mby > 0) {
+								const uint32_t mb_above_index = mb_index - mb_cols;
+								const int above_ymode = (int)y_modes[mb_above_index];
+								if (above_ymode == 4) {
+									above_bmode = (int)b_modes[mb_above_index * 16u + (3u * 4u + sb_c)];
+								} else {
+									above_bmode = rdo_mbymode_to_bmode(above_ymode);
+								}
+							}
+							rate += rdo_bmode_signal_cost(mode);
+							if (use_entropy_signal) {
+								rate += rdo_rate_from_mode_bits_q8(
+									enc_vp8_estimate_keyframe_bmode_bits_q8(above_bmode, left_bmode, (int)mode));
+							}
 							rate += rdo_rate_from_token_bits_q8(
 								enc_vp8_estimate_keyframe_block_token_bits_q8(3, 0, left_has_ctx, above_has_ctx, coeff, &has));
 						} else {
+							rate += rdo_bmode_signal_cost(mode);
 							rate += rdo_rate_proxy4x4(coeff);
 							for (int i = 0; i < 16; i++) has |= (uint8_t)(coeff[i] != 0);
 						}
@@ -1957,7 +2067,6 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 						}
 					}
 
-					const uint32_t blk = sb_r * 4u + sb_c;
 					cand_b_modes[blk] = (uint8_t)best_mode;
 					for (int i = 0; i < 16; i++) cand_y_coeffs[blk][i] = best_coeff[i];
 					y_has_sel[sb_r][sb_c] = best_has;
@@ -1979,6 +2088,9 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 				}
 			}
 			cost_bpred += (uint32_t)((uint64_t)lambda_y * (uint64_t)rdo_ymode_signal_cost(4));
+			if (use_entropy_rate && use_entropy_signal) {
+				cost_bpred += (uint32_t)((uint64_t)lambda_y * (uint64_t)rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_ymode_bits_q8(4)));
+			}
 			for (uint32_t dy = 0; dy < 16; ++dy) {
 				memcpy(cand_recon_y + dy * 16u,
 				       recon.y + (size_t)(y0 + dy) * recon.y_stride + (size_t)x0,
@@ -2036,14 +2148,18 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 				// Quantize Y2 and Y blocks.
 				int16_t y2q[16];
 				for (int i = 0; i < 16; ++i) y2q[i] = y2[i];
-				enc_vp8_quantize4x4_inplace(y2q, qf.y2_dc, qf.y2_ac);
+				rdo_quantize4x4_inplace(y2q, qf.y2_dc, qf.y2_ac, 0, 0);
 				for (int i = 0; i < 16; ++i) y2[i] = y2q[i];
 				for (int n = 0; n < 16; ++n) {
-					enc_vp8_quantize4x4_inplace(tmp[n], qf.y1_dc, qf.y1_ac);
+					rdo_quantize4x4_inplace(tmp[n], qf.y1_dc, qf.y1_ac, quant_mode, ac_deadzone_pct);
 				}
 
 				// Rate term.
-				uint32_t rate = rdo_ymode_signal_cost((uint8_t)mode);
+				uint32_t rate = 0;
+				rate += rdo_ymode_signal_cost((uint8_t)mode);
+				if (use_entropy_rate && use_entropy_signal) {
+					rate += rdo_rate_from_mode_bits_q8(enc_vp8_estimate_keyframe_ymode_bits_q8((int)mode));
+				}
 				if (use_entropy_rate) {
 					uint32_t bits_q8 = 0;
 					uint8_t y2_has = 0;

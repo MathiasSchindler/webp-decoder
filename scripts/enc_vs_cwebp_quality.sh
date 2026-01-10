@@ -108,7 +108,21 @@ def f(x):
     except ValueError:
         if x == "inf":
             return math.inf
+        if x == "nan":
+            return math.nan
         raise
+
+PSNR_CAP = 99.0
+
+def clamp_psnr(x: float) -> float:
+    # PSNR can be "inf" for perfect reconstructions (common on synthetic/solid inputs).
+    # Using inf directly can yield NaN when we compute (inf - inf). Clamp to a high,
+    # representative ceiling so deltas remain well-defined.
+    if math.isinf(x):
+        return PSNR_CAP
+    if math.isnan(x):
+        return math.nan
+    return min(x, PSNR_CAP)
 
 rows = []
 with open(path, "r", encoding="utf-8") as fp:
@@ -162,7 +176,7 @@ def summarize_pairwise(group_rows):
     def avg(xs):
         return sum(xs) / len(xs) if xs else 0.0
 
-    d_psnr = [o["psnr"] - l["psnr"] for o,l in size_pairs]
+    d_psnr = [clamp_psnr(o["psnr"]) - clamp_psnr(l["psnr"]) for o,l in size_pairs]
     d_ssim = [o["ssim"] - l["ssim"] for o,l in size_pairs]
     ratio_bytes = [o["bytes"] / l["bytes"] for o,l in qual_pairs]
 

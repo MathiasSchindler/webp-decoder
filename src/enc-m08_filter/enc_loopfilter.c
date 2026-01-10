@@ -16,29 +16,23 @@ void enc_vp8_loopfilter_from_qindex(uint8_t qindex, EncVp8LoopFilterParams* out)
 
 	// qindex is 0..127. Map it deterministically to VP8 loopfilter params.
 	//
-	// Goals:
-	// - High qindex (low quality): stronger filtering to reduce blocking.
-	// - Low qindex (high quality): lighter filtering and higher sharpness to
-	//   avoid unnecessary blur.
+	// Keep this mapping aligned with libwebp defaults for apples-to-apples
+	// comparisons. Empirically, cwebp uses sharpness=0 and a relatively low
+	// filter level for most qindex values.
 	//
-	// This is a simple piecewise-linear mapping in qindex space.
+	// We approximate cwebp's behavior with a small piecewise-linear curve anchored
+	// on observed points (qindex -> level):
+	//   0->0, 9->3, 26->8, 38->11, 75->29, 127->63
 	int level;
-	int sharpness;
-	if (qindex < 16) {
-		level = ((int)qindex * 10 + 8) / 16; // 0..10
-		sharpness = 0;
-	} else if (qindex < 32) {
-		level = 10 + (((int)qindex - 16) * 10 + 8) / 16; // 10..20
-		sharpness = 0;
-	} else if (qindex < 64) {
-		level = 20 + (((int)qindex - 32) * 16 + 16) / 32; // 20..36
-		sharpness = 1;
-	} else if (qindex < 96) {
-		level = 36 + (((int)qindex - 64) * 16 + 16) / 32; // 36..52
-		sharpness = 2;
+	const int sharpness = 0;
+	if (qindex <= 26) {
+		level = ((int)qindex * 8 + 13) / 26; // round(qindex * 8/26)
+	} else if (qindex <= 38) {
+		level = 8 + (((int)qindex - 26) * 3 + 6) / 12; // round((q-26) * 3/12)
+	} else if (qindex <= 75) {
+		level = 11 + (((int)qindex - 38) * 18 + 18) / 37; // round((q-38) * 18/37)
 	} else {
-		level = 52 + (((int)qindex - 96) * 11 + 15) / 31; // 52..63
-		sharpness = 3;
+		level = 29 + (((int)qindex - 75) * 34 + 26) / 52; // round((q-75) * 34/52)
 	}
 
 	*out = (EncVp8LoopFilterParams){

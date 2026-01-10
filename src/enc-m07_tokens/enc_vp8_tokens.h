@@ -9,6 +9,11 @@
 extern "C" {
 #endif
 
+typedef enum {
+    ENC_VP8_TOKEN_PROBS_DEFAULT = 0,
+    ENC_VP8_TOKEN_PROBS_ADAPTIVE = 1,
+} EncVp8TokenProbsMode;
+
 // Build a VP8 keyframe payload (not RIFF/WebP wrapper) for arbitrary dimensions,
 // with all macroblocks using DC_PRED (Y and UV), and coefficient tokens encoded
 // from the provided quantized coefficient buffers.
@@ -129,6 +134,7 @@ int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
                                           int8_t y2_ac_delta_q,
                                           int8_t uv_dc_delta_q,
                                           int8_t uv_ac_delta_q,
+					  int enable_mb_skip,
                                           const uint8_t* y_modes,
                                           const uint8_t* uv_modes,
                                           const uint8_t* b_modes,
@@ -137,6 +143,30 @@ int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
                                           size_t coeffs_count,
                                           uint8_t** out_payload,
                                           size_t* out_size);
+
+// Like enc_vp8_build_keyframe_intra_coeffs_ex(), but allows optional coefficient
+// token probability updates (keyframes only).
+//
+// When probs_mode==ENC_VP8_TOKEN_PROBS_DEFAULT, the output is identical to
+// enc_vp8_build_keyframe_intra_coeffs_ex() (no probability updates emitted).
+int enc_vp8_build_keyframe_intra_coeffs_ex_probs(uint32_t width,
+                                                 uint32_t height,
+                                                 uint8_t q_index,
+                                                 int8_t y1_dc_delta_q,
+                                                 int8_t y2_dc_delta_q,
+                                                 int8_t y2_ac_delta_q,
+                                                 int8_t uv_dc_delta_q,
+                                                 int8_t uv_ac_delta_q,
+						   int enable_mb_skip,
+                                                 const uint8_t* y_modes,
+                                                 const uint8_t* uv_modes,
+                                                 const uint8_t* b_modes,
+                                                 const EncVp8LoopFilterParams* lf,
+                                                 EncVp8TokenProbsMode probs_mode,
+                                                 const int16_t* coeffs,
+                                                 size_t coeffs_count,
+                                                 uint8_t** out_payload,
+                                                 size_t* out_size);
 
 // --- Experimental helpers (encoder-side estimation) ---
 //

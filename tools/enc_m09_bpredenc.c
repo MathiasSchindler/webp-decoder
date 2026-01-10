@@ -172,6 +172,7 @@ int main(int argc, char** argv) {
 		                                          0,
 		                                          0,
 		                                          0,
+										  /*enable_mb_skip=*/0,
 		                                          y_modes,
 		                                          uv_modes,
 		                                          b_modes,
