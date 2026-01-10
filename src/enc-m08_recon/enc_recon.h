@@ -26,6 +26,9 @@ typedef struct {
 	// Effective lambda = base_lambda(qindex) * lambda_mul / lambda_div.
 	uint32_t lambda_mul;
 	uint32_t lambda_div;
+	// 0: use the existing cheap magnitude proxy (default)
+	// 1: use an entropy-style token cost estimator (experimental)
+	uint32_t rate_mode;
 } EncBpredRdoTuning;
 
 int enc_vp8_recon_alloc(uint32_t width, uint32_t height, EncVp8ReconPlanes* out);

@@ -218,6 +218,285 @@ static void enc_write_extra(EncBoolEncoder* e, const uint8_t* probs, uint32_t ex
 	}
 }
 
+// Forward declaration for encoder-side estimation helpers.
+static dct_token token_for_abs(int abs_value, uint32_t* out_extra, const uint8_t** out_extraprobs);
+
+// --- Entropy-style token cost estimation (Q8 bits) ---
+//
+// We approximate -log2(p) with a small fixed-point helper that avoids libm.
+// This is used only for encoder-side RDO experiments.
+
+static inline uint32_t log2_q8_u16(uint32_t x) {
+	// Returns log2(x) in Q8 for x in [1..256].
+	// Uses a simple linear approximation within each power-of-two interval.
+	if (x == 0) return 0;
+	if (x >= 256u) return 8u << 8;
+	// floor(log2(x))
+	uint32_t l = 0;
+	uint32_t t = x;
+	while (t > 1u) {
+		t >>= 1u;
+		l++;
+	}
+	// Normalize to [128..255] with shift.
+	const uint32_t shift = 7u - l;
+	uint32_t m = x << shift; // 128..255
+	uint32_t frac = (m - 128u); // 0..127
+	// Approximate log2(m/128) ~= frac/128.
+	uint32_t frac_q8 = (frac << 8) / 128u;
+	return (l << 8) + frac_q8;
+}
+
+static inline uint32_t cost_prob_q8(uint32_t p256) {
+	// p256 is probability scaled to [0..256]. Returns -log2(p256/256) in Q8 bits.
+	if (p256 == 0u) return 1u << 30;
+	if (p256 >= 256u) return 0u;
+	const uint32_t log2p_q8 = log2_q8_u16(p256);
+	const uint32_t log2p_over_256_q8 = (log2p_q8 <= (8u << 8)) ? ((8u << 8) - log2p_q8) : 0u;
+	return log2p_over_256_q8;
+}
+
+static inline uint32_t cost_bool_put_q8(uint8_t prob, int bit) {
+	// enc_bool_put probability is prob/256 for bit=0, and (256-prob)/256 for bit=1.
+	uint32_t p = (uint32_t)prob;
+	uint32_t p256 = bit ? (256u - p) : p;
+	return cost_prob_q8(p256);
+}
+
+static int cost_tree_contains_symbol(const int8_t* tree, int node, int symbol) {
+	const int8_t left = tree[node + 0];
+	const int8_t right = tree[node + 1];
+	if (left <= 0) {
+		if (-left == symbol) return 1;
+	} else {
+		if (cost_tree_contains_symbol(tree, (int)left, symbol)) return 1;
+	}
+	if (right <= 0) {
+		if (-right == symbol) return 1;
+	} else {
+		if (cost_tree_contains_symbol(tree, (int)right, symbol)) return 1;
+	}
+	return 0;
+}
+
+static uint32_t cost_treed_write_q8(const int8_t* tree, const uint8_t* probs, int start_node, int symbol) {
+	uint32_t cost = 0;
+	int node = start_node;
+	for (;;) {
+		const int8_t left = tree[node + 0];
+		const int8_t right = tree[node + 1];
+		const uint8_t p = probs[(unsigned)node >> 1];
+
+		int go_right = 0;
+		if (left <= 0) {
+			go_right = (-left == symbol) ? 0 : 1;
+		} else {
+			go_right = cost_tree_contains_symbol(tree, (int)left, symbol) ? 0 : 1;
+		}
+
+		cost += cost_bool_put_q8(p, go_right);
+		const int next = go_right ? (int)right : (int)left;
+		if (next <= 0) return cost;
+		node = next;
+	}
+}
+
+static uint32_t cost_write_extra_q8(const uint8_t* probs, uint32_t extra) {
+	uint32_t cost = 0;
+	int bits = 0;
+	for (const uint8_t* p = probs; *p; ++p) bits++;
+	for (int i = bits - 1; i >= 0; --i) {
+		int bit = (int)((extra >> (uint32_t)i) & 1u);
+		cost += cost_bool_put_q8(probs[bits - 1 - i], bit);
+	}
+	return cost;
+}
+
+uint32_t enc_vp8_estimate_keyframe_ymode_bits_q8(int ymode) {
+	if (ymode < 0) ymode = 0;
+	if (ymode > 4) ymode = 4;
+	return cost_treed_write_q8(kf_ymode_tree, kf_ymode_prob, 0, ymode);
+}
+
+uint32_t enc_vp8_estimate_keyframe_uv_mode_bits_q8(int uv_mode) {
+	if (uv_mode < 0) uv_mode = 0;
+	if (uv_mode > 3) uv_mode = 3;
+	return cost_treed_write_q8(uv_mode_tree, kf_uv_mode_prob, 0, uv_mode);
+}
+
+uint32_t enc_vp8_estimate_keyframe_bmode_bits_q8(int above_bmode, int left_bmode, int bmode) {
+	if (above_bmode < 0) above_bmode = 0;
+	if (above_bmode >= (int)num_intra_bmodes) above_bmode = 0;
+	if (left_bmode < 0) left_bmode = 0;
+	if (left_bmode >= (int)num_intra_bmodes) left_bmode = 0;
+	if (bmode < 0) bmode = 0;
+	if (bmode >= (int)num_intra_bmodes) bmode = 0;
+	return cost_treed_write_q8(bmode_tree, kf_bmode_prob[above_bmode][left_bmode], 0, bmode);
+}
+
+static uint32_t cost_write_coeff_token_q8(const uint8_t probs[num_dct_tokens - 1], int prev_token_was_zero, int token) {
+	int start_node = prev_token_was_zero ? 2 : 0;
+	return cost_treed_write_q8(coeff_tree, probs, start_node, token);
+}
+
+static uint32_t cost_block_q8(const uint8_t coeff_probs_plane[8][3][num_dct_tokens - 1],
+			      int first_coeff,
+			      uint8_t left_has,
+			      uint8_t above_has,
+			      const int16_t block[16],
+			      uint8_t* out_has_coeffs) {
+	uint32_t cost = 0;
+	int ctx3 = (int)left_has + (int)above_has;
+	int prev_token_was_zero = 0;
+	int current_has_coeffs = 0;
+
+	int last_nz = -1;
+	for (int i = first_coeff; i < 16; i++) {
+		int v = (int)block[zigzag[i]];
+		if (v != 0) last_nz = i;
+	}
+
+	if (last_nz < 0) {
+		int band = (int)coeff_bands[first_coeff];
+		const uint8_t* probs = coeff_probs_plane[band][ctx3];
+		cost += cost_treed_write_q8(coeff_tree, probs, 0, dct_eob);
+		if (out_has_coeffs) *out_has_coeffs = 0;
+		return cost;
+	}
+
+	for (int i = first_coeff; i <= last_nz; i++) {
+		int band = (int)coeff_bands[i];
+		const uint8_t* probs = coeff_probs_plane[band][ctx3];
+
+		int v = (int)block[zigzag[i]];
+		int abs_value = (v < 0) ? -v : v;
+
+		uint32_t extra = 0;
+		const uint8_t* extra_probs = NULL;
+		dct_token tok = token_for_abs(abs_value, &extra, &extra_probs);
+
+		cost += cost_write_coeff_token_q8(probs, prev_token_was_zero, (int)tok);
+		if (tok >= dct_cat1 && tok <= dct_cat6) {
+			cost += cost_write_extra_q8(extra_probs, extra);
+		}
+		if (abs_value != 0) {
+			cost += cost_bool_put_q8(128, v < 0);
+			current_has_coeffs = 1;
+		}
+
+		if (abs_value == 0) ctx3 = 0;
+		else if (abs_value == 1) ctx3 = 1;
+		else ctx3 = 2;
+
+		prev_token_was_zero = (tok == DCT_0);
+	}
+
+	if (last_nz < 15) {
+		int i = last_nz + 1;
+		int band = (int)coeff_bands[i];
+		const uint8_t* probs = coeff_probs_plane[band][ctx3];
+		cost += cost_treed_write_q8(coeff_tree, probs, 0, dct_eob);
+	}
+
+	if (out_has_coeffs) *out_has_coeffs = (uint8_t)current_has_coeffs;
+	return cost;
+}
+
+uint32_t enc_vp8_estimate_keyframe_block_token_bits_q8(int coeff_plane,
+					      int first_coeff,
+					      uint8_t left_has,
+					      uint8_t above_has,
+					      const int16_t block[16],
+					      uint8_t* out_has_coeffs) {
+	if (coeff_plane < 0) coeff_plane = 0;
+	if (coeff_plane > 3) coeff_plane = 3;
+	if (first_coeff < 0) first_coeff = 0;
+	if (first_coeff > 15) first_coeff = 15;
+	return cost_block_q8(default_coeff_probs[coeff_plane], first_coeff, left_has, above_has, block, out_has_coeffs);
+}
+
+uint32_t enc_vp8_estimate_keyframe_mb_token_bits_q8(int ymode, const int16_t* mb_coeffs) {
+	if (!mb_coeffs) return 0;
+	// External contexts assumed 0.
+	uint32_t cost = 0;
+	const int has_y2 = (ymode != (int)VP8_B_PRED);
+
+	uint8_t above_y[4] = {0, 0, 0, 0};
+	uint8_t above_u[2] = {0, 0};
+	uint8_t above_v[2] = {0, 0};
+	uint8_t above_y2 = 0;
+	uint8_t left_y[4] = {0, 0, 0, 0};
+	uint8_t left_u[2] = {0, 0};
+	uint8_t left_v[2] = {0, 0};
+	uint8_t left_y2_flag = 0;
+
+	// Y2
+	if (has_y2) {
+		uint8_t has = 0;
+		cost += enc_vp8_estimate_keyframe_block_token_bits_q8(1, 0, left_y2_flag, above_y2, mb_coeffs, &has);
+		above_y2 = has;
+		left_y2_flag = has;
+	} else {
+		above_y2 = 0;
+		left_y2_flag = 0;
+	}
+
+	// Y blocks
+	uint8_t y_has[4][4];
+	for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) y_has[rr][cc] = 0;
+	const int y_plane = has_y2 ? 0 : 3;
+	const int first_coeff = has_y2 ? 1 : 0;
+	const int16_t* y = mb_coeffs + 16;
+	for (int rr = 0; rr < 4; rr++) {
+		for (int cc = 0; cc < 4; cc++) {
+			uint8_t left_has = (cc == 0) ? left_y[rr] : y_has[rr][cc - 1];
+			uint8_t above_has = (rr == 0) ? above_y[cc] : y_has[rr - 1][cc];
+			uint8_t has = 0;
+			cost += enc_vp8_estimate_keyframe_block_token_bits_q8(y_plane,
+									      first_coeff,
+									      left_has,
+									      above_has,
+									      y + (rr * 4 + cc) * 16,
+									      &has);
+			y_has[rr][cc] = has;
+		}
+	}
+	for (int cc = 0; cc < 4; cc++) above_y[cc] = y_has[3][cc];
+	for (int rr = 0; rr < 4; rr++) left_y[rr] = y_has[rr][3];
+
+	// U blocks (2x2)
+	uint8_t u_has[2][2] = {{0, 0}, {0, 0}};
+	const int16_t* u = y + (16 * 16);
+	for (int rr = 0; rr < 2; rr++) {
+		for (int cc = 0; cc < 2; cc++) {
+			uint8_t left_has = (cc == 0) ? left_u[rr] : u_has[rr][cc - 1];
+			uint8_t above_has = (rr == 0) ? above_u[cc] : u_has[rr - 1][cc];
+			uint8_t has = 0;
+			cost += enc_vp8_estimate_keyframe_block_token_bits_q8(2, 0, left_has, above_has, u + (rr * 2 + cc) * 16, &has);
+			u_has[rr][cc] = has;
+		}
+	}
+	for (int cc = 0; cc < 2; cc++) above_u[cc] = u_has[1][cc];
+	for (int rr = 0; rr < 2; rr++) left_u[rr] = u_has[rr][1];
+
+	// V blocks (2x2)
+	uint8_t v_has[2][2] = {{0, 0}, {0, 0}};
+	const int16_t* v = u + (4 * 16);
+	for (int rr = 0; rr < 2; rr++) {
+		for (int cc = 0; cc < 2; cc++) {
+			uint8_t left_has = (cc == 0) ? left_v[rr] : v_has[rr][cc - 1];
+			uint8_t above_has = (rr == 0) ? above_v[cc] : v_has[rr - 1][cc];
+			uint8_t has = 0;
+			cost += enc_vp8_estimate_keyframe_block_token_bits_q8(2, 0, left_has, above_has, v + (rr * 2 + cc) * 16, &has);
+			v_has[rr][cc] = has;
+		}
+	}
+	for (int cc = 0; cc < 2; cc++) above_v[cc] = v_has[1][cc];
+	for (int rr = 0; rr < 2; rr++) left_v[rr] = v_has[rr][1];
+
+	return cost;
+}
+
 static dct_token token_for_abs(int abs_value, uint32_t* out_extra, const uint8_t** out_extraprobs) {
 	*out_extra = 0;
 	*out_extraprobs = NULL;

@@ -356,4 +356,70 @@ Broader (still small) micro-corpus:
    - Sweep winner (local-fast): `--bpred-rdo-lambda-mul 6 --bpred-rdo-lambda-div 1`
    - Set this as the built-in default for `bpred-rdo`.
 
+- 2026-01-10 zebra artifact forensics + mitigation (vertical brightening, macroblock-aligned):
+   - Repro case (external corpus): `../imagenet/images/commons-00018.jpg` resized to 1024px, `q=30`.
+   - Symptom in baseline `bpred`: large positive luma bias that increases towards the bottom of the frame (visible as light vertical “zebra” areas).
+   - Added dependency-free tooling for investigating artifact dirs produced by `scripts/enc_vs_cwebp_quality.sh`:
+      - `scripts/analyze_ppm_zebra.py`: per-column mean ΔY (and phase stats at period=16), plus coarse RGB/Cb/Cr deltas.
+      - `scripts/ppm_to_png.py`: convert PPM→PNG and generate luma-diff heatmaps.
+   - Mitigation experiment (kept in experimental `--mode bpred-rdo` only to keep baseline gates stable):
+      - Add a small DC-only post-quant refinement during mode evaluation in [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c).
+      - Tries DC deltas in [-1..+1] and accepts only if it improves a boundary-weighted SSE score.
+   - Result on the repro case: `bpred-rdo` reduces global luma bias substantially vs baseline (and reduces bottom-third brightening), while `make test` remains green because baseline `bpred` is unchanged.
+
+- 2026-01-10 Step 2 continuation: `bpred-rdo` can choose I16 vs B_PRED (RDO-lite at macroblock level):
+   - Change: extend `--mode bpred-rdo` to decide per macroblock between I16 (modes 0..3) and B_PRED (mode 4), using the same quant-aware $J=D+\lambda R$ scoring.
+   - Safety: `make test` stays green because default `--mode bpred` is unchanged.
+   - Vs libwebp on the original 3-image set (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`):
+      - Baseline `MODE=bpred`: Overall: ΔPSNR=-5.645 dB  ΔSSIM=-0.02894  bytes_ratio@SSIM=1.694
+      - `MODE=bpred-rdo` (default knobs `--bpred-rdo-lambda-mul 6 --bpred-rdo-lambda-div 1`): Overall: ΔPSNR=-3.560 dB  ΔSSIM=-0.01527  bytes_ratio@SSIM=1.422
+   - Quick $
+     \lambda$ sweep on the same set (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`):
+      - `mul=4 div=1`: Overall: ΔPSNR=-3.807 dB  ΔSSIM=-0.01594  bytes_ratio@SSIM=1.523
+      - `mul=6 div=1`: Overall: ΔPSNR=-3.560 dB  ΔSSIM=-0.01527  bytes_ratio@SSIM=1.422
+      - `mul=8 div=1`: Overall: ΔPSNR=-3.625 dB  ΔSSIM=-0.01553  bytes_ratio@SSIM=1.539
+   - Conclusion: `mul=6 div=1` remains the best of these three on this set (especially for bytes_ratio@SSIM).
+
+- 2026-01-10 Step 2 continuation: UV DC refinement + broader validation:
+   - Change: apply the same small DC-only post-quant refinement to chroma blocks during UV mode evaluation in `bpred-rdo`.
+   - 3-image set impact (256px QS 40/60/80): essentially neutral, with a tiny bytes_ratio@SSIM improvement (1.422 → 1.421).
+   - Commons HQ (12 photos) vs libwebp (256px QS 40/60/80, `OURS_FLAGS="--loopfilter --bpred-rdo-lambda-mul 6 --bpred-rdo-lambda-div 1"`):
+      - `MODE=bpred`:     Overall: ΔPSNR=-5.794 dB  ΔSSIM=-0.03562  bytes_ratio@SSIM=1.701
+      - `MODE=bpred-rdo`: Overall: ΔPSNR=-4.504 dB  ΔSSIM=-0.02074  bytes_ratio@SSIM=1.532
+   - Negative result: tried switching 4x4 mode scoring SSE to a boundary-weighted SSE (to protect future predictors), but it regressed Overall on the 3-image set, so it was reverted.
+
+- 2026-01-10 Step 2 continuation: weight I16 Y2 rate higher (neutral):
+   - Change: in `bpred-rdo` I16 evaluation, weight the rate proxy of the Y2 (WHT/DC) block by 2x.
+   - Result: no measurable change on the 3-image set and no change in the commons-hq Overall at the current defaults, so we keep it but it’s not a win by itself.
+
+- 2026-01-10 Step 2 continuation: tried a more token-like residual rate proxy (regressed; reverted):
+   - Change: modified `rdo_rate_proxy4x4()` in [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c) to be zigzag/EOB/zero-run aware (closer to the VP8 token stream structure).
+   - Result: large regressions on the 3-image baseline set even after re-tuning $\lambda$.
+      - Example (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`, `mul=6 div=1`): Overall: ΔPSNR=-6.804 dB  ΔSSIM=-0.03453  bytes_ratio@SSIM=1.756
+      - This is much worse than the previous magnitude-only proxy at the same knobs: Overall: ΔPSNR=-3.571 dB  ΔSSIM=-0.01527  bytes_ratio@SSIM=1.421
+   - Conclusion: the “token-like” proxy was too punitive/miscalibrated for our current $\lambda$(qindex) scale; we reverted to the prior magnitude-based proxy.
+
+- 2026-01-10 Step 2 continuation: entropy-style token cost as the rate term (big win so far):
+   - Change: added an optional `bpred-rdo` rate estimator that approximates VP8's coefficient token coding cost (tree walk with default probs) and uses that as $R$ in $J=D+\lambda R$.
+   - New flag (only affects `--mode bpred-rdo`): `--bpred-rdo-rate <proxy|entropy>` (default is now `entropy`).
+   - Results vs libwebp, 3-image set (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`):
+      - `--bpred-rdo-rate entropy --bpred-rdo-lambda-mul 8 --bpred-rdo-lambda-div 1`: Overall: ΔPSNR=-0.778 dB  ΔSSIM=-0.00630  bytes_ratio@SSIM=1.320
+      - Previous proxy default (`--bpred-rdo-rate proxy --bpred-rdo-lambda-mul 6 --bpred-rdo-lambda-div 1`): Overall: ΔPSNR=-3.571 dB  ΔSSIM=-0.01527  bytes_ratio@SSIM=1.421
+   - Results vs libwebp, commons-hq (12 photos, 256px QS 40/60/80):
+      - Proxy default:  Overall: ΔPSNR=-4.504 dB  ΔSSIM=-0.02074  bytes_ratio@SSIM=1.532
+      - Entropy (mul=8): Overall: ΔPSNR=-0.622 dB  ΔSSIM=-0.00635  bytes_ratio@SSIM=1.281
+   - Notes:
+      - This keeps “mode sprawl” contained: still one experimental mode (`bpred-rdo`), just a runtime knob.
+      - `make test` remains green.
+
+- 2026-01-10 Step 2 continuation: tried adding entropy-style mode signaling costs (regressed; reverted):
+   - Change attempt: in `--bpred-rdo-rate entropy`, also include entropy-estimated signaling costs for keyframe ymode/uv mode/bmode (tree/prob-based) in the rate term.
+   - Result: massive regression vs libwebp on the 3-image set, so this was reverted. Example (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`, `--bpred-rdo-rate entropy --bpred-rdo-lambda-mul 8 --bpred-rdo-lambda-div 1`):
+      - Regressed: Overall: ΔPSNR≈-8.6 dB  ΔSSIM≈-0.047  bytes_ratio@SSIM≈1.85
+      - Restored after revert: Overall: ΔPSNR=-0.778 dB  ΔSSIM=-0.00630  bytes_ratio@SSIM=1.320
+   - Conclusion: our coefficient-token entropy estimator is a strong win, but extending it to mode signaling needs better calibration/context handling.
+
+- 2026-01-10 tooling: lambda sweep script supports `--rate`:
+   - Change: [scripts/enc_bpred_rdo_lambda_sweep.py](scripts/enc_bpred_rdo_lambda_sweep.py) now supports `--rate proxy|entropy` to sweep lambda for either rate estimator.
+
 (append new entries here as we improve)

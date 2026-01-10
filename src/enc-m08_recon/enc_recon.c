@@ -2,6 +2,7 @@
 
 #include "../enc-m05_intra/enc_transform.h"
 #include "../enc-m06_quant/enc_quant.h"
+#include "../enc-m07_tokens/enc_vp8_tokens.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -65,6 +66,12 @@ static inline uint32_t rdo_rate_proxy4x4(const int16_t coeff[16]) {
 	return rate;
 }
 
+static inline uint32_t rdo_rate_from_token_bits_q8(uint32_t bits_q8) {
+	// Convert Q8 bits to a small integer proxy.
+	// Downscale by 8 to keep lambda tuning in-range.
+	return (bits_q8 >> 11);
+}
+
 static inline uint32_t rdo_bmode_signal_cost(Vp8BMode mode) {
 	// Tiny fixed cost for signaling the 4x4 intra mode.
 	// This is a proxy for the entropy-coded mode tree cost.
@@ -89,6 +96,20 @@ static inline uint32_t rdo_uv_mode_signal_cost(Vp8I16Mode mode) {
 	}
 }
 
+static inline uint32_t rdo_ymode_signal_cost(uint8_t ymode) {
+	// Tiny fixed cost for signaling the macroblock luma mode (I16 vs B_PRED).
+	// 0..3 map to VP8_I16_{DC,V,H,TM}_PRED, and 4 is B_PRED in our y_modes array.
+	// This is a cheap proxy for the entropy-coded y-mode tree cost.
+	switch (ymode) {
+		case 0: return 0; // I16 DC
+		case 1: return 1; // I16 V
+		case 2: return 1; // I16 H
+		case 3: return 1; // I16 TM
+		case 4: return 2; // B_PRED is typically more expensive than DC.
+		default: return 2;
+	}
+}
+
 static inline uint32_t rdo_lambda_from_qindex(uint8_t qindex, uint32_t mul, uint32_t div) {
 	// Conservative lambda schedule. Grows with quantization strength.
 	const uint32_t q = (uint32_t)qindex;
@@ -98,6 +119,12 @@ static inline uint32_t rdo_lambda_from_qindex(uint8_t qindex, uint32_t mul, uint
 	scaled = (scaled + (uint64_t)(div / 2u)) / (uint64_t)div;
 	if (scaled > 0xFFFFFFFFull) return 0xFFFFFFFFu;
 	return (uint32_t)scaled;
+}
+
+static inline uint32_t rdo_rate_weight_y2(uint32_t rate) {
+	// In VP8, the I16 DC (Y2) block tends to have a disproportionate impact on
+	// bit-cost. Our magnitude proxy underestimates this, so weight it slightly.
+	return rate * 2u;
 }
 
 // 4x4 subblock predictor for B_PRED (keyframe), matching RFC 6386 reference code.
@@ -508,6 +535,69 @@ static uint32_t sad4x4_u8(const uint8_t a[16], const uint8_t b[16]) {
 		sad += (uint32_t)(d < 0 ? -d : d);
 	}
 	return sad;
+}
+
+static uint32_t sse4x4_src_vs_recon(const uint8_t src4[16], const uint8_t pred4[16], const int16_t res[16]) {
+	uint32_t sse = 0;
+	for (int i = 0; i < 16; i++) {
+		int32_t v = (int32_t)pred4[i] + (int32_t)res[i];
+		uint8_t r = clamp255_i32(v);
+		int d = (int)src4[i] - (int)r;
+		sse += (uint32_t)(d * d);
+	}
+	return sse;
+}
+
+static uint32_t sse4x4_boundary_src_vs_recon(const uint8_t src4[16], const uint8_t pred4[16], const int16_t res[16]) {
+	// Weight pixels that feed future predictors (right column, bottom row).
+	uint32_t sse = 0;
+	for (int y = 0; y < 4; y++) {
+		for (int x = 0; x < 4; x++) {
+			const int i = y * 4 + x;
+			int32_t v = (int32_t)pred4[i] + (int32_t)res[i];
+			uint8_t r = clamp255_i32(v);
+			int d = (int)src4[i] - (int)r;
+			uint32_t w = 1;
+			if (x == 3) w += 1;
+			if (y == 3) w += 1;
+			sse += w * (uint32_t)(d * d);
+		}
+	}
+	return sse;
+}
+
+// Small trellis: tweak quantized DC by a couple of steps to reduce SSE.
+// This helps reduce systematic luma bias (visible as banding) in heavily
+// quantized textured areas.
+static void refine_dc_quant4x4(int16_t coeff[16], int dc_step, int ac_step, const uint8_t src4[16], const uint8_t pred4[16]) {
+	if (!coeff) return;
+	const int16_t base_dc = coeff[0];
+	uint32_t best_sse = 0xFFFFFFFFu;
+	uint32_t base_sse = 0xFFFFFFFFu;
+	int16_t best_dc = base_dc;
+
+	for (int delta = -1; delta <= 1; delta++) {
+		int dc_i = (int)base_dc + delta;
+		if (dc_i < -32768) dc_i = -32768;
+		if (dc_i > 32767) dc_i = 32767;
+		int16_t cand[16];
+		for (int i = 0; i < 16; i++) cand[i] = coeff[i];
+		cand[0] = (int16_t)dc_i;
+		dequant4x4_inplace(cand, dc_step, ac_step);
+		int16_t res[16];
+		inv_dct4x4(cand, res);
+		uint32_t sse = sse4x4_boundary_src_vs_recon(src4, pred4, res);
+		if (delta == 0) base_sse = sse;
+		if (sse < best_sse) {
+			best_sse = sse;
+			best_dc = (int16_t)dc_i;
+		}
+	}
+
+	// Only apply if it provides a clear improvement on predictor-relevant edges.
+	if (best_dc != base_dc && best_sse + 64u < base_sse) {
+		coeff[0] = best_dc;
+	}
 }
 
 static uint32_t sad8x8_plane_src_vs_pred(const uint8_t* src,
@@ -1306,7 +1396,7 @@ int enc_vp8_encode_bpred_uv_sad_inloop(const EncYuv420Image* yuv,
 			const uint32_t ux0 = mbx * 8u;
 			const uint32_t uy0 = mby * 8u;
 			const size_t mb_index = (size_t)mby * (size_t)mb_cols + (size_t)mbx;
-			y_modes[mb_index] = 4; // B_PRED
+			y_modes[mb_index] = 4; // default to B_PRED; may be overridden by I16 below
 
 			// Choose UV (8x8) mode by SAD against U+V (uses reconstructed chroma neighbors).
 			int have_above_c = (mby > 0);
@@ -1611,9 +1701,11 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 
 	uint32_t lambda_mul = 1;
 	uint32_t lambda_div = 1;
+	int use_entropy_rate = 0;
 	if (tuning) {
 		lambda_mul = tuning->lambda_mul ? tuning->lambda_mul : 1;
 		lambda_div = tuning->lambda_div ? tuning->lambda_div : 1;
+		use_entropy_rate = (tuning->rate_mode == 1);
 	}
 
 	const uint32_t uv_w = (w + 1u) >> 1;
@@ -1674,6 +1766,8 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 				uint32_t sse = 0;
 				uint32_t rate = 0;
 				rate += rdo_uv_mode_signal_cost(mode);
+				uint8_t u_has[2][2] = {{0, 0}, {0, 0}};
+				uint8_t v_has[2][2] = {{0, 0}, {0, 0}};
 				int16_t ublk_tmp[4][16];
 				int16_t vblk_tmp[4][16];
 
@@ -1685,7 +1779,17 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 					pred8_fill4x4(pred4, pred_u_tmp, bx, by);
 					enc_vp8_ftransform4x4(src4, 4, pred4, 4, ublk_tmp[n]);
 					enc_vp8_quantize4x4_inplace(ublk_tmp[n], qf.uv_dc, qf.uv_ac);
-					rate += rdo_rate_proxy4x4(ublk_tmp[n]);
+					refine_dc_quant4x4(ublk_tmp[n], qf.uv_dc, qf.uv_ac, src4, pred4);
+					if (use_entropy_rate) {
+						uint8_t has = 0;
+						uint8_t left_has = (bx == 0) ? 0 : u_has[by >> 2][(bx >> 2) - 1];
+						uint8_t above_has = (by == 0) ? 0 : u_has[(by >> 2) - 1][bx >> 2];
+						rate += rdo_rate_from_token_bits_q8(
+							enc_vp8_estimate_keyframe_block_token_bits_q8(2, 0, left_has, above_has, ublk_tmp[n], &has));
+						u_has[by >> 2][bx >> 2] = has;
+					} else {
+						rate += rdo_rate_proxy4x4(ublk_tmp[n]);
+					}
 					int16_t deq[16];
 					for (int i = 0; i < 16; i++) deq[i] = ublk_tmp[n][i];
 					dequant4x4_inplace(deq, qf.uv_dc, qf.uv_ac);
@@ -1706,7 +1810,17 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 					pred8_fill4x4(pred4, pred_v_tmp, bx, by);
 					enc_vp8_ftransform4x4(src4, 4, pred4, 4, vblk_tmp[n]);
 					enc_vp8_quantize4x4_inplace(vblk_tmp[n], qf.uv_dc, qf.uv_ac);
-					rate += rdo_rate_proxy4x4(vblk_tmp[n]);
+					refine_dc_quant4x4(vblk_tmp[n], qf.uv_dc, qf.uv_ac, src4, pred4);
+					if (use_entropy_rate) {
+						uint8_t has = 0;
+						uint8_t left_has = (bx == 0) ? 0 : v_has[by >> 2][(bx >> 2) - 1];
+						uint8_t above_has = (by == 0) ? 0 : v_has[(by >> 2) - 1][bx >> 2];
+						rate += rdo_rate_from_token_bits_q8(
+							enc_vp8_estimate_keyframe_block_token_bits_q8(2, 0, left_has, above_has, vblk_tmp[n], &has));
+						v_has[by >> 2][bx >> 2] = has;
+					} else {
+						rate += rdo_rate_proxy4x4(vblk_tmp[n]);
+					}
 					int16_t deq[16];
 					for (int i = 0; i < 16; i++) deq[i] = vblk_tmp[n][i];
 					dequant4x4_inplace(deq, qf.uv_dc, qf.uv_ac);
@@ -1737,7 +1851,24 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 			memcpy(pred_v8, best_pred_v8, sizeof(pred_v8));
 			uv_modes[mb_index] = (uint8_t)best_uv_mode;
 
-			// --- Luma (4x4) mode selection (quantization-aware SSE) ---
+			const uint32_t lambda_y = rdo_lambda_from_qindex(qf.qindex, lambda_mul, lambda_div);
+
+			// Snapshot the current 16x16 recon luma so we can evaluate candidates without
+			// permanently affecting future macroblocks.
+			uint8_t saved_y[16 * 16];
+			for (uint32_t dy = 0; dy < 16; ++dy) {
+				memcpy(saved_y + dy * 16u,
+				       recon.y + (size_t)(y0 + dy) * recon.y_stride + (size_t)x0,
+				       16);
+			}
+
+			// --- Candidate A: B_PRED (4x4) with quant-aware RDO ---
+			uint32_t cost_bpred = 0;
+			uint8_t y_has_sel[4][4];
+			for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) y_has_sel[rr][cc] = 0;
+			uint8_t cand_b_modes[16];
+			int16_t cand_y_coeffs[16][16];
+			uint8_t cand_recon_y[16 * 16];
 			for (uint32_t sb_r = 0; sb_r < 4; sb_r++) {
 				for (uint32_t sb_c = 0; sb_c < 4; sb_c++) {
 					const uint32_t sx = x0 + sb_c * 4u;
@@ -1786,49 +1917,53 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 
 					fill4x4_clamped(src4, yuv->y, yuv->y_stride, w, h, sx, sy);
 
-					uint32_t best_sse = 0xFFFFFFFFu;
+					uint32_t best_cost = 0xFFFFFFFFu;
 					Vp8BMode best_mode = B_DC_PRED;
 					int16_t best_coeff[16];
 					uint8_t best_pred4[16];
-					const uint32_t lambda_y = rdo_lambda_from_qindex(qf.qindex, lambda_mul, lambda_div);
+					uint8_t best_has = 0;
+					const uint8_t left_has_ctx = (sb_c == 0) ? 0 : y_has_sel[sb_r][sb_c - 1];
+					const uint8_t above_has_ctx = (sb_r == 0) ? 0 : y_has_sel[sb_r - 1][sb_c];
 
 					for (Vp8BMode mode = B_DC_PRED; mode <= B_HU_PRED; mode++) {
 						bpred4x4(pred4, &A8[1], L4, mode);
 						int16_t coeff[16];
 						enc_vp8_ftransform4x4(src4, 4, pred4, 4, coeff);
 						enc_vp8_quantize4x4_inplace(coeff, qf.y1_dc, qf.y1_ac);
-						uint32_t rate = rdo_bmode_signal_cost(mode) + rdo_rate_proxy4x4(coeff);
+						refine_dc_quant4x4(coeff, qf.y1_dc, qf.y1_ac, src4, pred4);
+						uint32_t rate = rdo_bmode_signal_cost(mode);
+						uint8_t has = 0;
+						if (use_entropy_rate) {
+							rate += rdo_rate_from_token_bits_q8(
+								enc_vp8_estimate_keyframe_block_token_bits_q8(3, 0, left_has_ctx, above_has_ctx, coeff, &has));
+						} else {
+							rate += rdo_rate_proxy4x4(coeff);
+							for (int i = 0; i < 16; i++) has |= (uint8_t)(coeff[i] != 0);
+						}
 
 						int16_t deq[16];
 						for (int i = 0; i < 16; i++) deq[i] = coeff[i];
 						dequant4x4_inplace(deq, qf.y1_dc, qf.y1_ac);
 						int16_t res[16];
 						inv_dct4x4(deq, res);
-						uint32_t sse = 0;
-						for (int i = 0; i < 16; i++) {
-							int32_t v = (int32_t)pred4[i] + (int32_t)res[i];
-							uint8_t r = clamp255_i32(v);
-							int d = (int)src4[i] - (int)r;
-							sse += (uint32_t)(d * d);
-						}
+						uint32_t sse = sse4x4_src_vs_recon(src4, pred4, res);
 						uint32_t cost = sse + (uint32_t)((uint64_t)lambda_y * (uint64_t)rate);
-						if (cost < best_sse) {
-							best_sse = cost;
+						if (cost < best_cost) {
+							best_cost = cost;
 							best_mode = mode;
 							for (int i = 0; i < 16; i++) best_coeff[i] = coeff[i];
 							for (int i = 0; i < 16; i++) best_pred4[i] = pred4[i];
+							best_has = has;
 						}
 					}
 
-					b_modes[mb_index * 16u + (size_t)(sb_r * 4u + sb_c)] = (uint8_t)best_mode;
+					const uint32_t blk = sb_r * 4u + sb_c;
+					cand_b_modes[blk] = (uint8_t)best_mode;
+					for (int i = 0; i < 16; i++) cand_y_coeffs[blk][i] = best_coeff[i];
+					y_has_sel[sb_r][sb_c] = best_has;
+					cost_bpred += best_cost;
 
-					// Store coeffs: Y2 is not coded; keep it 0. Y blocks start at +16.
-					int16_t* mbdst = out + mb_index * coeffs_per_mb;
-					int16_t* ydst = mbdst + 16;
-					const size_t blk = (size_t)(sb_r * 4u + sb_c);
-					for (int i = 0; i < 16; i++) ydst[blk * 16u + (size_t)i] = best_coeff[i];
-
-					// Reconstruct into recon.y
+					// Reconstruct into recon.y for correct intra context within this macroblock.
 					int16_t deq[16];
 					for (int i = 0; i < 16; i++) deq[i] = best_coeff[i];
 					dequant4x4_inplace(deq, qf.y1_dc, qf.y1_ac);
@@ -1841,6 +1976,165 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 							row[dx] = clamp255_i32(v);
 						}
 					}
+				}
+			}
+			cost_bpred += (uint32_t)((uint64_t)lambda_y * (uint64_t)rdo_ymode_signal_cost(4));
+			for (uint32_t dy = 0; dy < 16; ++dy) {
+				memcpy(cand_recon_y + dy * 16u,
+				       recon.y + (size_t)(y0 + dy) * recon.y_stride + (size_t)x0,
+				       16);
+				memcpy(recon.y + (size_t)(y0 + dy) * recon.y_stride + (size_t)x0,
+				       saved_y + dy * 16u,
+				       16);
+			}
+
+			// --- Candidate B: I16 (16x16) with quant-aware RDO ---
+			uint32_t best_cost_i16 = 0xFFFFFFFFu;
+			Vp8I16Mode best_i16_mode = VP8_I16_DC_PRED;
+			int16_t best_i16_y2[16];
+			int16_t best_i16_yblk[16][16];
+			uint8_t best_i16_recon_y[16 * 16];
+
+			// Build neighbor vectors from reconstructed luma.
+			uint8_t A16[16];
+			uint8_t L16[16];
+			int have_above = (mby > 0);
+			int have_left = (mbx > 0);
+			for (uint32_t i = 0; i < 16; i++) {
+				A16[i] = have_above ? recon.y[(size_t)(y0 - 1) * recon.y_stride + (size_t)(x0 + i)] : 127;
+				L16[i] = have_left ? recon.y[(size_t)(y0 + i) * recon.y_stride + (size_t)(x0 - 1)] : 129;
+			}
+			uint8_t above_left = 127;
+			if (have_above && have_left) {
+				above_left = recon.y[(size_t)(y0 - 1) * recon.y_stride + (size_t)(x0 - 1)];
+			} else {
+				above_left = have_above ? 129 : 127;
+			}
+
+			uint8_t pred_tmp[16 * 16];
+			uint8_t ref4[16];
+			int16_t tmp[16][16];
+			int16_t y2[16];
+			int16_t y2_deq[16];
+			int16_t y_dc16[16];
+			uint8_t recon_y_tmp[16 * 16];
+
+			for (Vp8I16Mode mode = VP8_I16_DC_PRED; mode <= VP8_I16_TM_PRED; mode++) {
+				pred16x16_build(pred_tmp, mode, A16, L16, have_above, have_left, 127, 129, above_left);
+
+				// Forward transforms, collecting DCs into Y2.
+				for (uint32_t n = 0; n < 16; ++n) {
+					const uint32_t bx = (n & 3u) * 4u;
+					const uint32_t by = (n >> 2) * 4u;
+					fill4x4_clamped(src4, yuv->y, yuv->y_stride, w, h, x0 + bx, y0 + by);
+					pred16_fill4x4(ref4, pred_tmp, bx, by);
+					enc_vp8_ftransform4x4(src4, 4, ref4, 4, tmp[n]);
+				}
+				enc_vp8_ftransform_wht(&tmp[0][0], y2);
+				for (int n = 0; n < 16; ++n) tmp[n][0] = 0;
+
+				// Quantize Y2 and Y blocks.
+				int16_t y2q[16];
+				for (int i = 0; i < 16; ++i) y2q[i] = y2[i];
+				enc_vp8_quantize4x4_inplace(y2q, qf.y2_dc, qf.y2_ac);
+				for (int i = 0; i < 16; ++i) y2[i] = y2q[i];
+				for (int n = 0; n < 16; ++n) {
+					enc_vp8_quantize4x4_inplace(tmp[n], qf.y1_dc, qf.y1_ac);
+				}
+
+				// Rate term.
+				uint32_t rate = rdo_ymode_signal_cost((uint8_t)mode);
+				if (use_entropy_rate) {
+					uint32_t bits_q8 = 0;
+					uint8_t y2_has = 0;
+					bits_q8 += enc_vp8_estimate_keyframe_block_token_bits_q8(1, 0, 0, 0, y2, &y2_has);
+					uint8_t above_y[4] = {0, 0, 0, 0};
+					uint8_t left_y[4] = {0, 0, 0, 0};
+					uint8_t y_has[4][4];
+					for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) y_has[rr][cc] = 0;
+					for (int rr = 0; rr < 4; rr++) {
+						for (int cc = 0; cc < 4; cc++) {
+							uint8_t left_has = (cc == 0) ? left_y[rr] : y_has[rr][cc - 1];
+							uint8_t above_has = (rr == 0) ? above_y[cc] : y_has[rr - 1][cc];
+							uint8_t has = 0;
+							bits_q8 += enc_vp8_estimate_keyframe_block_token_bits_q8(0, 1, left_has, above_has, tmp[rr * 4 + cc], &has);
+							y_has[rr][cc] = has;
+						}
+					}
+					rate += rdo_rate_from_token_bits_q8(bits_q8);
+				} else {
+					rate += rdo_rate_weight_y2(rdo_rate_proxy4x4(y2));
+					for (int n = 0; n < 16; ++n) rate += rdo_rate_proxy4x4(tmp[n]);
+				}
+
+				// Distortion: reconstruct and SSE vs source.
+				for (int i = 0; i < 16; ++i) y2_deq[i] = y2[i];
+				dequant4x4_inplace(y2_deq, qf.y2_dc, qf.y2_ac);
+				inv_wht4x4(y2_deq, y_dc16);
+
+				uint32_t sse_mb = 0;
+				for (uint32_t n = 0; n < 16; ++n) {
+					int16_t block_coeffs[16];
+					for (int i = 0; i < 16; ++i) block_coeffs[i] = tmp[n][i];
+					block_coeffs[0] = y_dc16[n];
+					dequant4x4_inplace(block_coeffs, qf.y1_dc, qf.y1_ac);
+					int16_t res[16];
+					inv_dct4x4(block_coeffs, res);
+					const uint32_t bx = (uint32_t)(n & 3) * 4u;
+					const uint32_t by = (uint32_t)(n >> 2) * 4u;
+					fill4x4_clamped(src4, yuv->y, yuv->y_stride, w, h, x0 + bx, y0 + by);
+					pred16_fill4x4(ref4, pred_tmp, bx, by);
+					for (uint32_t dy = 0; dy < 4; ++dy) {
+						for (uint32_t dx = 0; dx < 4; ++dx) {
+							const int idx = (int)(dy * 4u + dx);
+							int32_t v = (int32_t)ref4[idx] + (int32_t)res[idx];
+							uint8_t r = clamp255_i32(v);
+							recon_y_tmp[(by + dy) * 16u + (bx + dx)] = r;
+							int d = (int)src4[idx] - (int)r;
+							sse_mb += (uint32_t)(d * d);
+						}
+					}
+				}
+
+				uint32_t cost = sse_mb + (uint32_t)((uint64_t)lambda_y * (uint64_t)rate);
+				if (cost < best_cost_i16) {
+					best_cost_i16 = cost;
+					best_i16_mode = mode;
+					for (int i = 0; i < 16; ++i) best_i16_y2[i] = y2[i];
+					for (int n = 0; n < 16; ++n) {
+						for (int i = 0; i < 16; ++i) best_i16_yblk[n][i] = tmp[n][i];
+					}
+					memcpy(best_i16_recon_y, recon_y_tmp, sizeof(best_i16_recon_y));
+				}
+			}
+
+			// Decide macroblock luma mode and commit coeffs + recon.
+			int choose_i16 = (best_cost_i16 < cost_bpred);
+			int16_t* mbdst = out + mb_index * coeffs_per_mb;
+			int16_t* ydst = mbdst + 16;
+			if (choose_i16) {
+				y_modes[mb_index] = (uint8_t)best_i16_mode;
+				for (int i = 0; i < 16; ++i) mbdst[i] = best_i16_y2[i];
+				for (int n = 0; n < 16; ++n) {
+					for (int i = 0; i < 16; ++i) ydst[(size_t)n * 16u + (size_t)i] = best_i16_yblk[n][i];
+					b_modes[mb_index * 16u + (size_t)n] = 0;
+				}
+				for (uint32_t dy = 0; dy < 16; ++dy) {
+					memcpy(recon.y + (size_t)(y0 + dy) * recon.y_stride + (size_t)x0,
+					       best_i16_recon_y + dy * 16u,
+					       16);
+				}
+			} else {
+				y_modes[mb_index] = 4; // B_PRED
+				// Y2 remains 0 for B_PRED; out is zero-initialized.
+				for (int n = 0; n < 16; ++n) {
+					for (int i = 0; i < 16; ++i) ydst[(size_t)n * 16u + (size_t)i] = cand_y_coeffs[n][i];
+					b_modes[mb_index * 16u + (size_t)n] = cand_b_modes[n];
+				}
+				for (uint32_t dy = 0; dy < 16; ++dy) {
+					memcpy(recon.y + (size_t)(y0 + dy) * recon.y_stride + (size_t)x0,
+					       cand_recon_y + dy * 16u,
+					       16);
 				}
 			}
 

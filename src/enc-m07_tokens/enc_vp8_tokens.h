@@ -138,6 +138,46 @@ int enc_vp8_build_keyframe_intra_coeffs_ex(uint32_t width,
                                           uint8_t** out_payload,
                                           size_t* out_size);
 
+// --- Experimental helpers (encoder-side estimation) ---
+//
+// Estimate the VP8 coefficient token cost (entropy-style), using the default
+// probability tables and coefficient token tree.
+//
+// Returns a cost in Q8 "bits" (i.e. 1 bit == 256).
+//
+// coeff_plane selects the default coefficient probability set:
+//   0: Y (I16: AC-only blocks)
+//   1: Y2 (I16 DC/WHT block)
+//   2: UV
+//   3: Y (B_PRED/DC mode: full blocks incl DC)
+//
+// first_coeff is 0 for full blocks, 1 for AC-only blocks.
+// left_has/above_has are the usual VP8 contexts (0/1) indicating whether the
+// neighbor block had any non-zero coefficients.
+// out_has_coeffs (optional) is set to 1 if this block has any non-zero coeffs.
+uint32_t enc_vp8_estimate_keyframe_block_token_bits_q8(int coeff_plane,
+                                                      int first_coeff,
+                                                      uint8_t left_has,
+                                                      uint8_t above_has,
+                                                      const int16_t block[16],
+                                                      uint8_t* out_has_coeffs);
+
+// Estimate the macroblock token cost (coeffs only) for keyframes, assuming
+// external contexts are 0. Uses the standard VP8 per-block context propagation
+// within the macroblock.
+//
+// ymode is VP8 intra_mbmode (0..3 for I16, 4 for B_PRED).
+// mb_coeffs uses the standard layout: Y2(16) + Y(16*16) + U(4*16) + V(4*16).
+uint32_t enc_vp8_estimate_keyframe_mb_token_bits_q8(int ymode, const int16_t* mb_coeffs);
+
+// Estimate keyframe intra mode signaling cost using the RFC-aligned trees and
+// default probabilities.
+//
+// Returns a cost in Q8 "bits" (i.e. 1 bit == 256).
+uint32_t enc_vp8_estimate_keyframe_ymode_bits_q8(int ymode);
+uint32_t enc_vp8_estimate_keyframe_uv_mode_bits_q8(int uv_mode);
+uint32_t enc_vp8_estimate_keyframe_bmode_bits_q8(int above_bmode, int left_bmode, int bmode);
+
 #ifdef __cplusplus
 }
 #endif

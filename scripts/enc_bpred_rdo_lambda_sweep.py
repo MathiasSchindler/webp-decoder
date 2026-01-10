@@ -55,6 +55,11 @@ def _run_one(images: list[str], sizes: str, qs: str, mul: int, div: int, jobsafe
     if jobsafe:
         env["SKIP_BUILD"] = "1"
 
+    # Optional: switch the rate estimator used by bpred-rdo.
+    rate = env.get("BPRED_RDO_RATE", "proxy")
+    if rate != "proxy":
+        env["OURS_FLAGS"] += f" --bpred-rdo-rate {rate}"
+
     p = subprocess.run(
         ["./scripts/enc_bpred_rdo_local_fast.sh", *images],
         env=env,
@@ -91,6 +96,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--qs", nargs="+", default=["40", "60", "80"], help="Quality sweep. Default: 40 60 80")
     ap.add_argument("--mul", nargs="+", type=int, default=[1, 2, 3, 4, 6, 8], help="Lambda multipliers to try")
     ap.add_argument("--div", nargs="+", type=int, default=[1, 2, 3, 4], help="Lambda divisors to try")
+    ap.add_argument("--rate", choices=["proxy", "entropy"], default="proxy", help="bpred-rdo rate estimator")
     ap.add_argument("-j", "--jobs", type=int, default=4, help="Parallel jobs. Default: 4")
     ap.add_argument("--no-skip-build", action="store_true", help="Do not set SKIP_BUILD=1")
     args = ap.parse_args(argv)
@@ -102,6 +108,9 @@ def main(argv: list[str]) -> int:
 
     sizes = " ".join(args.sizes)
     qs = " ".join(args.qs)
+
+    # Plumb rate choice via environment for the subprocess.
+    os.environ["BPRED_RDO_RATE"] = args.rate
 
     # If we are running multiple jobs, it's safer to skip the per-run make step.
     jobsafe = not args.no_skip_build

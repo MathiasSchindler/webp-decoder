@@ -19,7 +19,7 @@ typedef enum {
 
 static void usage(const char* argv0) {
 	fprintf(stderr,
-	        "Usage: %s [--q <0..100>] [--mode <bpred|bpred-rdo|i16|dc>] [--loopfilter] [--bpred-rdo-lambda-mul N] [--bpred-rdo-lambda-div N] <in.png> <out.webp>\n"
+	        "Usage: %s [--q <0..100>] [--mode <bpred|bpred-rdo|i16|dc>] [--loopfilter] [--bpred-rdo-lambda-mul N] [--bpred-rdo-lambda-div N] [--bpred-rdo-rate <proxy|entropy>] <in.png> <out.webp>\n"
 	        "\n"
 	        "Standalone VP8 keyframe (lossy) encoder producing a simple WebP container.\n"
 	        "\n"
@@ -27,8 +27,9 @@ static void usage(const char* argv0) {
 	        "  --q <0..100>           Quality (mapped to VP8 qindex). Default: 75\n"
 	        "  --mode <bpred|bpred-rdo|i16|dc>  Intra mode strategy. Default: bpred\n"
 	        "  --loopfilter | --lf    Write deterministic loopfilter header params derived from qindex\n"
-			"  --bpred-rdo-lambda-mul N  Tune bpred-rdo: multiply lambda(qindex) by N (default 6)\n"
-			"  --bpred-rdo-lambda-div N  Tune bpred-rdo: divide lambda(qindex) by N (default 1)\n",
+			"  --bpred-rdo-lambda-mul N  Tune bpred-rdo: multiply lambda(qindex) by N (default 8)\n"
+			"  --bpred-rdo-lambda-div N  Tune bpred-rdo: divide lambda(qindex) by N (default 1)\n"
+			"  --bpred-rdo-rate <proxy|entropy>  Tune bpred-rdo: rate estimator (default entropy)\n",
 	        argv0);
 }
 
@@ -65,8 +66,9 @@ int main(int argc, char** argv) {
 	int quality = 75;
 	int enable_loopfilter = 0;
 	EncMode mode = ENC_MODE_BPRED;
-	int bpred_rdo_lambda_mul = 6;
+	int bpred_rdo_lambda_mul = 8;
 	int bpred_rdo_lambda_div = 1;
+	int bpred_rdo_rate_mode = 1;
 
 	int argi = 1;
 	while (argi < argc) {
@@ -101,6 +103,19 @@ int main(int argc, char** argv) {
 		}
 		if (argi + 1 < argc && strcmp(argv[argi], "--bpred-rdo-lambda-div") == 0) {
 			if (parse_int(argv[argi + 1], &bpred_rdo_lambda_div) != 0 || bpred_rdo_lambda_div <= 0) {
+				usage(argv[0]);
+				return 2;
+			}
+			argi += 2;
+			continue;
+		}
+		if (argi + 1 < argc && strcmp(argv[argi], "--bpred-rdo-rate") == 0) {
+			const char* s = argv[argi + 1];
+			if (strcmp(s, "proxy") == 0) {
+				bpred_rdo_rate_mode = 0;
+			} else if (strcmp(s, "entropy") == 0) {
+				bpred_rdo_rate_mode = 1;
+			} else {
 				usage(argv[0]);
 				return 2;
 			}
@@ -167,6 +182,7 @@ int main(int argc, char** argv) {
 		EncBpredRdoTuning tuning;
 		tuning.lambda_mul = (uint32_t)bpred_rdo_lambda_mul;
 		tuning.lambda_div = (uint32_t)bpred_rdo_lambda_div;
+		tuning.rate_mode = (uint32_t)bpred_rdo_rate_mode;
 		rc = enc_vp8_encode_bpred_uv_rdo_inloop(&yuv,
 		                                       quality,
 		                                       &y_modes,
