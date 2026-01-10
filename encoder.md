@@ -21,6 +21,8 @@ Overall: ΔPSNR=-4.835 dB  ΔSSIM=-0.02999  bytes_ratio@SSIM=1.697
 
 - Default encoder mode is now `--mode bpred-rdo`.
 - Default token probabilities mode is now `--token-probs adaptive`.
+- Experimental alternative: `--token-probs adaptive2`.
+- Current `bpred-rdo` defaults (used by the harness when you only pass `--loopfilter`): `--bpred-rdo-rate dry-run` and `--bpred-rdo-qscale-uv-ac 115` (plus `--bpred-rdo-quant ac-deadzone --bpred-rdo-ac-deadzone 70`).
 - Use `--mode bpred` when you want the simple baseline/reference path.
 - Use `--token-probs default` when you need the old bitstream behavior (e.g. `encoder_nolibc_ultra` parity).
 
@@ -41,6 +43,166 @@ python3 scripts/enc_bpred_rdo_lambda_sweep.py images/commons-hq \
 ```
 
 - After any change: run `make test` and record the `Overall:` lines below.
+
+## Baseline + 6 experiments (repeatable, vs libwebp)
+
+This is the “next iteration” playbook: a fixed baseline definition, fixed corpora, fixed commands, and six concrete experiments to try one-at-a-time.
+
+### Baseline definition (for these experiments)
+
+Baseline = our current defaults in `bpred-rdo` with loopfilter enabled via the harness:
+
+- Our encoder mode: `MODE=bpred-rdo`
+- Our extra flags: `OURS_FLAGS="--loopfilter"`
+- Current bpred-rdo defaults (when no extra tuning flags are passed):
+   - `--bpred-rdo-rate dry-run`
+   - `--bpred-rdo-quant ac-deadzone --bpred-rdo-ac-deadzone 70`
+   - `--bpred-rdo-qscale-uv-ac 115` (other qscales default 100)
+   - `--token-probs adaptive`
+
+Reference = libwebp `cwebp -q Q` (via the harness).
+
+### Fixed corpora
+
+- Corpus A (commons-hq, photos): `images/commons-hq/*.jpg`
+- Corpus B (commons “micro”, 3 classic images):
+   - `images/commons/antpilla.jpg`
+   - `images/commons/crane.jpg`
+   - `images/commons/penguin.jpg`
+
+### Standard cwebp comparison commands
+
+These are the commands to run after each change. They print the per-image summary and the `Overall:` line.
+
+Prereq: `LIBWEBP_BIN_DIR` must contain `cwebp` and `dwebp` (e.g. `$HOME/libwebp/examples`).
+
+Commons-hq (photos):
+
+```sh
+LIBWEBP_BIN_DIR="$HOME/libwebp/examples" \
+   JOBS=8 SIZES="512 1024" QS="40 60 80" \
+   MODE=bpred-rdo OURS_FLAGS="--loopfilter" \
+   ./scripts/enc_vs_cwebp_quality.sh images/commons-hq/*.jpg | tail -n 40
+```
+
+Commons micro (3):
+
+```sh
+LIBWEBP_BIN_DIR="$HOME/libwebp/examples" \
+   JOBS=8 SIZES="512 1024" QS="40 60 80" \
+   MODE=bpred-rdo OURS_FLAGS="--loopfilter" \
+   ./scripts/enc_vs_cwebp_quality.sh \
+   images/commons/antpilla.jpg images/commons/crane.jpg images/commons/penguin.jpg | tail -n 40
+```
+
+Optional: if you want an “old baseline path” comparison (not the default encoder behavior anymore), run the same but with `MODE=bpred`.
+
+### Experiment 1 — Loopfilter parameter mapping
+
+Goal: improve perceived quality / SSIM at a given size by better qindex→(level, sharpness, deltas) mapping.
+
+Change:
+- Modify `enc_vp8_loopfilter_from_qindex()` in [src/enc-m08_filter/enc_loopfilter.c](src/enc-m08_filter/enc_loopfilter.c).
+
+What to try:
+- Adjust `filter_level` and `sharpness` bucket thresholds.
+- Consider enabling simple deltas only if it consistently helps on photos.
+
+Acceptance:
+- On the standard commands above, improve `bytes_ratio@SSIM` or reduce the magnitude of ΔSSIM/ΔPSNR without obvious regressions.
+- Keep `make test` green; if loopfilter header fields change, update the pinned loopfilter gate only if the change is intentional.
+
+### Experiment 2 — Improve intra mode decision distortion metric
+
+Goal: pick better predictors so residual energy drops (quality improves at same size, or bits drop at same quality).
+
+Change:
+- Work in the bpred-rdo decision loops in [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c).
+
+What to try (one at a time):
+- Replace pixel-domain SSE with a transform-domain proxy (SATD / Hadamard) for candidate ranking.
+- For 4x4 bpred: try a two-stage search (fast prune then full eval).
+- For chroma: experiment with U and V cost weighting (still deterministic).
+
+Acceptance:
+- Improve `bytes_ratio@SSIM` on commons-hq while not regressing the 3-image commons micro set.
+
+### Experiment 3 — RDO: tune lambda schedule and scaling
+
+Goal: better rate–distortion tradeoff (usually “smaller at same SSIM”).
+
+Change:
+- Update `rdo_lambda_from_qindex()` in [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c), or add a deterministic alternative schedule.
+
+What to try:
+- Piecewise schedules by qindex bucket (especially to behave better at low qualities).
+- Allow different lambda scaling for Y vs UV decisions (still deterministic).
+
+How to test:
+- Use the standard commands, plus quick sweeps via the existing tuning knobs:
+   - `OURS_FLAGS="--loopfilter --bpred-rdo-lambda-mul N --bpred-rdo-lambda-div M"`
+
+Acceptance:
+- Show a measurable improvement in `bytes_ratio@SSIM` on commons-hq without meaningful SSIM regression.
+
+### Experiment 4 — Rate term improvements (beyond “dry-run coeff tokens”)
+
+Goal: make the rate estimate closer to real VP8 bit cost so decisions improve.
+
+Change area:
+- Encoder-side estimators and dry-run helpers: [src/enc-m07_tokens/enc_vp8_tokens.c](src/enc-m07_tokens/enc_vp8_tokens.c)
+- RDO integration: [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c)
+
+What to try:
+- Improve mode signaling cost modeling (use entropy-coded bit estimates consistently).
+- Make the coeff token rate use the “learned” probs (adaptive/adaptive2) more consistently in the second-pass estimation.
+- If experimenting with additional dry-run scope, keep determinism and avoid per-subblock resets that destroy context.
+
+How to test:
+- Compare `OURS_FLAGS="--loopfilter --bpred-rdo-rate proxy|entropy|dry-run"`.
+- If changing default behavior, rerun both corpora.
+
+Acceptance:
+- Better `bytes_ratio@SSIM` (primary) with stable ΔSSIM (secondary).
+
+### Experiment 5 — Quantization shaping (DC/AC, Y/UV, per-band)
+
+Goal: spend bits where SSIM benefits most.
+
+Change:
+- Quant step selection/scaling in [src/enc-m06_quant/enc_quant.c](src/enc-m06_quant/enc_quant.c) and [src/enc-m06_quant/enc_quality_table.c](src/enc-m06_quant/enc_quality_table.c).
+- bpred-rdo-only knobs are applied during analysis in [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c).
+
+What to try:
+- Split tuning for DC vs AC (already supported by flags); try small deltas around 100.
+- Add a deterministic per-band weighting (matrix-like behavior) if you want to go further.
+
+How to test:
+- Standard commands, plus sweeps using:
+   - `--bpred-rdo-qscale-y-dc`, `--bpred-rdo-qscale-y-ac`, `--bpred-rdo-qscale-uv-dc`, `--bpred-rdo-qscale-uv-ac`
+   - `--bpred-rdo-quant ac-deadzone --bpred-rdo-ac-deadzone N`
+
+Acceptance:
+- Improve commons-hq `bytes_ratio@SSIM` without obvious “color wash” or texture collapse (quick visual spot-check on a couple images at QS=40 helps).
+
+### Experiment 6 — Token probability adaptation strategy
+
+Goal: reduce entropy coding overhead without changing reconstruction.
+
+Change:
+- Probability update logic and selection is in [src/enc-m07_tokens/enc_vp8_tokens.c](src/enc-m07_tokens/enc_vp8_tokens.c).
+
+What to try:
+- Iterate on `adaptive2` heuristics (prior strengths, min sample thresholds, update savings vs overhead model).
+- Consider making thresholds depend on qindex bucket (still deterministic).
+
+How to test:
+- Standard commands with:
+   - `OURS_FLAGS="--loopfilter --token-probs adaptive"`
+   - `OURS_FLAGS="--loopfilter --token-probs adaptive2"`
+
+Acceptance:
+- Any consistent reduction in `bytes_ratio@SSIM` on commons-hq without a ΔSSIM regression.
 
 ## Principles
 
@@ -77,6 +239,50 @@ LIBWEBP_BIN_DIR="$HOME/libwebp/examples" \
   QS="10 20 30 40 50 60 70 80 90" \
   MODE=bpred \
   ./scripts/enc_vs_cwebp_quality.sh images/commons/penguin.jpg images/commons/crane.jpg images/commons/antpilla.jpg
+```
+
+## Standard 512/1024px comparison (fixed corpora)
+
+These runs match the larger-photo benchmarks we’ve been using for recent tuning.
+
+Fixed corpora:
+
+- Photo corpus A (commons-hq, 12):
+   - [images/commons-hq/commons-00047.jpg](images/commons-hq/commons-00047.jpg)
+   - [images/commons-hq/commons-00068.jpg](images/commons-hq/commons-00068.jpg)
+   - [images/commons-hq/commons-00080.jpg](images/commons-hq/commons-00080.jpg)
+   - [images/commons-hq/commons-00087.jpg](images/commons-hq/commons-00087.jpg)
+   - [images/commons-hq/commons-00161.jpg](images/commons-hq/commons-00161.jpg)
+   - [images/commons-hq/commons-00165.jpg](images/commons-hq/commons-00165.jpg)
+   - [images/commons-hq/commons-00179.jpg](images/commons-hq/commons-00179.jpg)
+   - [images/commons-hq/commons-00188.jpg](images/commons-hq/commons-00188.jpg)
+   - [images/commons-hq/commons-00204.jpg](images/commons-hq/commons-00204.jpg)
+   - [images/commons-hq/commons-00209.jpg](images/commons-hq/commons-00209.jpg)
+   - [images/commons-hq/commons-00232.jpg](images/commons-hq/commons-00232.jpg)
+   - [images/commons-hq/commons-00256.jpg](images/commons-hq/commons-00256.jpg)
+
+- Micro corpus B (3 classic images):
+   - [images/commons/antpilla.jpg](images/commons/antpilla.jpg)
+   - [images/commons/crane.jpg](images/commons/crane.jpg)
+   - [images/commons/penguin.jpg](images/commons/penguin.jpg)
+
+Standard commands:
+
+```sh
+JOBS=8 SIZES="512 1024" QS="40 60 80" MODE=bpred-rdo OURS_FLAGS="--loopfilter" \
+   ./scripts/enc_vs_cwebp_quality.sh images/commons-hq/*.jpg | tail -n 40
+
+JOBS=8 SIZES="512 1024" QS="40 60 80" MODE=bpred-rdo OURS_FLAGS="--loopfilter" \
+   ./scripts/enc_vs_cwebp_quality.sh \
+   images/commons/antpilla.jpg images/commons/crane.jpg images/commons/penguin.jpg | tail -n 40
+```
+
+Recommended opt-in (single flag preset):
+
+```sh
+# Experimental: enables SATD-based pruning in bpred-rdo 4x4 mode search.
+# This is NOT the encoder default; use it explicitly when benchmarking.
+OURS_FLAGS="--loopfilter --bpred-rdo-satd-prune-k 8"
 ```
 
 ## Success criteria
@@ -253,6 +459,21 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
 
 ## Progress log
 
+- 2026-01-10 consolidated baseline + experiments (512/1024px QS 40/60/80 MODE=bpred-rdo; corpora: [images/commons-hq/README.md](images/commons-hq/README.md) + 3-image micro):
+   - Baseline at the start of the iteration (`OURS_FLAGS="--loopfilter"`):
+      - commons-hq (12): Overall: ΔPSNR=-0.642 dB  ΔSSIM=-0.00769  bytes_ratio@SSIM=1.149
+      - micro corpus (3): Overall: ΔPSNR=-0.443 dB  ΔSSIM=-0.00492  bytes_ratio@SSIM=1.100
+   - Experiment 1 promoted: bpred-rdo rate estimator `--bpred-rdo-rate dry-run` is now the default.
+      - commons-hq (12) with `OURS_FLAGS="--loopfilter --bpred-rdo-rate dry-run"`: Overall: ΔPSNR=-0.644 dB  ΔSSIM=-0.00769  bytes_ratio@SSIM=1.144
+      - micro corpus (3) with `OURS_FLAGS="--loopfilter --bpred-rdo-rate dry-run"`: Overall: ΔPSNR=-0.445 dB  ΔSSIM=-0.00492  bytes_ratio@SSIM=1.096
+   - Experiment 2 promoted: UV AC quant scaling `--bpred-rdo-qscale-uv-ac 115` is now the default.
+      - commons-hq (12) with `OURS_FLAGS="--loopfilter --bpred-rdo-qscale-uv-ac 115"`: Overall: ΔPSNR=-1.395 dB  ΔSSIM=-0.00761  bytes_ratio@SSIM=1.131
+      - micro corpus (3) with `OURS_FLAGS="--loopfilter --bpred-rdo-qscale-uv-ac 115"`: Overall: ΔPSNR=-0.997 dB  ΔSSIM=-0.00452  bytes_ratio@SSIM=1.083
+   - Experiment 3 implemented but not promoted: `--token-probs adaptive2` (deterministic prior schedule + min sample thresholds)
+      - commons-hq (12) with `OURS_FLAGS="--loopfilter --token-probs adaptive2"`: Overall: ΔPSNR=-1.390 dB  ΔSSIM=-0.00761  bytes_ratio@SSIM=1.131
+      - micro corpus (3) with `OURS_FLAGS="--loopfilter --token-probs adaptive2"`: Overall: ΔPSNR=-0.944 dB  ΔSSIM=-0.00452  bytes_ratio@SSIM=1.083
+   - Notes: `--token-probs adaptive2` is effectively neutral vs `adaptive` on these corpora; keep it opt-in for now. `make test`: OK.
+
 - 2026-01-09 baseline (256px QS 40/60/80 MODE=bpred):
   - Overall: ΔPSNR=-4.835 dB  ΔSSIM=-0.02999  bytes_ratio@SSIM=1.697
 
@@ -269,6 +490,24 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
       - Mean ΔPSNR_RGB: -0.011795 dB
       - Mean ΔSSIM_Y:   -0.000018
    - Conclusion: essentially neutral on this corpus; needs tuning on natural images via `enc_vs_cwebp_quality.sh`.
+
+- 2026-01-10 loopfilter param mapping v2 (slightly stronger levels for mid/high qindex):
+   - Change: in [src/enc-m08_filter/enc_loopfilter.c](src/enc-m08_filter/enc_loopfilter.c), add `level += 1` at qindex ≥32, ≥64, ≥96 (sharpness still 0).
+   - Results vs libwebp (512/1024px QS 40/60/80, `MODE=bpred-rdo`, `OURS_FLAGS="--loopfilter"`):
+      - commons-hq (12): Overall: ΔPSNR=-1.394 dB  ΔSSIM=-0.00755  bytes_ratio@SSIM=1.127 (prev 1.131)
+      - micro corpus (3): Overall: ΔPSNR=-1.002 dB  ΔSSIM=-0.00445  bytes_ratio@SSIM=1.083 (unchanged)
+   - Notes: small but measurable win on commons-hq; keep and iterate further only if it keeps improving.
+
+- 2026-01-10 Experiment 2: bpred-rdo 4x4 SATD prune stage (two-stage search):
+   - Added an optional Hadamard/SATD pre-score to prune the 4x4 intra candidate set before the existing quantization-aware RDO evaluation.
+   - New flag: `--bpred-rdo-satd-prune-k N` (default `0` = disabled; evaluate all 10 VP8 4x4 intra modes).
+   - Safety guard: pruning is only applied when qindex is not extremely low (currently disabled for qindex < 12).
+   - Results vs libwebp (512/1024px QS 40/60/80, `MODE=bpred-rdo`, `OURS_FLAGS="--loopfilter --bpred-rdo-satd-prune-k 8"`):
+      - commons-hq (12): Overall: ΔPSNR=-1.372 dB  ΔSSIM=-0.00758  bytes_ratio@SSIM=1.117 (prev 1.127)
+      - micro corpus (3): Overall: ΔPSNR=-0.968 dB  ΔSSIM=-0.00446  bytes_ratio@SSIM=1.081 (prev 1.083)
+   - Notes:
+      - `k=4` regressed micro on this sweep (Overall bytes_ratio@SSIM=1.126); `k=8` looks best so far.
+	  - Wider QS sweep (30..80) on micro (512/1024px, `OURS_FLAGS="--loopfilter --bpred-rdo-satd-prune-k 8"`): Overall bytes_ratio@SSIM=1.154 (baseline `--loopfilter` was 1.156).
 
 - 2026-01-10 Step 2 (bpred mode selection):
    - Tried switching B_PRED (4x4) and UV (8x8) selection from SAD → pixel-domain SSE in [src/enc-m08_recon/enc_recon.c](src/enc-m08_recon/enc_recon.c).
@@ -305,7 +544,7 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
       - `--bpred-rdo-lambda-mul N`
       - `--bpred-rdo-lambda-div N`
    - Design note: we intentionally keep only two intra strategies (`bpred` and experimental `bpred-rdo`) to avoid mode sprawl.
-   - Current defaults (only used when `--mode bpred-rdo`): `mul=10`, `div=1`, `rate=entropy`, `quant=ac-deadzone`, `ac-deadzone=70`.
+   - Current defaults (only used when `--mode bpred-rdo`): `mul=10`, `div=1`, `rate=dry-run`, `quant=ac-deadzone`, `ac-deadzone=70`, `qscale-y-dc=100`, `qscale-y-ac=100`, `qscale-uv-dc=100`, `qscale-uv-ac=115`.
    - 2026-01-10 follow-up: retune the default $\lambda$ scaling at larger photo sizes (SIZES=1024, QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`):
       - Commons HQ baseline (mul=8, div=1):  Overall: ΔPSNR=-0.636 dB  ΔSSIM=-0.00716  bytes_ratio@SSIM=1.164
       - Commons HQ tuned (mul=10, div=1):    Overall: ΔPSNR=-0.700 dB  ΔSSIM=-0.00717  bytes_ratio@SSIM=1.163
@@ -433,7 +672,7 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
 
 - 2026-01-10 Step 2 continuation: entropy-style token cost as the rate term (big win so far):
    - Change: added an optional `bpred-rdo` rate estimator that approximates VP8's coefficient token coding cost (tree walk with default probs) and uses that as $R$ in $J=D+\lambda R$.
-   - New flag (only affects `--mode bpred-rdo`): `--bpred-rdo-rate <proxy|entropy>` (default is now `entropy`).
+   - New flag (only affects `--mode bpred-rdo`): `--bpred-rdo-rate <proxy|entropy|dry-run>` (default is now `dry-run`).
    - Results vs libwebp, 3-image set (256px QS 40/60/80, `OURS_FLAGS="--loopfilter"`, `MODE=bpred-rdo`):
       - `--bpred-rdo-rate entropy --bpred-rdo-lambda-mul 8 --bpred-rdo-lambda-div 1`: Overall: ΔPSNR=-0.778 dB  ΔSSIM=-0.00630  bytes_ratio@SSIM=1.320
       - Previous proxy default (`--bpred-rdo-rate proxy --bpred-rdo-lambda-mul 6 --bpred-rdo-lambda-div 1`): Overall: ΔPSNR=-3.571 dB  ΔSSIM=-0.01527  bytes_ratio@SSIM=1.421
@@ -475,7 +714,7 @@ Optional tuning knobs (for quick A/B experiments; defaults are unchanged unless 
    - Conclusion: essentially neutral on these corpora; keep for closer apples-to-apples with libwebp.
 
 - 2026-01-10 Step 5 (token coding efficiency): adaptive coefficient probabilities (experimental flag)
-   - Implemented `--token-probs <default|adaptive>` in [src/encoder_main.c](src/encoder_main.c).
+   - Implemented `--token-probs <default|adaptive|adaptive2>` in [src/encoder_main.c](src/encoder_main.c).
    - Added keyframe coefficient probability adaptation (counts token branches, emits selective prob updates, then encodes tokens using the updated tables):
       - [src/enc-m07_tokens/enc_vp8_tokens.c](src/enc-m07_tokens/enc_vp8_tokens.c)
       - [src/enc-m07_tokens/enc_vp8_tokens.h](src/enc-m07_tokens/enc_vp8_tokens.h)

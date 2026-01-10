@@ -1,6 +1,6 @@
 images/png-in/blockcheck2_16x16_000_000_000_255_255_255.png  q=0  baseq=127  simple=0  level=63  sharpness=0  lfdelta=0
-images/png-in/blockcheck2_16x16_000_000_000_255_255_255.png  q=10  baseq=75  simple=0  level=29  sharpness=0  lfdelta=0
+images/png-in/blockcheck2_16x16_000_000_000_255_255_255.png  q=10  baseq=75  simple=0  level=31  sharpness=0  lfdelta=0
 images/png-in/blockcheck2_16x16_000_000_000_255_255_255.png  q=100  baseq=0  simple=0  level=0  sharpness=0  lfdelta=0
-images/png-in/blockcheck2_16x16_000_000_000_255_255_255.png  q=50  baseq=38  simple=0  level=11  sharpness=0  lfdelta=0
+images/png-in/blockcheck2_16x16_000_000_000_255_255_255.png  q=50  baseq=38  simple=0  level=12  sharpness=0  lfdelta=0
 images/png-in/blockcheck2_16x16_000_000_000_255_255_255.png  q=75  baseq=26  simple=0  level=8  sharpness=0  lfdelta=0
 images/png-in/blockcheck2_16x16_000_000_000_255_255_255.png  q=90  baseq=9  simple=0  level=3  sharpness=0  lfdelta=0

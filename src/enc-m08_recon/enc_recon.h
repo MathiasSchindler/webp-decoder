@@ -44,8 +44,14 @@ typedef struct {
 	uint32_t ac_deadzone_pct;
 	// Optional quant step scaling (percentage). If 0, treated as 100.
 	// Increasing a step size generally reduces bitrate at some quality loss.
+	uint32_t qscale_y_dc_pct;
 	uint32_t qscale_y_ac_pct;
+	uint32_t qscale_uv_dc_pct;
 	uint32_t qscale_uv_ac_pct;
+	// Optional 4x4 bpred candidate pruning using SATD/Hadamard pre-score.
+	// 0: disabled (default; evaluates all 10 modes)
+	// N>0: evaluate only the best N modes by SATD (tie-break by mode id)
+	uint32_t satd_prune_k;
 } EncBpredRdoTuning;
 
 int enc_vp8_recon_alloc(uint32_t width, uint32_t height, EncVp8ReconPlanes* out);

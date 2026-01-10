@@ -644,6 +644,46 @@ static uint32_t sse4x4_boundary_src_vs_recon(const uint8_t src4[16], const uint8
 	return sse;
 }
 
+static uint32_t satd4x4_src_vs_pred(const uint8_t src4[16], const uint8_t pred4[16]) {
+	// 4x4 Hadamard SATD on the residual (src - pred). Used only for candidate ranking.
+	int16_t r[16];
+	for (int i = 0; i < 16; i++) r[i] = (int16_t)((int)src4[i] - (int)pred4[i]);
+
+	int32_t tmp[16];
+	for (int y = 0; y < 4; y++) {
+		const int o = y * 4;
+		const int32_t a0 = (int32_t)r[o + 0] + (int32_t)r[o + 3];
+		const int32_t a1 = (int32_t)r[o + 1] + (int32_t)r[o + 2];
+		const int32_t a2 = (int32_t)r[o + 1] - (int32_t)r[o + 2];
+		const int32_t a3 = (int32_t)r[o + 0] - (int32_t)r[o + 3];
+		tmp[o + 0] = a0 + a1;
+		tmp[o + 1] = a3 + a2;
+		tmp[o + 2] = a0 - a1;
+		tmp[o + 3] = a3 - a2;
+	}
+
+	uint32_t sum = 0;
+	for (int x = 0; x < 4; x++) {
+		const int32_t b0 = tmp[0 * 4 + x] + tmp[3 * 4 + x];
+		const int32_t b1 = tmp[1 * 4 + x] + tmp[2 * 4 + x];
+		const int32_t b2 = tmp[1 * 4 + x] - tmp[2 * 4 + x];
+		const int32_t b3 = tmp[0 * 4 + x] - tmp[3 * 4 + x];
+		const int32_t t0 = b0 + b1;
+		const int32_t t1 = b3 + b2;
+		const int32_t t2 = b0 - b1;
+		const int32_t t3 = b3 - b2;
+		const int32_t v[4] = {t0, t1, t2, t3};
+		for (int k = 0; k < 4; k++) {
+			int32_t a = v[k];
+			if (a < 0) a = -a;
+			sum += (uint32_t)a;
+		}
+	}
+
+	// Scaling isn't important for ranking; keep it small-ish.
+	return (sum + 1u) >> 1;
+}
+
 // Small trellis: tweak quantized DC by a couple of steps to reduce SSE.
 // This helps reduce systematic luma bias (visible as banding) in heavily
 // quantized textured areas.
@@ -1136,7 +1176,11 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 	const uint32_t mb_cols = (yuv->width + 15u) >> 4;
 	const uint32_t mb_rows = (yuv->height + 15u) >> 4;
 	uint8_t probs1[4][8][3][11];
-	enc_vp8_compute_adaptive_coeff_probs(probs1, mb_cols, mb_rows, y1, c1);
+	if (token_probs_mode == ENC_VP8_TOKEN_PROBS_ADAPTIVE2) {
+		enc_vp8_compute_adaptive_coeff_probs2(probs1, mb_cols, mb_rows, y1, c1);
+	} else {
+		enc_vp8_compute_adaptive_coeff_probs(probs1, mb_cols, mb_rows, y1, c1);
+	}
 
 	free(c1);
 	free(uv1);
@@ -1883,8 +1927,12 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 	int use_entropy_signal = 0;
 	int quant_mode = 0;
 	uint32_t ac_deadzone_pct = 0;
-		uint32_t qscale_y_ac_pct = 100;
-		uint32_t qscale_uv_ac_pct = 100;
+	uint32_t qscale_y_dc_pct = 100;
+	uint32_t qscale_y_ac_pct = 100;
+	uint32_t qscale_uv_dc_pct = 100;
+	uint32_t qscale_uv_ac_pct = 100;
+	uint32_t satd_prune_k = 0;
+	const uint32_t satd_prune_min_qindex = 12;
 	if (tuning) {
 		lambda_mul = tuning->lambda_mul ? tuning->lambda_mul : 1;
 		lambda_div = tuning->lambda_div ? tuning->lambda_div : 1;
@@ -1894,11 +1942,17 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 		use_entropy_signal = (tuning->signal_mode == 1);
 		quant_mode = (tuning->quant_mode == 1) ? 1 : 0;
 		ac_deadzone_pct = tuning->ac_deadzone_pct;
+		qscale_y_dc_pct = tuning->qscale_y_dc_pct ? tuning->qscale_y_dc_pct : 100;
 		qscale_y_ac_pct = tuning->qscale_y_ac_pct ? tuning->qscale_y_ac_pct : 100;
+		qscale_uv_dc_pct = tuning->qscale_uv_dc_pct ? tuning->qscale_uv_dc_pct : 100;
 		qscale_uv_ac_pct = tuning->qscale_uv_ac_pct ? tuning->qscale_uv_ac_pct : 100;
+		satd_prune_k = tuning->satd_prune_k;
 		// Apply optional quant step scaling (Experiment 2).
+		qf.y1_dc = rdo_scale_step_pct(qf.y1_dc, qscale_y_dc_pct);
+		qf.y2_dc = rdo_scale_step_pct(qf.y2_dc, qscale_y_dc_pct);
 		qf.y1_ac = rdo_scale_step_pct(qf.y1_ac, qscale_y_ac_pct);
 		qf.y2_ac = rdo_scale_step_pct(qf.y2_ac, qscale_y_ac_pct);
+		qf.uv_dc = rdo_scale_step_pct(qf.uv_dc, qscale_uv_dc_pct);
 		qf.uv_ac = rdo_scale_step_pct(qf.uv_ac, qscale_uv_ac_pct);
 	}
 
@@ -2154,7 +2208,35 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 					const uint8_t left_has_ctx = (sb_c == 0) ? 0 : y_has_sel[sb_r][sb_c - 1];
 					const uint8_t above_has_ctx = (sb_r == 0) ? 0 : y_has_sel[sb_r - 1][sb_c];
 
-					for (Vp8BMode mode = B_DC_PRED; mode <= B_HU_PRED; mode++) {
+					int cand_modes_sorted[10];
+					int cand_modes_count = 0;
+					if (satd_prune_k > 0 && satd_prune_k < 10 && (uint32_t)qf.qindex >= satd_prune_min_qindex) {
+						uint32_t satd_by_mode[10];
+						for (Vp8BMode m = B_DC_PRED; m <= B_HU_PRED; m++) {
+							bpred4x4(pred4, &A8[1], L4, m);
+							satd_by_mode[(int)m] = satd4x4_src_vs_pred(src4, pred4);
+						}
+						for (Vp8BMode m = B_DC_PRED; m <= B_HU_PRED; m++) {
+							int pos = cand_modes_count;
+							while (pos > 0) {
+								const int prev = cand_modes_sorted[pos - 1];
+								const uint32_t s_new = satd_by_mode[(int)m];
+								const uint32_t s_prev = satd_by_mode[prev];
+								if (s_new > s_prev) break;
+								if (s_new == s_prev && (int)m > prev) break;
+								cand_modes_sorted[pos] = cand_modes_sorted[pos - 1];
+								pos--;
+							}
+							cand_modes_sorted[pos] = (int)m;
+							cand_modes_count++;
+						}
+						cand_modes_count = (int)satd_prune_k;
+					} else {
+						for (Vp8BMode m = B_DC_PRED; m <= B_HU_PRED; m++) cand_modes_sorted[cand_modes_count++] = (int)m;
+					}
+
+					for (int mi = 0; mi < cand_modes_count; mi++) {
+						const Vp8BMode mode = (Vp8BMode)cand_modes_sorted[mi];
 						bpred4x4(pred4, &A8[1], L4, mode);
 						int16_t coeff[16];
 						enc_vp8_ftransform4x4(src4, 4, pred4, 4, coeff);

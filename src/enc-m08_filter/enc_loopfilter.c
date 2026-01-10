@@ -35,6 +35,13 @@ void enc_vp8_loopfilter_from_qindex(uint8_t qindex, EncVp8LoopFilterParams* out)
 		level = 29 + (((int)qindex - 75) * 34 + 26) / 52; // round((q-75) * 34/52)
 	}
 
+	// Experiment 1: slightly stronger filtering in the typical photo range.
+	// This can improve SSIM at equal size by reducing blockiness/ringing.
+	// Kept deterministic and monotone.
+	if (qindex >= 32) level += 1;
+	if (qindex >= 64) level += 1;
+	if (qindex >= 96) level += 1;
+
 	*out = (EncVp8LoopFilterParams){
 		.use_simple = 0,
 		.level = clamp_u8(level, 0, 63),

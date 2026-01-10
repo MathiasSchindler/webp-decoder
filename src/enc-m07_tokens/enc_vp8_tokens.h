@@ -12,6 +12,7 @@ extern "C" {
 typedef enum {
     ENC_VP8_TOKEN_PROBS_DEFAULT = 0,
     ENC_VP8_TOKEN_PROBS_ADAPTIVE = 1,
+    ENC_VP8_TOKEN_PROBS_ADAPTIVE2 = 2,
 } EncVp8TokenProbsMode;
 
 // Build a VP8 keyframe payload (not RIFF/WebP wrapper) for arbitrary dimensions,
@@ -213,6 +214,14 @@ void enc_vp8_compute_adaptive_coeff_probs(uint8_t out_probs[4][8][3][11],
                                          uint32_t mb_rows,
                                          const uint8_t* y_modes,
                                          const int16_t* coeffs);
+
+// Alternative deterministic adaptive prob strategy (Experiment 3).
+// Uses a stronger per-band/context prior and a stricter savings-vs-overhead rule.
+void enc_vp8_compute_adaptive_coeff_probs2(uint8_t out_probs[4][8][3][11],
+                                          uint32_t mb_cols,
+                                          uint32_t mb_rows,
+                                          const uint8_t* y_modes,
+                                          const int16_t* coeffs);
 
 // Estimate the macroblock token cost (coeffs only) for keyframes, assuming
 // external contexts are 0. Uses the standard VP8 per-block context propagation

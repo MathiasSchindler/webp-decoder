@@ -1195,6 +1195,174 @@ void enc_vp8_compute_adaptive_coeff_probs(uint8_t out_probs[4][8][3][num_dct_tok
 	}
 }
 
+static uint32_t adaptive2_prior_strength(int coeff_plane, int band, int ctx3) {
+	// Deterministic, simple prior schedule:
+	// - higher prior for higher bands (sparser statistics)
+	// - slightly higher prior for chroma/Y2 planes
+	// - slightly higher prior for larger contexts
+	uint32_t base = 16;
+	if (band >= 6) base = 96;
+	else if (band >= 3) base = 48;
+	base += (uint32_t)ctx3 * 16u;
+	if (coeff_plane == 2) base += 16u; // chroma
+	if (coeff_plane == 1) base += 16u; // Y2
+	return base;
+}
+
+static uint32_t adaptive2_min_total(int band) {
+	if (band >= 6) return 32;
+	if (band >= 3) return 16;
+	return 8;
+}
+
+void enc_vp8_compute_adaptive_coeff_probs2(uint8_t out_probs[4][8][3][num_dct_tokens - 1],
+							   uint32_t mb_cols,
+							   uint32_t mb_rows,
+							   const uint8_t* y_modes,
+							   const int16_t* coeffs) {
+	memcpy(out_probs, default_coeff_probs, sizeof(default_coeff_probs));
+
+	uint32_t counts[4][8][3][num_dct_tokens - 1][2];
+	memset(counts, 0, sizeof(counts));
+
+	uint8_t* above_y = (uint8_t*)calloc((size_t)mb_cols * 4u, 1);
+	uint8_t* above_u = (uint8_t*)calloc((size_t)mb_cols * 2u, 1);
+	uint8_t* above_v = (uint8_t*)calloc((size_t)mb_cols * 2u, 1);
+	uint8_t* above_y2 = (uint8_t*)calloc((size_t)mb_cols, 1);
+	uint8_t left_y[4] = {0, 0, 0, 0};
+	uint8_t left_u[2] = {0, 0};
+	uint8_t left_v[2] = {0, 0};
+	uint8_t left_y2_flag = 0;
+
+	if (!above_y || !above_u || !above_v || !above_y2) {
+		free(above_y);
+		free(above_u);
+		free(above_v);
+		free(above_y2);
+		return;
+	}
+
+	const size_t coeffs_per_mb = 16 + (16 * 16) + (4 * 16) + (4 * 16);
+
+	for (uint32_t mb_r = 0; mb_r < mb_rows; mb_r++) {
+		left_y[0] = left_y[1] = left_y[2] = left_y[3] = 0;
+		left_u[0] = left_u[1] = 0;
+		left_v[0] = left_v[1] = 0;
+		left_y2_flag = 0;
+
+		for (uint32_t mb_c = 0; mb_c < mb_cols; mb_c++) {
+			const size_t mb_index = (size_t)mb_r * (size_t)mb_cols + (size_t)mb_c;
+			const int16_t* mb = coeffs + mb_index * coeffs_per_mb;
+
+			int ymode = y_modes ? (int)y_modes[mb_index] : 0;
+			int has_y2 = (ymode != (int)VP8_B_PRED);
+
+			// Y2
+			if (has_y2) {
+				uint8_t left_has = left_y2_flag;
+				uint8_t above_has = above_y2[mb_c];
+				int has = count_block_coeff_prob_branches(counts, 1, 0, left_has, above_has, mb);
+				above_y2[mb_c] = (uint8_t)has;
+				left_y2_flag = (uint8_t)has;
+			} else {
+				above_y2[mb_c] = 0;
+				left_y2_flag = 0;
+			}
+
+			// Y blocks.
+			uint8_t y_has[4][4];
+			for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) y_has[rr][cc] = 0;
+
+			const int y_plane = has_y2 ? 0 : 3;
+			const int first_coeff = has_y2 ? 1 : 0;
+
+			const int16_t* y = mb + 16;
+			for (int rr = 0; rr < 4; rr++) {
+				for (int cc = 0; cc < 4; cc++) {
+					uint8_t left_has = (cc == 0) ? left_y[rr] : y_has[rr][cc - 1];
+					uint8_t above_has = (rr == 0) ? above_y[mb_c * 4u + (uint32_t)cc] : y_has[rr - 1][cc];
+					int has = count_block_coeff_prob_branches(
+					    counts, y_plane, first_coeff, left_has, above_has, y + (rr * 4 + cc) * 16);
+					y_has[rr][cc] = (uint8_t)has;
+				}
+			}
+			for (int cc = 0; cc < 4; cc++) above_y[mb_c * 4u + (uint32_t)cc] = y_has[3][cc];
+			for (int rr = 0; rr < 4; rr++) left_y[rr] = y_has[rr][3];
+
+			// U blocks (2x2)
+			uint8_t u_has[2][2] = {{0, 0}, {0, 0}};
+			const int16_t* u = y + (16 * 16);
+			for (int rr = 0; rr < 2; rr++) {
+				for (int cc = 0; cc < 2; cc++) {
+					uint8_t left_has = (cc == 0) ? left_u[rr] : u_has[rr][cc - 1];
+					uint8_t above_has = (rr == 0) ? above_u[mb_c * 2u + (uint32_t)cc] : u_has[rr - 1][cc];
+					int has = count_block_coeff_prob_branches(counts, 2, 0, left_has, above_has, u + (rr * 2 + cc) * 16);
+					u_has[rr][cc] = (uint8_t)has;
+				}
+			}
+			for (int cc = 0; cc < 2; cc++) above_u[mb_c * 2u + (uint32_t)cc] = u_has[1][cc];
+			for (int rr = 0; rr < 2; rr++) left_u[rr] = u_has[rr][1];
+
+			// V blocks (2x2)
+			uint8_t v_has[2][2] = {{0, 0}, {0, 0}};
+			const int16_t* v = u + (4 * 16);
+			for (int rr = 0; rr < 2; rr++) {
+				for (int cc = 0; cc < 2; cc++) {
+					uint8_t left_has = (cc == 0) ? left_v[rr] : v_has[rr][cc - 1];
+					uint8_t above_has = (rr == 0) ? above_v[mb_c * 2u + (uint32_t)cc] : v_has[rr - 1][cc];
+					int has = count_block_coeff_prob_branches(counts, 2, 0, left_has, above_has, v + (rr * 2 + cc) * 16);
+					v_has[rr][cc] = (uint8_t)has;
+				}
+			}
+			for (int cc = 0; cc < 2; cc++) above_v[mb_c * 2u + (uint32_t)cc] = v_has[1][cc];
+			for (int rr = 0; rr < 2; rr++) left_v[rr] = v_has[rr][1];
+		}
+	}
+
+	free(above_y);
+	free(above_u);
+	free(above_v);
+	free(above_y2);
+
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 8; j++) {
+			for (int k = 0; k < 3; k++) {
+				for (int t = 0; t < (num_dct_tokens - 1); t++) {
+					uint32_t left = counts[i][j][k][t][0];
+					uint32_t right = counts[i][j][k][t][1];
+					uint32_t total = left + right;
+					if (total < adaptive2_min_total(j)) continue;
+
+					uint32_t oldp = (uint32_t)default_coeff_probs[i][j][k][t];
+					uint32_t prior_strength = adaptive2_prior_strength(i, j, k);
+					uint32_t left_prior = (oldp * prior_strength + 128u) / 256u;
+
+					uint32_t total2 = total + prior_strength;
+					uint32_t left2 = left + left_prior;
+					uint32_t newp = (left2 * 256u + (total2 / 2u)) / total2;
+					if (newp <= 0u) newp = 1u;
+					if (newp >= 256u) newp = 255u;
+					if (newp + 1u >= oldp && oldp + 1u >= newp) continue;
+					if (newp == oldp) continue;
+
+					uint64_t old_cost = (uint64_t)left * (uint64_t)cost_prob_q8(oldp) +
+					                    (uint64_t)right * (uint64_t)cost_prob_q8(256u - oldp);
+					uint64_t new_cost = (uint64_t)left * (uint64_t)cost_prob_q8(newp) +
+					                    (uint64_t)right * (uint64_t)cost_prob_q8(256u - newp);
+
+					uint8_t up = coeff_update_probs[i][j][k][t];
+					uint64_t delta_update_cost = (uint64_t)cost_bool_put_q8(up, 1) + (uint64_t)(8u * 256u) -
+					                         (uint64_t)cost_bool_put_q8(up, 0);
+
+					if (old_cost > new_cost + delta_update_cost) {
+						out_probs[i][j][k][t] = (uint8_t)newp;
+					}
+				}
+			}
+		}
+	}
+}
+
 int enc_vp8_build_keyframe_dc_coeffs(uint32_t width,
 								uint32_t height,
 								uint8_t q_index,
@@ -1587,7 +1755,11 @@ int enc_vp8_build_keyframe_intra_coeffs_ex_probs(uint32_t width,
 	}
 
 	uint8_t coeff_probs[4][8][3][num_dct_tokens - 1];
-	enc_vp8_compute_adaptive_coeff_probs(coeff_probs, mb_cols, mb_rows, y_modes, coeffs);
+	if (probs_mode == ENC_VP8_TOKEN_PROBS_ADAPTIVE2) {
+		enc_vp8_compute_adaptive_coeff_probs2(coeff_probs, mb_cols, mb_rows, y_modes, coeffs);
+	} else {
+		enc_vp8_compute_adaptive_coeff_probs(coeff_probs, mb_cols, mb_rows, y_modes, coeffs);
+	}
 
 	EncBoolEncoder p0;
 	enc_bool_init(&p0);
