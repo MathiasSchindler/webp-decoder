@@ -1172,7 +1172,7 @@ int enc_vp8_encode_bpred_uv_rdo_inloop(const EncYuv420Image* yuv,
 
 	return enc_vp8_encode_bpred_uv_rdo_inloop_pass(yuv,
 	                                             quality,
-	                                             probs1,
+	                                             (const uint8_t (*)[8][3][11])probs1,
 	                                             y_modes_out,
 	                                             y_modes_count_out,
 	                                             b_modes_out,
@@ -2010,6 +2010,7 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 			int16_t best_vblk[4][16];
 			uint8_t best_pred_u8[8 * 8];
 			uint8_t best_pred_v8[8 * 8];
+			int best_uv_inited = 0;
 			const uint32_t lambda_uv = rdo_lambda_from_qindex(qf.qindex, lambda_mul, lambda_div);
 
 			for (Vp8I16Mode mode = VP8_I16_DC_PRED; mode <= VP8_I16_TM_PRED; mode++) {
@@ -2124,7 +2125,8 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 				}
 
 				uint32_t cost = sse + (uint32_t)((uint64_t)lambda_uv * (uint64_t)rate);
-				if (cost < best_uv_sse) {
+				if (!best_uv_inited || cost < best_uv_sse) {
+					best_uv_inited = 1;
 					best_uv_sse = cost;
 					best_uv_mode = mode;
 					memcpy(best_pred_u8, pred_u_tmp, sizeof(best_pred_u8));
@@ -2134,6 +2136,13 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 						for (int i = 0; i < 16; i++) best_vblk[n][i] = vblk_tmp[n][i];
 					}
 				}
+			}
+			if (!best_uv_inited) {
+				best_uv_mode = VP8_I16_DC_PRED;
+				memset(best_pred_u8, 127, sizeof(best_pred_u8));
+				memset(best_pred_v8, 127, sizeof(best_pred_v8));
+				memset(best_ublk, 0, sizeof(best_ublk));
+				memset(best_vblk, 0, sizeof(best_vblk));
 			}
 
 			memcpy(pred_u8, best_pred_u8, sizeof(pred_u8));
@@ -2212,6 +2221,7 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 					int16_t best_coeff[16];
 					uint8_t best_pred4[16];
 					uint8_t best_has = 0;
+					int best_inited = 0;
 					const uint8_t left_has_ctx = (sb_c == 0) ? 0 : y_has_sel[sb_r][sb_c - 1];
 					const uint8_t above_has_ctx = (sb_r == 0) ? 0 : y_has_sel[sb_r - 1][sb_c];
 
@@ -2274,13 +2284,21 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 						inv_dct4x4(deq, res);
 						uint32_t sse = sse4x4_src_vs_recon(src4, pred4, res);
 						uint32_t cost = sse + (uint32_t)((uint64_t)lambda_y * (uint64_t)rate);
-						if (cost < best_cost) {
+						if (!best_inited || cost < best_cost) {
+							best_inited = 1;
 							best_cost = cost;
 							best_mode = mode;
 							for (int i = 0; i < 16; i++) best_coeff[i] = coeff[i];
 							for (int i = 0; i < 16; i++) best_pred4[i] = pred4[i];
 							best_has = has;
 						}
+					}
+					if (!best_inited) {
+						best_cost = 0;
+						best_mode = B_DC_PRED;
+						memset(best_coeff, 0, sizeof(best_coeff));
+						memset(best_pred4, 127, sizeof(best_pred4));
+						best_has = 0;
 					}
 
 					cand_b_modes[blk] = (uint8_t)best_mode;
@@ -2324,6 +2342,7 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 			int16_t best_i16_y2[16];
 			int16_t best_i16_yblk[16][16];
 			uint8_t best_i16_recon_y[16 * 16];
+			int best_i16_inited = 0;
 
 			// Build neighbor vectors from reconstructed luma.
 			uint8_t A16[16];
@@ -2454,7 +2473,8 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 				}
 
 				uint32_t cost = sse_mb + (uint32_t)((uint64_t)lambda_y * (uint64_t)rate);
-				if (cost < best_cost_i16) {
+				if (!best_i16_inited || cost < best_cost_i16) {
+					best_i16_inited = 1;
 					best_cost_i16 = cost;
 					best_i16_mode = mode;
 					for (int i = 0; i < 16; ++i) best_i16_y2[i] = y2[i];
@@ -2463,6 +2483,11 @@ static int enc_vp8_encode_bpred_uv_rdo_inloop_pass(const EncYuv420Image* yuv,
 					}
 					memcpy(best_i16_recon_y, recon_y_tmp, sizeof(best_i16_recon_y));
 				}
+			}
+			if (!best_i16_inited) {
+				memset(best_i16_y2, 0, sizeof(best_i16_y2));
+				memset(best_i16_yblk, 0, sizeof(best_i16_yblk));
+				memset(best_i16_recon_y, 127, sizeof(best_i16_recon_y));
 			}
 
 			// Decide macroblock luma mode and commit coeffs + recon.

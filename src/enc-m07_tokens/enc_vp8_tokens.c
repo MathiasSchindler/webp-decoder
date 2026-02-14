@@ -1789,7 +1789,7 @@ int enc_vp8_build_keyframe_intra_coeffs_ex_probs(uint32_t width,
 	                   uv_modes,
 	                   b_modes,
 	                   lf,
-	                   coeff_probs);
+	                   (const uint8_t (*)[8][3][num_dct_tokens - 1])coeff_probs);
 	enc_bool_finish(&p0);
 	if (enc_bool_error(&p0)) {
 		enc_bool_free(&p0);
@@ -1806,7 +1806,13 @@ int enc_vp8_build_keyframe_intra_coeffs_ex_probs(uint32_t width,
 
 	EncBoolEncoder tok;
 	enc_bool_init(&tok);
-	enc_tokens_for_grid(&tok, mb_cols, mb_rows, y_modes, coeffs, coeff_probs, mb_skip_coeff);
+	enc_tokens_for_grid(&tok,
+	                    mb_cols,
+	                    mb_rows,
+	                    y_modes,
+	                    coeffs,
+	                    (const uint8_t (*)[8][3][num_dct_tokens - 1])coeff_probs,
+	                    mb_skip_coeff);
 	enc_bool_finish(&tok);
 	if (enc_bool_error(&tok)) {
 		enc_bool_free(&tok);
