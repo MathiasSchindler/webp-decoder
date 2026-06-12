@@ -4,7 +4,7 @@
 #include <string.h>
 
 #include "../src/encoder/enc_bool.h"
-#include "../src/m03_bool_decoder/bool_decoder.h"
+#include "../src/decoder/bool_decoder.h"
 
 static uint32_t xorshift32(uint32_t* s) {
 	uint32_t x = *s;

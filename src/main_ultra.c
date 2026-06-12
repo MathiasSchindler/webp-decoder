@@ -1,9 +1,9 @@
 
 #include "common/os.h"
-#include "m01_container/webp_container.h"
-#include "m02_vp8_header/vp8_header.h"
-#include "m06_recon/vp8_recon.h"
-#include "m09_png/yuv2rgb_png.h"
+#include "decoder/webp_container.h"
+#include "decoder/vp8_header.h"
+#include "decoder/vp8_recon.h"
+#include "decoder/yuv2rgb_png.h"
 
 #include <fcntl.h>
 #include <unistd.h>

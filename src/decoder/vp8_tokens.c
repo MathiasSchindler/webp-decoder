@@ -6,8 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../m02_vp8_header/vp8_header.h"
-#include "../m03_bool_decoder/bool_decoder.h"
+#include "vp8_header.h"
+#include "bool_decoder.h"
 #include "vp8_tree.h"
 
 // --- Small helpers ---

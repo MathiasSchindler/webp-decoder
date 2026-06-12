@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 #include "../common/os.h"
-#include "../m02_vp8_header/vp8_header.h"
-#include "../m05_tokens/vp8_tokens.h"
+#include "vp8_header.h"
+#include "vp8_tokens.h"
 
 typedef struct {
 	uint32_t width;

@@ -48,16 +48,16 @@ SRC := \
 	src/main.c \
 	src/common/os.c \
 	src/common/fmt.c \
-	src/m01_container/webp_container.c \
-	src/m02_vp8_header/vp8_header.c \
-	src/m03_bool_decoder/bool_decoder.c \
-	src/m04_frame_header_full/vp8_frame_header_basic.c \
-	src/m05_tokens/vp8_tree.c \
-	src/m05_tokens/vp8_tokens.c \
-	src/m06_recon/vp8_recon.c \
-	src/m07_loopfilter/vp8_loopfilter.c \
-	src/m08_yuv2rgb_ppm/yuv2rgb_ppm.c \
-	src/m09_png/yuv2rgb_png.c
+	src/decoder/webp_container.c \
+	src/decoder/vp8_header.c \
+	src/decoder/bool_decoder.c \
+	src/decoder/vp8_frame_header_basic.c \
+	src/decoder/vp8_tree.c \
+	src/decoder/vp8_tokens.c \
+	src/decoder/vp8_recon.c \
+	src/decoder/vp8_loopfilter.c \
+	src/decoder/yuv2rgb_ppm.c \
+	src/decoder/yuv2rgb_png.c
 
 OBJ := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SRC))
 
@@ -212,12 +212,12 @@ $(ENC_WEBPWRAP_BIN): $(ENC_WEBPWRAP_SRC) src/encoder/enc_riff.h
 ENC_BOOLSELFTEST_SRC := \
 	tools/enc_boolselftest.c \
 	src/encoder/enc_bool.c \
-	src/m03_bool_decoder/bool_decoder.c \
+	src/decoder/bool_decoder.c \
 	src/common/os.c
 
 $(ENC_BOOLSELFTEST_BIN): $(ENC_BOOLSELFTEST_SRC) \
 	src/encoder/enc_bool.h \
-	src/m03_bool_decoder/bool_decoder.h
+	src/decoder/bool_decoder.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_BOOLSELFTEST_SRC)
 
@@ -299,10 +299,10 @@ $(ENC_M07_QUANTDUMP_BIN): $(ENC_M07_QUANTDUMP_SRC) \
 ENC_M08_TOKENTEST_SRC := \
 	tools/enc_m08_tokentest.c \
 	src/common/os.c \
-	src/m02_vp8_header/vp8_header.c \
-	src/m03_bool_decoder/bool_decoder.c \
-	src/m05_tokens/vp8_tree.c \
-	src/m05_tokens/vp8_tokens.c \
+	src/decoder/vp8_header.c \
+	src/decoder/bool_decoder.c \
+	src/decoder/vp8_tree.c \
+	src/decoder/vp8_tokens.c \
 	src/encoder/enc_png.c \
 	src/encoder/enc_rgb_to_yuv.c \
 	src/encoder/enc_gamma_tables.c \
@@ -315,7 +315,7 @@ ENC_M08_TOKENTEST_SRC := \
 	src/encoder/enc_bool.c
 
 $(ENC_M08_TOKENTEST_BIN): $(ENC_M08_TOKENTEST_SRC) \
-	src/m05_tokens/vp8_tokens.h \
+	src/decoder/vp8_tokens.h \
 	src/encoder/enc_png.h \
 	src/encoder/enc_rgb_to_yuv.h \
 	src/encoder/enc_intra_dc.h \
@@ -443,15 +443,15 @@ $(NOLIBC_TINY_BIN): $(NOLIBC_TINY_OBJ)
 NOLIBC_ULTRA_SRC := \
 	src/main_ultra.c \
 	src/common/os_readall.c \
-	src/m01_container/webp_container.c \
-	src/m02_vp8_header/vp8_header.c \
-	src/m03_bool_decoder/bool_decoder.c \
-	src/m04_frame_header_full/vp8_frame_header_basic.c \
-	src/m05_tokens/vp8_tree.c \
-	src/m05_tokens/vp8_tokens.c \
-	src/m06_recon/vp8_recon.c \
-	src/m07_loopfilter/vp8_loopfilter.c \
-	src/m09_png/yuv2rgb_png.c \
+	src/decoder/webp_container.c \
+	src/decoder/vp8_header.c \
+	src/decoder/bool_decoder.c \
+	src/decoder/vp8_frame_header_basic.c \
+	src/decoder/vp8_tree.c \
+	src/decoder/vp8_tokens.c \
+	src/decoder/vp8_recon.c \
+	src/decoder/vp8_loopfilter.c \
+	src/decoder/yuv2rgb_png.c \
 	src/nolibc/syscall_glue.c
 
 NOLIBC_ULTRA_OBJ := $(patsubst src/%.c,$(NOLIBC_ULTRA_BUILD_DIR)/%.o,$(filter %.c,$(NOLIBC_ULTRA_SRC))) \

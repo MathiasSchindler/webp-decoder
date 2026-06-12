@@ -1,14 +1,14 @@
 #include "common/fmt.h"
 #include "common/os.h"
-#include "m01_container/webp_container.h"
-#include "m02_vp8_header/vp8_header.h"
-#include "m04_frame_header_full/vp8_frame_header_basic.h"
-#include "m05_tokens/vp8_tokens.h"
-#include "m06_recon/vp8_recon.h"
+#include "decoder/webp_container.h"
+#include "decoder/vp8_header.h"
+#include "decoder/vp8_frame_header_basic.h"
+#include "decoder/vp8_tokens.h"
+#include "decoder/vp8_recon.h"
 
 #ifndef DECODER_TINY
-#include "m08_yuv2rgb_ppm/yuv2rgb_ppm.h"
-#include "m09_png/yuv2rgb_png.h"
+#include "decoder/yuv2rgb_ppm.h"
+#include "decoder/yuv2rgb_png.h"
 #endif
 
 #include <errno.h>

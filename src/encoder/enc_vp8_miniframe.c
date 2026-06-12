@@ -14,11 +14,11 @@
 #define NUM_DCT_TOKENS 12
 
 static const uint8_t coeff_update_probs[4][8][3][NUM_DCT_TOKENS - 1] =
-#include "../m05_tokens/vp8_tokens_tables_coeff_update_probs.inc"
+#include "../decoder/vp8_tokens_tables_coeff_update_probs.inc"
 ;
 
 static const uint8_t default_coeff_probs[4][8][3][NUM_DCT_TOKENS - 1] =
-#include "../m05_tokens/vp8_tokens_tables_default_coeff_probs.inc"
+#include "../decoder/vp8_tokens_tables_default_coeff_probs.inc"
 ;
 
 static void write_u16le(uint8_t* dst, uint16_t v) {
@@ -60,7 +60,7 @@ static void write_keyframe_start_code_and_dims(uint8_t dst7[7], uint16_t width, 
 }
 
 static void enc_part0_minimal(EncBoolEncoder* e) {
-	// Must match the decoder's parse order in src/m05_tokens/vp8_tokens.c.
+	// Must match the decoder's parse order in src/decoder/vp8_tokens.c.
 	//
 	// Key-frame-only: color_space and clamping_type.
 	enc_bool_put(e, 128, 0);

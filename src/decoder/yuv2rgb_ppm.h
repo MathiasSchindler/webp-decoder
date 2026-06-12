@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-#include "../m06_recon/vp8_recon.h"
+#include "vp8_recon.h"
 
 // Writes a binary PPM (P6) to fd from a YUV420 (I420) image.
 // Conversion uses full-range Rec.601 coefficients.

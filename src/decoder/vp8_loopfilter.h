@@ -2,8 +2,8 @@
 
 #include <stdint.h>
 
-#include "../m06_recon/vp8_recon.h"
-#include "../m05_tokens/vp8_tokens.h"
+#include "vp8_recon.h"
+#include "vp8_tokens.h"
 
 // Applies the VP8 in-loop deblocking filter to a reconstructed keyframe.
 //

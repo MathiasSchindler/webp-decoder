@@ -12,11 +12,11 @@
 
 // Pull in the same RFC-aligned tables as the decoder uses.
 static const uint8_t coeff_update_probs[4][8][3][NUM_DCT_TOKENS - 1] =
-#include "../m05_tokens/vp8_tokens_tables_coeff_update_probs.inc"
+#include "../decoder/vp8_tokens_tables_coeff_update_probs.inc"
 ;
 
 static const uint8_t default_coeff_probs[4][8][3][NUM_DCT_TOKENS - 1] =
-#include "../m05_tokens/vp8_tokens_tables_default_coeff_probs.inc"
+#include "../decoder/vp8_tokens_tables_default_coeff_probs.inc"
 ;
 
 typedef enum {
@@ -55,7 +55,7 @@ static const int8_t bmode_tree[2 * (num_intra_bmodes - 1)] = {
 };
 
 static const uint8_t kf_bmode_prob[num_intra_bmodes][num_intra_bmodes][num_intra_bmodes - 1] =
-#include "../m05_tokens/vp8_tokens_tables_kf_bmode_prob.inc"
+#include "../decoder/vp8_tokens_tables_kf_bmode_prob.inc"
 ;
 
 static intra_bmode mbmode_to_bmode(intra_mbmode m) {
@@ -801,7 +801,7 @@ static void enc_part0_for_grid(EncBoolEncoder* e,
 							  const uint8_t* b_modes,
 							  const EncVp8LoopFilterParams* lf,
 							  const uint8_t coeff_probs_override[4][8][3][num_dct_tokens - 1]) {
-	// Match decoder parse order in src/m05_tokens/vp8_tokens.c.
+	// Match decoder parse order in src/decoder/vp8_tokens.c.
 	enc_bool_put(e, 128, 0);        // color_space
 	enc_bool_put(e, 128, 0);        // clamping_type
 

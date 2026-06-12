@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../m07_loopfilter/vp8_loopfilter.h"
+#include "vp8_loopfilter.h"
 
 // --- Helpers ---
 

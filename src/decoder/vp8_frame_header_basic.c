@@ -2,8 +2,8 @@
 
 #include <errno.h>
 
-#include "../m02_vp8_header/vp8_header.h"
-#include "../m03_bool_decoder/bool_decoder.h"
+#include "vp8_header.h"
+#include "bool_decoder.h"
 
 static int8_t decode_q_delta(BoolDecoder* d) {
 	// Present flag + 4-bit magnitude + sign bit.

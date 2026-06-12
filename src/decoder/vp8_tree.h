@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-#include "../m03_bool_decoder/bool_decoder.h"
+#include "bool_decoder.h"
 
 // VP8 trees store either a node index (positive, even) or a leaf symbol
 // (negative; symbol is -value).

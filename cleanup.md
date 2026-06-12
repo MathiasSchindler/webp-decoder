@@ -21,10 +21,11 @@ Status note (repo reality)
 
 Observation
 
-- `src/` currently contains both canonical milestone dirs and older/alternate ones, e.g.
-  - `m06_recon/` and `m06_recon_yuv/`
-  - `m07_loopfilter/` and `m07_loop_filter/`
-  - `m09_png/` and `m09_hardening/`
+- This section originally tracked cleanup of duplicate milestone directories.
+- The source layout has since been consolidated by component:
+  - `src/decoder/` for the decoder implementation
+  - `src/encoder/` for the encoder implementation
+  - `src/common/`, `src/quality/`, and `src/nolibc/` for shared/support code
 
 Goal
 
@@ -34,9 +35,7 @@ Status
 
 - Phase A implemented: canonical dirs are described in `src/README.md`.
 - Phase B implemented: unreferenced legacy milestone directories were deleted:
-  - `src/m06_recon_yuv/`
-  - `src/m07_loop_filter/`
-  - `src/m09_hardening/`
+- Phase C implemented: milestone directories were folded into `src/decoder/` and `src/encoder/`.
 
 Plan (safe two-phase)
 

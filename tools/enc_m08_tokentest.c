@@ -10,7 +10,7 @@
 #include "../src/encoder/enc_intra_dc.h"
 #include "../src/encoder/enc_quant.h"
 #include "../src/encoder/enc_vp8_tokens.h"
-#include "../src/m05_tokens/vp8_tokens.h"
+#include "../src/decoder/vp8_tokens.h"
 
 static void usage(const char* argv0) {
 	fprintf(stderr,
