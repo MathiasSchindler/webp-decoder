@@ -26,15 +26,13 @@ void vp8_yuv_to_rgb(uint8_t y, uint8_t u, uint8_t v, uint8_t* dst3) {
 	dst3[2] = vp8_clip8(b);
 }
 
-void vp8_upsample_rgb_line_pair(const uint8_t* top_y,
-                                const uint8_t* bottom_y,
-                                const uint8_t* top_u,
-                                const uint8_t* top_v,
-                                const uint8_t* cur_u,
-                                const uint8_t* cur_v,
-                                uint8_t* top_dst,
-                                uint8_t* bottom_dst,
-                                uint32_t len) {
+static void vp8_upsample_rgb_line_only(const uint8_t* top_y,
+                                       const uint8_t* top_u,
+                                       const uint8_t* top_v,
+                                       const uint8_t* cur_u,
+                                       const uint8_t* cur_v,
+                                       uint8_t* top_dst,
+                                       uint32_t len) {
 	if (len == 0) return;
 
 	const uint32_t last_pixel_pair = (len - 1u) >> 1;
@@ -48,7 +46,68 @@ void vp8_upsample_rgb_line_pair(const uint8_t* top_y,
 		const uint8_t v0 = (uint8_t)((3u * tl_v + l_v + 2u) >> 2);
 		vp8_yuv_to_rgb(top_y[0], u0, v0, top_dst + 0);
 	}
-	if (bottom_y != 0) {
+
+	for (uint32_t x = 1; x <= last_pixel_pair; ++x) {
+		const uint32_t t_u = top_u[x];
+		const uint32_t t_v = top_v[x];
+		const uint32_t u = cur_u[x];
+		const uint32_t v = cur_v[x];
+
+		const uint32_t avg_u = tl_u + t_u + l_u + u + 8u;
+		const uint32_t avg_v = tl_v + t_v + l_v + v + 8u;
+		const uint32_t diag_12_u = (avg_u + 2u * (t_u + l_u)) >> 3;
+		const uint32_t diag_12_v = (avg_v + 2u * (t_v + l_v)) >> 3;
+		const uint32_t diag_03_u = (avg_u + 2u * (tl_u + u)) >> 3;
+		const uint32_t diag_03_v = (avg_v + 2u * (tl_v + v)) >> 3;
+
+		{
+			const uint8_t u0 = (uint8_t)((diag_12_u + tl_u) >> 1);
+			const uint8_t v0 = (uint8_t)((diag_12_v + tl_v) >> 1);
+			const uint8_t u1 = (uint8_t)((diag_03_u + t_u) >> 1);
+			const uint8_t v1 = (uint8_t)((diag_03_v + t_v) >> 1);
+			vp8_yuv_to_rgb(top_y[2u * x - 1u], u0, v0, top_dst + (2u * x - 1u) * 3u);
+			vp8_yuv_to_rgb(top_y[2u * x + 0u], u1, v1, top_dst + (2u * x + 0u) * 3u);
+		}
+
+		tl_u = t_u;
+		tl_v = t_v;
+		l_u = u;
+		l_v = v;
+	}
+
+	if ((len & 1u) == 0u) {
+		const uint32_t idx = len - 1u;
+		{
+			const uint8_t u0 = (uint8_t)((3u * tl_u + l_u + 2u) >> 2);
+			const uint8_t v0 = (uint8_t)((3u * tl_v + l_v + 2u) >> 2);
+			vp8_yuv_to_rgb(top_y[idx], u0, v0, top_dst + idx * 3u);
+		}
+	}
+}
+
+static void vp8_upsample_rgb_line_pair_full(const uint8_t* top_y,
+                                            const uint8_t* bottom_y,
+                                            const uint8_t* top_u,
+                                            const uint8_t* top_v,
+                                            const uint8_t* cur_u,
+                                            const uint8_t* cur_v,
+                                            uint8_t* top_dst,
+                                            uint8_t* bottom_dst,
+                                            uint32_t len) {
+	if (len == 0) return;
+
+	const uint32_t last_pixel_pair = (len - 1u) >> 1;
+	uint32_t tl_u = top_u[0];
+	uint32_t tl_v = top_v[0];
+	uint32_t l_u = cur_u[0];
+	uint32_t l_v = cur_v[0];
+
+	{
+		const uint8_t u0 = (uint8_t)((3u * tl_u + l_u + 2u) >> 2);
+		const uint8_t v0 = (uint8_t)((3u * tl_v + l_v + 2u) >> 2);
+		vp8_yuv_to_rgb(top_y[0], u0, v0, top_dst + 0);
+	}
+	{
 		const uint8_t u0 = (uint8_t)((3u * l_u + tl_u + 2u) >> 2);
 		const uint8_t v0 = (uint8_t)((3u * l_v + tl_v + 2u) >> 2);
 		vp8_yuv_to_rgb(bottom_y[0], u0, v0, bottom_dst + 0);
@@ -75,7 +134,7 @@ void vp8_upsample_rgb_line_pair(const uint8_t* top_y,
 			vp8_yuv_to_rgb(top_y[2u * x - 1u], u0, v0, top_dst + (2u * x - 1u) * 3u);
 			vp8_yuv_to_rgb(top_y[2u * x + 0u], u1, v1, top_dst + (2u * x + 0u) * 3u);
 		}
-		if (bottom_y != 0) {
+		{
 			const uint8_t u0 = (uint8_t)((diag_03_u + l_u) >> 1);
 			const uint8_t v0 = (uint8_t)((diag_03_v + l_v) >> 1);
 			const uint8_t u1 = (uint8_t)((diag_12_u + u) >> 1);
@@ -97,10 +156,26 @@ void vp8_upsample_rgb_line_pair(const uint8_t* top_y,
 			const uint8_t v0 = (uint8_t)((3u * tl_v + l_v + 2u) >> 2);
 			vp8_yuv_to_rgb(top_y[idx], u0, v0, top_dst + idx * 3u);
 		}
-		if (bottom_y != 0) {
+		{
 			const uint8_t u0 = (uint8_t)((3u * l_u + tl_u + 2u) >> 2);
 			const uint8_t v0 = (uint8_t)((3u * l_v + tl_v + 2u) >> 2);
 			vp8_yuv_to_rgb(bottom_y[idx], u0, v0, bottom_dst + idx * 3u);
 		}
+	}
+}
+
+void vp8_upsample_rgb_line_pair(const uint8_t* top_y,
+                                const uint8_t* bottom_y,
+                                const uint8_t* top_u,
+                                const uint8_t* top_v,
+                                const uint8_t* cur_u,
+                                const uint8_t* cur_v,
+                                uint8_t* top_dst,
+                                uint8_t* bottom_dst,
+                                uint32_t len) {
+	if (bottom_y != 0) {
+		vp8_upsample_rgb_line_pair_full(top_y, bottom_y, top_u, top_v, cur_u, cur_v, top_dst, bottom_dst, len);
+	} else {
+		vp8_upsample_rgb_line_only(top_y, top_u, top_v, cur_u, cur_v, top_dst, len);
 	}
 }

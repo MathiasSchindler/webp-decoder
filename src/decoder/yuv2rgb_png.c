@@ -131,48 +131,90 @@ static inline void adler32_update(uint32_t* a, uint32_t* b, const uint8_t* buf, 
 	*b = bb;
 }
 
+#define PNG_IDAT_BUF_SIZE 65536u
+
 typedef struct {
-	const Yuv420Image* img;
-	uint8_t* top_row;
-	uint8_t* bottom_row;
-	uint8_t* scanline;
-	uint32_t row_bytes;
-	uint32_t scanline_bytes;
-	uint32_t y;
-	int have_cached_bottom;
-} PngRgbGen;
+	int fd;
+	uint32_t crc;
+	uint8_t* buf;
+	size_t used;
+} PngIdatWriter;
 
-static int png_fill_scanline(PngRgbGen* g) {
-	g->scanline[0] = 0; // filter type 0
-	if (g->y == 0) {
-		const uint8_t* y0 = g->img->y;
-		const uint8_t* u0 = g->img->u;
-		const uint8_t* v0 = g->img->v;
-		upsample_rgb_line_pair(y0, NULL, u0, v0, u0, v0, g->top_row, NULL, g->img->width);
-		memcpy(g->scanline + 1, g->top_row, g->row_bytes);
-		return 0;
+static inline void adler32_update_zero(uint32_t* a, uint32_t* b) {
+	(void)a;
+	*b += *a;
+	if (*b >= 65521u) *b -= 65521u;
+}
+
+static int png_idat_flush(PngIdatWriter* w) {
+	if (w->used == 0) return 0;
+	if (os_write_all(w->fd, w->buf, w->used) != 0) return -1;
+	w->used = 0;
+	return 0;
+}
+
+static int png_idat_write(PngIdatWriter* w, const void* data, size_t len) {
+	const uint8_t* p = (const uint8_t*)data;
+	if (len == 0) return 0;
+	w->crc = crc32_update(w->crc, p, len);
+	while (len > 0) {
+		if (w->used == 0 && len >= PNG_IDAT_BUF_SIZE) {
+			if (os_write_all(w->fd, p, PNG_IDAT_BUF_SIZE) != 0) return -1;
+			p += PNG_IDAT_BUF_SIZE;
+			len -= PNG_IDAT_BUF_SIZE;
+			continue;
+		}
+		const size_t space = PNG_IDAT_BUF_SIZE - w->used;
+		const size_t n = (len < space) ? len : space;
+		memcpy(w->buf + w->used, p, n);
+		w->used += n;
+		p += n;
+		len -= n;
+		if (w->used == PNG_IDAT_BUF_SIZE && png_idat_flush(w) != 0) return -1;
 	}
-	if (g->have_cached_bottom) {
-		memcpy(g->scanline + 1, g->bottom_row, g->row_bytes);
-		g->have_cached_bottom = 0;
-		return 0;
+	return 0;
+}
+
+static int png_write_stored_header(PngIdatWriter* w, uint32_t len, uint8_t bfinal) {
+	uint8_t hdr[5];
+	hdr[0] = bfinal;
+	hdr[1] = (uint8_t)(len & 0xFFu);
+	hdr[2] = (uint8_t)((len >> 8) & 0xFFu);
+	const uint16_t nlen = (uint16_t)~(uint16_t)len;
+	hdr[3] = (uint8_t)(nlen & 0xFFu);
+	hdr[4] = (uint8_t)((nlen >> 8) & 0xFFu);
+	return png_idat_write(w, hdr, sizeof(hdr));
+}
+
+static int png_write_row_blocks(PngIdatWriter* w,
+                                uint32_t* ad_a,
+                                uint32_t* ad_b,
+                                const uint8_t* row,
+                                uint32_t row_bytes,
+                                int is_last_row) {
+	uint32_t remaining = row_bytes + 1u;
+	uint32_t row_pos = 0;
+	while (remaining > 0) {
+		const uint32_t block_len = (remaining > 65535u) ? 65535u : remaining;
+		const uint8_t bfinal = (is_last_row && remaining == block_len) ? 1u : 0u;
+		if (png_write_stored_header(w, block_len, bfinal) != 0) return -1;
+		if (row_pos == 0) {
+			const uint8_t filter = 0;
+			if (png_idat_write(w, &filter, 1) != 0) return -1;
+			adler32_update_zero(ad_a, ad_b);
+			const uint32_t n = block_len - 1u;
+			if (n != 0) {
+				if (png_idat_write(w, row, n) != 0) return -1;
+				adler32_update(ad_a, ad_b, row, n);
+				row_pos += n;
+			}
+		} else {
+			if (png_idat_write(w, row + row_pos, block_len) != 0) return -1;
+			adler32_update(ad_a, ad_b, row + row_pos, block_len);
+			row_pos += block_len;
+		}
+		remaining -= block_len;
 	}
-
-	const uint8_t* top_y_ptr = g->img->y + (size_t)g->y * g->img->stride_y;
-	const uint8_t* bottom_y_ptr = (g->y + 1u < g->img->height)
-	                               ? (g->img->y + (size_t)(g->y + 1u) * g->img->stride_y)
-	                               : NULL;
-	const uint32_t ch = (g->img->height + 1u) >> 1;
-	const uint32_t top_cy = g->y >> 1;
-	const uint32_t cur_cy = (top_cy + 1u < ch) ? (top_cy + 1u) : (ch - 1u);
-	const uint8_t* top_u = g->img->u + (size_t)top_cy * g->img->stride_uv;
-	const uint8_t* top_v = g->img->v + (size_t)top_cy * g->img->stride_uv;
-	const uint8_t* cur_u = g->img->u + (size_t)cur_cy * g->img->stride_uv;
-	const uint8_t* cur_v = g->img->v + (size_t)cur_cy * g->img->stride_uv;
-
-	upsample_rgb_line_pair(top_y_ptr, bottom_y_ptr, top_u, top_v, cur_u, cur_v, g->top_row, g->bottom_row, g->img->width);
-	memcpy(g->scanline + 1, g->top_row, g->row_bytes);
-	if (bottom_y_ptr != NULL) g->have_cached_bottom = 1;
 	return 0;
 }
 
@@ -203,133 +245,104 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 	ihdr[12] = 0; // interlace
 	if (write_chunk(fd, "IHDR", ihdr, sizeof(ihdr)) != 0) return -1;
 
-	// Build the zlib stream into memory (raw scanlines are generated on the fly).
+	if (img->width > (UINT32_MAX - 1u) / 3u) {
+		PNG_SET_ERRNO(EFBIG);
+		return -1;
+	}
 	const uint32_t row_bytes = img->width * 3u;
 	const uint32_t scanline_bytes = 1u + row_bytes; // filter byte + RGB
-	const uint64_t raw_size64 = (uint64_t)img->height * (uint64_t)(1u + row_bytes);
+	const uint64_t raw_size64 = (uint64_t)img->height * (uint64_t)scanline_bytes;
 	if (raw_size64 > 0x7FFFFFFFu) {
 		PNG_SET_ERRNO(EFBIG);
 		return -1;
 	}
-	const uint32_t raw_size = (uint32_t)raw_size64;
-	const uint32_t blocks = (raw_size + 65535u - 1u) / 65535u;
-	const uint64_t zsize64 = 2u + (uint64_t)raw_size + (uint64_t)blocks * 5u + 4u;
-	if (zsize64 > SIZE_MAX) {
+	const uint64_t blocks_per_row = ((uint64_t)scanline_bytes + 65534u) / 65535u;
+	const uint64_t blocks = (uint64_t)img->height * blocks_per_row;
+	const uint64_t zsize64 = 2u + raw_size64 + blocks * 5u + 4u;
+	if (zsize64 > 0xFFFFFFFFu) {
+		PNG_SET_ERRNO(EFBIG);
+		return -1;
+	}
+	uint8_t* rows = (uint8_t*)malloc((size_t)row_bytes * 2u);
+	uint8_t* idat_buf = (uint8_t*)malloc(PNG_IDAT_BUF_SIZE);
+	if (!rows || !idat_buf) {
+		free(rows);
+		free(idat_buf);
 		PNG_SET_ERRNO(ENOMEM);
 		return -1;
 	}
-	uint8_t* z = (uint8_t*)malloc((size_t)zsize64);
-	if (!z) {
-		PNG_SET_ERRNO(ENOMEM);
+	uint8_t* top_row = rows;
+	uint8_t* bottom_row = rows + row_bytes;
+
+	uint8_t idat_hdr[8];
+	uint32_t idat_len_be = be32((uint32_t)zsize64);
+	memcpy(idat_hdr + 0, &idat_len_be, 4);
+	memcpy(idat_hdr + 4, "IDAT", 4);
+	if (os_write_all(fd, idat_hdr, sizeof(idat_hdr)) != 0) {
+		free(rows);
+		free(idat_buf);
 		return -1;
 	}
 
-	// zlib header: 0x78 0x01 (no compression / fastest).
-	size_t zp = 0;
-	z[zp++] = 0x78u;
-	z[zp++] = 0x01u;
+	PngIdatWriter idat = {
+		.fd = fd,
+		.crc = crc32_update(0, (const uint8_t*)"IDAT", 4),
+		.buf = idat_buf,
+		.used = 0,
+	};
 
 	uint32_t ad_a = 1u;
 	uint32_t ad_b = 0u;
 
-	uint8_t* top_row = (uint8_t*)malloc((size_t)row_bytes);
-	uint8_t* bottom_row = (uint8_t*)malloc((size_t)row_bytes);
-	uint8_t* scanline = (uint8_t*)malloc((size_t)scanline_bytes);
-	if (!top_row || !bottom_row || !scanline) {
-		free(top_row);
-		free(bottom_row);
-		free(scanline);
-		free(z);
-		PNG_SET_ERRNO(ENOMEM);
-		return -1;
+	// zlib header: 0x78 0x01 (no compression / fastest).
+	static const uint8_t zlib_header[2] = {0x78u, 0x01u};
+	if (png_idat_write(&idat, zlib_header, sizeof(zlib_header)) != 0) goto idat_error;
+
+	{
+		const uint8_t* y0 = img->y;
+		const uint8_t* u0 = img->u;
+		const uint8_t* v0 = img->v;
+		upsample_rgb_line_pair(y0, NULL, u0, v0, u0, v0, top_row, NULL, img->width);
+		if (png_write_row_blocks(&idat, &ad_a, &ad_b, top_row, row_bytes, img->height == 1u) != 0) goto idat_error;
 	}
 
-	// Generate raw scanline stream and pack into stored DEFLATE blocks.
-	uint32_t remaining = raw_size;
-	PngRgbGen gen = {
-		.img = img,
-		.top_row = top_row,
-		.bottom_row = bottom_row,
-		.scanline = scanline,
-		.row_bytes = row_bytes,
-		.scanline_bytes = scanline_bytes,
-		.y = 0,
-		.have_cached_bottom = 0,
-	};
-	uint32_t scanline_pos = 0;
+	const uint32_t ch = (img->height + 1u) >> 1;
+	for (uint32_t y = 1; y < img->height; y += 2u) {
+		const uint8_t* top_y = img->y + (size_t)y * img->stride_y;
+		const uint8_t* bottom_y = (y + 1u < img->height) ? (img->y + (size_t)(y + 1u) * img->stride_y) : NULL;
 
-	while (remaining > 0) {
-		const uint32_t len = (remaining > 65535u) ? 65535u : remaining;
-		const uint8_t bfinal = (remaining <= 65535u) ? 1u : 0u;
-		z[zp++] = bfinal; // BFINAL + BTYPE=00
-		z[zp++] = (uint8_t)(len & 0xFFu);
-		z[zp++] = (uint8_t)((len >> 8) & 0xFFu);
-		const uint16_t nlen = (uint16_t)~(uint16_t)len;
-		z[zp++] = (uint8_t)(nlen & 0xFFu);
-		z[zp++] = (uint8_t)((nlen >> 8) & 0xFFu);
+		const uint32_t top_cy = y >> 1;
+		const uint32_t cur_cy = (top_cy + 1u < ch) ? (top_cy + 1u) : (ch - 1u);
+		const uint8_t* top_u = img->u + (size_t)top_cy * img->stride_uv;
+		const uint8_t* top_v = img->v + (size_t)top_cy * img->stride_uv;
+		const uint8_t* cur_u = img->u + (size_t)cur_cy * img->stride_uv;
+		const uint8_t* cur_v = img->v + (size_t)cur_cy * img->stride_uv;
 
-		uint32_t produced = 0;
-		while (produced < len) {
-			if (gen.y >= img->height) {
-				// Should not happen if raw_size is correct.
-				free(top_row);
-				free(bottom_row);
-				free(scanline);
-				free(z);
-				PNG_SET_ERRNO(EINVAL);
-				return -1;
-			}
-
-			if (scanline_pos == 0) {
-				if (png_fill_scanline(&gen) != 0) {
-					free(top_row);
-					free(bottom_row);
-					free(scanline);
-					free(z);
-					PNG_SET_ERRNO(EINVAL);
-					return -1;
-				}
-			}
-			const uint32_t avail = scanline_bytes - scanline_pos;
-			const uint32_t need = len - produced;
-			const uint32_t take = (avail < need) ? avail : need;
-			memcpy(z + zp, scanline + scanline_pos, take);
-			adler32_update(&ad_a, &ad_b, scanline + scanline_pos, take);
-			zp += take;
-			produced += take;
-			scanline_pos += take;
-			if (scanline_pos == scanline_bytes) {
-				scanline_pos = 0;
-				gen.y += 1;
+		upsample_rgb_line_pair(top_y, bottom_y, top_u, top_v, cur_u, cur_v, top_row, bottom_row, img->width);
+		if (png_write_row_blocks(&idat, &ad_a, &ad_b, top_row, row_bytes, bottom_y == NULL) != 0) goto idat_error;
+		if (bottom_y != NULL) {
+			if (png_write_row_blocks(&idat, &ad_a, &ad_b, bottom_row, row_bytes, y + 2u == img->height) != 0) {
+				goto idat_error;
 			}
 		}
-
-		remaining -= len;
 	}
 
-	free(top_row);
-	free(bottom_row);
-	free(scanline);
-
-	// Adler-32 (big-endian)
 	const uint32_t adler = (ad_b << 16) | ad_a;
 	const uint32_t adler_be = be32(adler);
-	memcpy(z + zp, &adler_be, 4);
-	zp += 4;
+	if (png_idat_write(&idat, &adler_be, 4) != 0) goto idat_error;
+	if (png_idat_flush(&idat) != 0) goto idat_error;
 
-	// IDAT (single chunk for simplicity).
-	if (zp > 0xFFFFFFFFu) {
-		free(z);
-		PNG_SET_ERRNO(EFBIG);
-		return -1;
-	}
-	if (write_chunk(fd, "IDAT", z, (uint32_t)zp) != 0) {
-		free(z);
-		return -1;
-	}
-	free(z);
+	const uint32_t idat_crc_be = be32(idat.crc);
+	if (os_write_all(fd, &idat_crc_be, 4) != 0) goto idat_error;
+	free(rows);
+	free(idat_buf);
 
 	// IEND
 	if (write_chunk(fd, "IEND", NULL, 0) != 0) return -1;
 	return 0;
+
+idat_error:
+	free(rows);
+	free(idat_buf);
+	return -1;
 }

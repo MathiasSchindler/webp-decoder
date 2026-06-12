@@ -207,11 +207,17 @@ int vp8_loopfilter_apply_keyframe(Yuv420Image* padded_img, const Vp8DecodedFrame
 		errno = EINVAL;
 		return -1;
 	}
+	if (decoded->lf_level == 0 && !decoded->segmentation_enabled && !decoded->lf_delta_enabled) return 0;
 
 	uint32_t mb_cols = decoded->mb_cols;
 	uint32_t mb_rows = decoded->mb_rows;
+	int stride_y = (int)padded_img->stride_y;
+	int stride_uv = (int)padded_img->stride_uv;
 
 	for (uint32_t mb_r = 0; mb_r < mb_rows; mb_r++) {
+		uint8_t* y_row = padded_img->y + (size_t)mb_r * 16u * padded_img->stride_y;
+		uint8_t* u_row = padded_img->u + (size_t)mb_r * 8u * padded_img->stride_uv;
+		uint8_t* v_row = padded_img->v + (size_t)mb_r * 8u * padded_img->stride_uv;
 		for (uint32_t mb_c = 0; mb_c < mb_cols; mb_c++) {
 			uint32_t mb = mb_r * mb_cols + mb_c;
 
@@ -219,9 +225,9 @@ int vp8_loopfilter_apply_keyframe(Yuv420Image* padded_img, const Vp8DecodedFrame
 			calc_params_keyframe(decoded, mb, &edge_limit, &interior_limit, &hev_threshold);
 			if (edge_limit == 0) continue;
 
-			uint8_t* y = padded_img->y + (size_t)mb_r * 16u * padded_img->stride_y + (size_t)mb_c * 16u;
-			uint8_t* u = padded_img->u + (size_t)mb_r * 8u * padded_img->stride_uv + (size_t)mb_c * 8u;
-			uint8_t* v = padded_img->v + (size_t)mb_r * 8u * padded_img->stride_uv + (size_t)mb_c * 8u;
+			uint8_t* y = y_row + (size_t)mb_c * 16u;
+			uint8_t* u = u_row + (size_t)mb_c * 8u;
+			uint8_t* v = v_row + (size_t)mb_c * 8u;
 
 			int filter_subblocks = (decoded->has_coeff && decoded->has_coeff[mb]) || decoded->ymode[mb] == 4;
 
@@ -229,51 +235,47 @@ int vp8_loopfilter_apply_keyframe(Yuv420Image* padded_img, const Vp8DecodedFrame
 				int mb_limit = (edge_limit + 2) * 2 + interior_limit;
 				int b_limit = edge_limit * 2 + interior_limit;
 
-				if (mb_c) filter_v_edge_simple(y, (int)padded_img->stride_y, mb_limit);
+				if (mb_c) filter_v_edge_simple(y, stride_y, mb_limit);
 				if (filter_subblocks) {
-					filter_v_edge_simple(y + 4, (int)padded_img->stride_y, b_limit);
-					filter_v_edge_simple(y + 8, (int)padded_img->stride_y, b_limit);
-					filter_v_edge_simple(y + 12, (int)padded_img->stride_y, b_limit);
+					filter_v_edge_simple(y + 4, stride_y, b_limit);
+					filter_v_edge_simple(y + 8, stride_y, b_limit);
+					filter_v_edge_simple(y + 12, stride_y, b_limit);
 				}
 
-				if (mb_r) filter_h_edge_simple(y, (int)padded_img->stride_y, mb_limit);
+				if (mb_r) filter_h_edge_simple(y, stride_y, mb_limit);
 				if (filter_subblocks) {
-					filter_h_edge_simple(y + 4 * padded_img->stride_y, (int)padded_img->stride_y, b_limit);
-					filter_h_edge_simple(y + 8 * padded_img->stride_y, (int)padded_img->stride_y, b_limit);
-					filter_h_edge_simple(y + 12 * padded_img->stride_y, (int)padded_img->stride_y, b_limit);
+					filter_h_edge_simple(y + 4 * padded_img->stride_y, stride_y, b_limit);
+					filter_h_edge_simple(y + 8 * padded_img->stride_y, stride_y, b_limit);
+					filter_h_edge_simple(y + 12 * padded_img->stride_y, stride_y, b_limit);
 				}
 			} else {
+				int mb_edge_limit = edge_limit + 2;
 				if (mb_c) {
-					filter_mb_v_edge(y, (int)padded_img->stride_y, edge_limit + 2, interior_limit, hev_threshold, 2);
-					filter_mb_v_edge(u, (int)padded_img->stride_uv, edge_limit + 2, interior_limit, hev_threshold, 1);
-					filter_mb_v_edge(v, (int)padded_img->stride_uv, edge_limit + 2, interior_limit, hev_threshold, 1);
+					filter_mb_v_edge(y, stride_y, mb_edge_limit, interior_limit, hev_threshold, 2);
+					filter_mb_v_edge(u, stride_uv, mb_edge_limit, interior_limit, hev_threshold, 1);
+					filter_mb_v_edge(v, stride_uv, mb_edge_limit, interior_limit, hev_threshold, 1);
 				}
 
 				if (filter_subblocks) {
-					filter_subblock_v_edge(y + 4, (int)padded_img->stride_y, edge_limit, interior_limit, hev_threshold, 2);
-					filter_subblock_v_edge(y + 8, (int)padded_img->stride_y, edge_limit, interior_limit, hev_threshold, 2);
-					filter_subblock_v_edge(y + 12, (int)padded_img->stride_y, edge_limit, interior_limit, hev_threshold, 2);
-					filter_subblock_v_edge(u + 4, (int)padded_img->stride_uv, edge_limit, interior_limit, hev_threshold, 1);
-					filter_subblock_v_edge(v + 4, (int)padded_img->stride_uv, edge_limit, interior_limit, hev_threshold, 1);
+					filter_subblock_v_edge(y + 4, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					filter_subblock_v_edge(y + 8, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					filter_subblock_v_edge(y + 12, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					filter_subblock_v_edge(u + 4, stride_uv, edge_limit, interior_limit, hev_threshold, 1);
+					filter_subblock_v_edge(v + 4, stride_uv, edge_limit, interior_limit, hev_threshold, 1);
 				}
 
 				if (mb_r) {
-					filter_mb_h_edge(y, (int)padded_img->stride_y, edge_limit + 2, interior_limit, hev_threshold, 2);
-					filter_mb_h_edge(u, (int)padded_img->stride_uv, edge_limit + 2, interior_limit, hev_threshold, 1);
-					filter_mb_h_edge(v, (int)padded_img->stride_uv, edge_limit + 2, interior_limit, hev_threshold, 1);
+					filter_mb_h_edge(y, stride_y, mb_edge_limit, interior_limit, hev_threshold, 2);
+					filter_mb_h_edge(u, stride_uv, mb_edge_limit, interior_limit, hev_threshold, 1);
+					filter_mb_h_edge(v, stride_uv, mb_edge_limit, interior_limit, hev_threshold, 1);
 				}
 
 				if (filter_subblocks) {
-					filter_subblock_h_edge(y + 4 * padded_img->stride_y, (int)padded_img->stride_y, edge_limit, interior_limit,
-					                       hev_threshold, 2);
-					filter_subblock_h_edge(y + 8 * padded_img->stride_y, (int)padded_img->stride_y, edge_limit, interior_limit,
-					                       hev_threshold, 2);
-					filter_subblock_h_edge(y + 12 * padded_img->stride_y, (int)padded_img->stride_y, edge_limit, interior_limit,
-					                       hev_threshold, 2);
-					filter_subblock_h_edge(u + 4 * padded_img->stride_uv, (int)padded_img->stride_uv, edge_limit, interior_limit,
-					                       hev_threshold, 1);
-					filter_subblock_h_edge(v + 4 * padded_img->stride_uv, (int)padded_img->stride_uv, edge_limit, interior_limit,
-					                       hev_threshold, 1);
+					filter_subblock_h_edge(y + 4 * padded_img->stride_y, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					filter_subblock_h_edge(y + 8 * padded_img->stride_y, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					filter_subblock_h_edge(y + 12 * padded_img->stride_y, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					filter_subblock_h_edge(u + 4 * padded_img->stride_uv, stride_uv, edge_limit, interior_limit, hev_threshold, 1);
+					filter_subblock_h_edge(v + 4 * padded_img->stride_uv, stride_uv, edge_limit, interior_limit, hev_threshold, 1);
 				}
 			}
 		}

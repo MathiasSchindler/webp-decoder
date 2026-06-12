@@ -58,6 +58,84 @@ static void inv_wht4x4(const int16_t* in, int16_t* out) { vp8_inv_wht4x4(in, out
 
 static void inv_dct4x4(const int16_t* input, int16_t* output) { vp8_inv_dct4x4(input, output); }
 
+static void inv_wht4x4_dc_only(int16_t dc, int16_t* out) { vp8_inv_wht4x4_dc_only(dc, out); }
+
+static int inv_dct4x4_dc_value(int16_t dc) { return ((int)dc + 4) >> 3; }
+
+static int coeffs_zero_from(const int16_t* coeffs, int first) {
+	for (int i = first; i < 16; i++) {
+		if (coeffs[i] != 0) return 0;
+	}
+	return 1;
+}
+
+static void copy_block4(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride) {
+	for (uint32_t rr = 0; rr < 4; rr++) {
+		memcpy(dst + (size_t)rr * dst_stride, pred + (size_t)rr * pred_stride, 4);
+	}
+}
+
+static void add_block4_constant(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
+                                int delta) {
+	for (uint32_t rr = 0; rr < 4; rr++) {
+		for (uint32_t cc = 0; cc < 4; cc++) {
+			dst[(size_t)rr * dst_stride + cc] = clamp255_i32((int32_t)pred[(size_t)rr * pred_stride + cc] + delta);
+		}
+	}
+}
+
+static void add_block4_residue(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
+                               const int16_t res[16]) {
+	for (uint32_t rr = 0; rr < 4; rr++) {
+		for (uint32_t cc = 0; cc < 4; cc++) {
+			dst[(size_t)rr * dst_stride + cc] =
+			    clamp255_i32((int32_t)pred[(size_t)rr * pred_stride + cc] + (int32_t)res[(int)rr * 4 + (int)cc]);
+		}
+	}
+}
+
+static void reconstruct_block4(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
+                               const int16_t* coeffs, int dc_factor, int ac_factor) {
+	if (coeffs_zero_from(coeffs, 0)) {
+		copy_block4(dst, dst_stride, pred, pred_stride);
+		return;
+	}
+
+	if (coeffs_zero_from(coeffs, 1)) {
+		int16_t dc = (int16_t)(coeffs[0] * dc_factor);
+		add_block4_constant(dst, dst_stride, pred, pred_stride, inv_dct4x4_dc_value(dc));
+		return;
+	}
+
+	int16_t cdeq[16];
+	for (int i = 0; i < 16; i++) {
+		int fct = (i == 0) ? dc_factor : ac_factor;
+		cdeq[i] = (int16_t)(coeffs[i] * fct);
+	}
+	int16_t res[16];
+	inv_dct4x4(cdeq, res);
+	add_block4_residue(dst, dst_stride, pred, pred_stride, res);
+}
+
+static void reconstruct_block4_with_dc(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
+                                       int16_t dc, const int16_t* coeffs, int ac_factor) {
+	if (coeffs_zero_from(coeffs, 1)) {
+		if (dc == 0) {
+			copy_block4(dst, dst_stride, pred, pred_stride);
+		} else {
+			add_block4_constant(dst, dst_stride, pred, pred_stride, inv_dct4x4_dc_value(dc));
+		}
+		return;
+	}
+
+	int16_t cdeq[16];
+	cdeq[0] = dc;
+	for (int i = 1; i < 16; i++) cdeq[i] = (int16_t)(coeffs[i] * ac_factor);
+	int16_t res[16];
+	inv_dct4x4(cdeq, res);
+	add_block4_residue(dst, dst_stride, pred, pred_stride, res);
+}
+
 // --- Prediction ---
 
 static void pred_dc(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8_t* L, uint32_t n, int have_above,
@@ -126,7 +204,7 @@ static void subblock_predict(uint8_t B[4][4], const uint8_t* A, const uint8_t* L
 	vp8_bpred4x4(&B[0][0], 4, A, L, mode);
 }
 
-int yuv420_alloc(Yuv420Image* img, uint32_t width, uint32_t height) {
+static int yuv420_alloc_internal(Yuv420Image* img, uint32_t width, uint32_t height, int initialize) {
 	if (!img || width == 0 || height == 0) {
 		errno = EINVAL;
 		return -1;
@@ -147,10 +225,16 @@ int yuv420_alloc(Yuv420Image* img, uint32_t width, uint32_t height) {
 		errno = ENOMEM;
 		return -1;
 	}
-	memset(img->y, 0, ysz);
-	memset(img->u, 128, uvsz);
-	memset(img->v, 128, uvsz);
+	if (initialize) {
+		memset(img->y, 0, ysz);
+		memset(img->u, 128, uvsz);
+		memset(img->v, 128, uvsz);
+	}
 	return 0;
+}
+
+int yuv420_alloc(Yuv420Image* img, uint32_t width, uint32_t height) {
+	return yuv420_alloc_internal(img, width, height, 1);
 }
 
 void yuv420_free(Yuv420Image* img) {
@@ -202,7 +286,7 @@ static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, co
 	uint32_t padded_w = decoded->mb_cols * 16u;
 	uint32_t padded_h = decoded->mb_rows * 16u;
 	Yuv420Image pad;
-	if (yuv420_alloc(&pad, padded_w, padded_h) != 0) return -1;
+	if (yuv420_alloc_internal(&pad, padded_w, padded_h, 0) != 0) return -1;
 
 	DequantFactors dqf[4];
 	memset(dqf, 0, sizeof(dqf));
@@ -277,24 +361,8 @@ static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, co
 
 						uint32_t blk = mb * 16u + (sb_r * 4u + sb_c);
 						const int16_t* cq = decoded->coeff_y + (size_t)blk * 16u;
-						int16_t cdeq[16];
-						for (int i = 0; i < 16; i++) {
-							int fct = (i == 0) ? q->factor[TOKEN_BLOCK_Y1][0] : q->factor[TOKEN_BLOCK_Y1][1];
-							cdeq[i] = (int16_t)(cq[i] * fct);
-						}
-						int16_t res[16];
-						inv_dct4x4(cdeq, res);
-
-						for (uint32_t rr = 0; rr < 4; rr++) {
-							uint32_t yy = sy + rr;
-							if (yy >= pad.height) continue;
-							for (uint32_t cc = 0; cc < 4; cc++) {
-								uint32_t xx = sx + cc;
-								if (xx >= pad.width) continue;
-								pad.y[yy * pad.stride_y + xx] =
-								    clamp255_i32((int32_t)B[rr][cc] + (int32_t)res[(int)rr * 4 + (int)cc]);
-							}
-						}
+						reconstruct_block4(pad.y + (size_t)sy * pad.stride_y + sx, pad.stride_y, &B[0][0], 4, cq,
+						                   q->factor[TOKEN_BLOCK_Y1][0], q->factor[TOKEN_BLOCK_Y1][1]);
 					}
 				}
 			} else {
@@ -330,43 +398,30 @@ static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, co
 
 				// Inverse transforms and add residue for luma.
 				int16_t y2_dc[16];
-				memset(y2_dc, 0, sizeof(y2_dc));
-				int16_t y2_deq[16];
 				const int16_t* y2q = decoded->coeff_y2 + (size_t)mb * 16u;
-				for (int i = 0; i < 16; i++) {
-					int fct = (i == 0) ? q->factor[TOKEN_BLOCK_Y2][0] : q->factor[TOKEN_BLOCK_Y2][1];
-					y2_deq[i] = (int16_t)(y2q[i] * fct);
+				if (coeffs_zero_from(y2q, 0)) {
+					memset(y2_dc, 0, sizeof(y2_dc));
+				} else if (coeffs_zero_from(y2q, 1)) {
+					int16_t dc = (int16_t)(y2q[0] * q->factor[TOKEN_BLOCK_Y2][0]);
+					inv_wht4x4_dc_only(dc, y2_dc);
+				} else {
+					int16_t y2_deq[16];
+					for (int i = 0; i < 16; i++) {
+						int fct = (i == 0) ? q->factor[TOKEN_BLOCK_Y2][0] : q->factor[TOKEN_BLOCK_Y2][1];
+						y2_deq[i] = (int16_t)(y2q[i] * fct);
+					}
+					inv_wht4x4(y2_deq, y2_dc);
 				}
-				inv_wht4x4(y2_deq, y2_dc);
 
 				for (uint32_t sb_r = 0; sb_r < 4; sb_r++) {
 					for (uint32_t sb_c = 0; sb_c < 4; sb_c++) {
 						uint32_t blk = mb * 16u + (sb_r * 4u + sb_c);
 						const int16_t* cq = decoded->coeff_y + (size_t)blk * 16u;
-						int16_t cdeq[16];
-						for (int i = 0; i < 16; i++) {
-							if (i == 0) {
-								// With Y2 present, the per-block DC comes from inverse WHT of already-dequantized Y2.
-								cdeq[i] = y2_dc[(int)sb_r * 4 + (int)sb_c];
-							} else {
-								int fct = q->factor[TOKEN_BLOCK_Y1][1];
-								cdeq[i] = (int16_t)(cq[i] * fct);
-							}
-						}
-						int16_t res[16];
-						inv_dct4x4(cdeq, res);
-
-						for (uint32_t rr = 0; rr < 4; rr++) {
-							uint32_t yy = y + sb_r * 4u + rr;
-							if (yy >= pad.height) continue;
-							for (uint32_t cc = 0; cc < 4; cc++) {
-								uint32_t xx = x + sb_c * 4u + cc;
-								if (xx >= pad.width) continue;
-								uint8_t p = pred_y[(sb_r * 4u + rr) * 16u + (sb_c * 4u + cc)];
-								pad.y[yy * pad.stride_y + xx] =
-								    clamp255_i32((int32_t)p + (int32_t)res[(int)rr * 4 + (int)cc]);
-							}
-						}
+						uint32_t bx = sb_c * 4u;
+						uint32_t by = sb_r * 4u;
+						reconstruct_block4_with_dc(pad.y + (size_t)(y + by) * pad.stride_y + x + bx, pad.stride_y,
+						                           pred_y + (size_t)by * 16u + bx, 16, y2_dc[(int)sb_r * 4 + (int)sb_c], cq,
+						                           q->factor[TOKEN_BLOCK_Y1][1]);
 					}
 				}
 			}
@@ -424,30 +479,14 @@ static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, co
 				uint32_t bc = b % 2u;
 				const int16_t* cuq = decoded->coeff_u + ((size_t)mb * 4u + b) * 16u;
 				const int16_t* cvq = decoded->coeff_v + ((size_t)mb * 4u + b) * 16u;
-				int16_t cudeq[16];
-				int16_t cvdeq[16];
-				for (int i = 0; i < 16; i++) {
-					int fct = (i == 0) ? q->factor[TOKEN_BLOCK_UV][0] : q->factor[TOKEN_BLOCK_UV][1];
-					cudeq[i] = (int16_t)(cuq[i] * fct);
-					cvdeq[i] = (int16_t)(cvq[i] * fct);
-				}
-				int16_t ures[16];
-				int16_t vres[16];
-				inv_dct4x4(cudeq, ures);
-				inv_dct4x4(cvdeq, vres);
-
-				for (uint32_t rr = 0; rr < 4; rr++) {
-					uint32_t yy = cy + br * 4u + rr;
-					if (yy >= ch) continue;
-					for (uint32_t cc = 0; cc < 4; cc++) {
-						uint32_t xx = cx + bc * 4u + cc;
-						if (xx >= cw) continue;
-						uint8_t pu = pred_u[(br * 4u + rr) * 8u + (bc * 4u + cc)];
-						uint8_t pv = pred_vp[(br * 4u + rr) * 8u + (bc * 4u + cc)];
-						pad.u[yy * pad.stride_uv + xx] = clamp255_i32((int32_t)pu + (int32_t)ures[(int)rr * 4 + (int)cc]);
-						pad.v[yy * pad.stride_uv + xx] = clamp255_i32((int32_t)pv + (int32_t)vres[(int)rr * 4 + (int)cc]);
-					}
-				}
+				uint32_t bx = bc * 4u;
+				uint32_t by = br * 4u;
+				reconstruct_block4(pad.u + (size_t)(cy + by) * pad.stride_uv + cx + bx, pad.stride_uv,
+				                   pred_u + (size_t)by * 8u + bx, 8, cuq, q->factor[TOKEN_BLOCK_UV][0],
+				                   q->factor[TOKEN_BLOCK_UV][1]);
+				reconstruct_block4(pad.v + (size_t)(cy + by) * pad.stride_uv + cx + bx, pad.stride_uv,
+				                   pred_vp + (size_t)by * 8u + bx, 8, cvq, q->factor[TOKEN_BLOCK_UV][0],
+				                   q->factor[TOKEN_BLOCK_UV][1]);
 			}
 		}
 	}
@@ -466,7 +505,7 @@ static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, co
 
 	// Crop padded reconstruction down to the visible frame size.
 	Yuv420Image cropped;
-	if (yuv420_alloc(&cropped, kf->width, kf->height) != 0) {
+	if (yuv420_alloc_internal(&cropped, kf->width, kf->height, 0) != 0) {
 		yuv420_free(&pad);
 		return -1;
 	}

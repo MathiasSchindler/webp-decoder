@@ -150,21 +150,89 @@ int munmap(void* addr, size_t length) {
 
 // --- tiny libc shims (no external libc) ---
 
-void* memmove(void* dst, const void* src, size_t n) {
+static inline int same_word_alignment(const void* a, const void* b) {
+	return (((uintptr_t)a ^ (uintptr_t)b) & (sizeof(size_t) - 1u)) == 0;
+}
+
+typedef size_t MemWord __attribute__((__may_alias__));
+
+void* memcpy(void* dst, const void* src, size_t n) {
 	uint8_t* d = (uint8_t*)dst;
 	const uint8_t* s = (const uint8_t*)src;
-	if (d == s || n == 0) return dst;
-	if (d < s) {
-		for (size_t i = 0; i < n; i++) d[i] = s[i];
-	} else {
-		for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
+
+	if (same_word_alignment(d, s)) {
+		while (n != 0 && ((uintptr_t)d & (sizeof(size_t) - 1u)) != 0) {
+			*d++ = *s++;
+			n--;
+		}
+
+		MemWord* dw = (MemWord*)d;
+		const MemWord* sw = (const MemWord*)s;
+		while (n >= 4u * sizeof(size_t)) {
+			dw[0] = sw[0];
+			dw[1] = sw[1];
+			dw[2] = sw[2];
+			dw[3] = sw[3];
+			dw += 4;
+			sw += 4;
+			n -= 4u * sizeof(size_t);
+		}
+		while (n >= sizeof(size_t)) {
+			*dw++ = *sw++;
+			n -= sizeof(size_t);
+		}
+		d = (uint8_t*)dw;
+		s = (const uint8_t*)sw;
+	}
+
+	while (n != 0) {
+		*d++ = *s++;
+		n--;
 	}
 	return dst;
 }
 
-void* memcpy(void* dst, const void* src, size_t n) {
-	// Be conservative: treat memcpy as memmove in nolibc builds.
-	return memmove(dst, src, n);
+void* memmove(void* dst, const void* src, size_t n) {
+	uint8_t* d = (uint8_t*)dst;
+	const uint8_t* s = (const uint8_t*)src;
+	if (d == s || n == 0) return dst;
+
+	uintptr_t du = (uintptr_t)d;
+	uintptr_t su = (uintptr_t)s;
+	if (du < su || du - su >= n) return memcpy(dst, src, n);
+
+	d += n;
+	s += n;
+	if (same_word_alignment(d, s)) {
+		while (n != 0 && ((uintptr_t)d & (sizeof(size_t) - 1u)) != 0) {
+			*--d = *--s;
+			n--;
+		}
+
+		MemWord* dw = (MemWord*)d;
+		const MemWord* sw = (const MemWord*)s;
+		while (n >= 4u * sizeof(size_t)) {
+			dw -= 4;
+			sw -= 4;
+			dw[3] = sw[3];
+			dw[2] = sw[2];
+			dw[1] = sw[1];
+			dw[0] = sw[0];
+			n -= 4u * sizeof(size_t);
+		}
+		while (n >= sizeof(size_t)) {
+			*--dw = *--sw;
+			n -= sizeof(size_t);
+		}
+		d = (uint8_t*)dw;
+		s = (const uint8_t*)sw;
+	}
+
+	while (n != 0) {
+		*--d = *--s;
+		n--;
+	}
+	return dst;
 }
 
 // Some system headers may rewrite memcpy/memset to fortified variants at -O.
@@ -176,7 +244,38 @@ void* __memcpy_chk(void* dst, const void* src, size_t n, size_t dstlen) {
 void* memset(void* dst, int c, size_t n) {
 	uint8_t* d = (uint8_t*)dst;
 	uint8_t v = (uint8_t)c;
-	for (size_t i = 0; i < n; i++) d[i] = v;
+	while (n != 0 && ((uintptr_t)d & (sizeof(size_t) - 1u)) != 0) {
+		*d++ = v;
+		n--;
+	}
+
+	size_t word = v;
+	word |= word << 8;
+	word |= word << 16;
+	if (sizeof(size_t) == 8) word |= word << 32;
+
+	MemWord* dw = (MemWord*)d;
+	while (n >= 8u * sizeof(size_t)) {
+		dw[0] = word;
+		dw[1] = word;
+		dw[2] = word;
+		dw[3] = word;
+		dw[4] = word;
+		dw[5] = word;
+		dw[6] = word;
+		dw[7] = word;
+		dw += 8;
+		n -= 8u * sizeof(size_t);
+	}
+	while (n >= sizeof(size_t)) {
+		*dw++ = word;
+		n -= sizeof(size_t);
+	}
+	d = (uint8_t*)dw;
+	while (n != 0) {
+		*d++ = v;
+		n--;
+	}
 	return dst;
 }
 

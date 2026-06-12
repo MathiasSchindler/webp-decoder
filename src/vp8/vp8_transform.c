@@ -26,6 +26,11 @@ void vp8_inv_wht4x4(const int16_t* input, int16_t* output) {
 	}
 }
 
+void vp8_inv_wht4x4_dc_only(int16_t dc, int16_t* output) {
+	const int16_t v = (int16_t)(((int)dc + 3) >> 3);
+	for (int i = 0; i < 16; i++) output[i] = v;
+}
+
 void vp8_inv_dct4x4(const int16_t* input, int16_t* output) {
 	static const int cospi8sqrt2minus1 = 20091;
 	static const int sinpi8sqrt2 = 35468;
@@ -66,4 +71,9 @@ void vp8_inv_dct4x4(const int16_t* input, int16_t* output) {
 		output[i * 4 + 1] = (int16_t)((b1 + c1 + 4) >> 3);
 		output[i * 4 + 2] = (int16_t)((b1 - c1 + 4) >> 3);
 	}
+}
+
+void vp8_inv_dct4x4_dc_only(int16_t dc, int16_t* output) {
+	const int16_t v = (int16_t)(((int)dc + 4) >> 3);
+	for (int i = 0; i < 16; i++) output[i] = v;
 }

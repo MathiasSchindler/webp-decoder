@@ -79,31 +79,55 @@ The benchmark script scans `images/**/*.webp`, records the best of `RUNS` for
 each file, and writes CSV output. It expects libwebp's `dwebp` at
 `$HOME/libwebp/examples/dwebp` unless `DWEBP=/path/to/dwebp` is set.
 
-Recent local whole-corpus timing (2026-06-12):
+For whole-corpus timings across all decoder modes:
+
+```sh
+RUNS=5 scripts/benchmark_decoder_modes.py build/test-artifacts/benchmark-modes
+```
+
+This writes `decoder_modes_summary.csv` and `decoder_modes_times.csv` into the
+chosen output directory.
+
+Final local whole-corpus timing for the 2026-06 decoder optimization pass:
 
 - Host: `mathias-b650`, Linux 7.0.0-22-generic x86_64
 - Compiler: `cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0`
 - Corpus: all 433 lossy WebP files under `images/**/*.webp`, 35.987 MP total
-- Method: median of five end-to-end runs per mode; output files overwritten
-  under `build/test-artifacts/bench-final`
-- "Before" is commit `f33bec4` (default nolibc build before these
-  optimizations); "after" is this optimized tree
+- Build: default nolibc decoder, `-O3 -march=native`
+- Method: median of five end-to-end whole-corpus runs per mode; output files
+  overwritten under each benchmark artifact directory
+- Baseline artifact: `build/profile/baseline-81c640b-20260612T1039/`
+- Final artifact: `build/profile/final-speed-validation-docs-2-20260612T105703/`
+- Optimized areas: bool/token/tree decode, loopfilter, reconstruction/IDCT,
+  YUV-to-RGB/PPM/PNG output, and nolibc memory syscalls
 
-| Mode | Before default | After default |
-| --- | ---: | ---: |
-| `-info` | 0.610111 s / 58.98 MP/s | 0.616931 s / 58.33 MP/s |
-| `-yuv` | 0.909946 s / 39.55 MP/s | 0.883781 s / 40.72 MP/s |
-| `-yuvf` | 1.112169 s / 32.36 MP/s | 1.078369 s / 33.37 MP/s |
-| `-ppm` | 1.342865 s / 26.80 MP/s | 1.288430 s / 27.93 MP/s |
-| `-png` | 2.243727 s / 16.04 MP/s | 1.550991 s / 23.20 MP/s |
+| Mode | Baseline | Final | Throughput gain |
+| --- | ---: | ---: | ---: |
+| `-info` | 0.511921 s / 70.30 MP/s | 0.472928 s / 76.09 MP/s | +8.2% |
+| `-yuv` | 0.674262 s / 53.37 MP/s | 0.512736 s / 70.19 MP/s | +31.5% |
+| `-yuvf` | 0.841425 s / 42.77 MP/s | 0.658468 s / 54.65 MP/s | +27.8% |
+| `-ppm` | 1.028450 s / 34.99 MP/s | 0.846114 s / 42.53 MP/s | +21.6% |
+| `-png` | 1.204730 s / 29.87 MP/s | 1.006997 s / 35.74 MP/s | +19.7% |
 
-PNG-path timings for the optimized tree:
+Commands used for the final run:
 
-| Build | `-png` median |
-| --- | ---: |
-| `SPEED=0 NATIVE=0` (`-Os -march=x86-64`) | 1.550991 s / 23.20 MP/s |
-| `NATIVE=0` (`-O3 -march=x86-64`) | 1.271192 s / 28.31 MP/s |
-| default (`-O3 -march=native`) | 1.245413 s / 28.90 MP/s |
+```sh
+make clean && make
+mkdir -p build/test-artifacts/_tmp
+TMPDIR=$PWD/build/test-artifacts/_tmp make test
+
+# Extra decoder byte-exact gates:
+TMPDIR=$PWD/build/test-artifacts/_tmp ./scripts/m6_compare_yuv_with_dwebp.sh
+TMPDIR=$PWD/build/test-artifacts/_tmp ./scripts/m7_compare_yuv_filtered_with_oracle.sh
+TMPDIR=$PWD/build/test-artifacts/_tmp ./scripts/m8_compare_ppm_with_dwebp.sh
+TMPDIR=$PWD/build/test-artifacts/_tmp ./scripts/m8_compare_png_with_ppm.sh
+
+# Whole-corpus benchmark runner:
+RUNS=5 scripts/benchmark_decoder_modes.py build/profile/final-speed-validation-docs-2-20260612T105703
+```
+
+`perf` was present, but `perf_event_paranoid=4` prevented useful hardware or
+software event profiling; the artifact keeps the attempted `perf stat` output.
 
 ## Usage
 
@@ -173,13 +197,8 @@ LIBWEBP_BIN_DIR=/path/to/libwebp/examples make test
 For final decoder correctness gates, keep temporary files inside the repository:
 
 ```sh
-make clean && mkdir -p build/test-artifacts/_tmp
-TMPDIR=$PWD/build/test-artifacts/_tmp make test
-
-make clean && mkdir -p build/test-artifacts/_tmp
-TMPDIR=$PWD/build/test-artifacts/_tmp make NATIVE=0 test
-
-make clean && mkdir -p build/test-artifacts/_tmp
+make clean && make
+mkdir -p build/test-artifacts/_tmp
 TMPDIR=$PWD/build/test-artifacts/_tmp make test
 ```
 

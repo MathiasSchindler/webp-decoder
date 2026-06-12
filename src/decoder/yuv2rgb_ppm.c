@@ -26,6 +26,11 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 		errno = EINVAL;
 		return -1;
 	}
+	if (img->width > UINT32_MAX / 3u) {
+		errno = EFBIG;
+		return -1;
+	}
+	const uint32_t row_bytes = img->width * 3u;
 
 #ifdef NO_LIBC
 	// Avoid stdio/snprintf in the no-libc build.
@@ -44,14 +49,13 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 	if (os_write_all(fd, header, (size_t)n) != 0) return -1;
 #endif
 
-	uint8_t* top_row = (uint8_t*)malloc((size_t)img->width * 3u);
-	uint8_t* bottom_row = (uint8_t*)malloc((size_t)img->width * 3u);
-	if (!top_row || !bottom_row) {
-		free(top_row);
-		free(bottom_row);
+	uint8_t* rows = (uint8_t*)malloc((size_t)row_bytes * 2u);
+	if (!rows) {
 		errno = ENOMEM;
 		return -1;
 	}
+	uint8_t* top_row = rows;
+	uint8_t* bottom_row = rows + row_bytes;
 
 	const uint32_t cw = (img->width + 1u) >> 1;
 	const uint32_t ch = (img->height + 1u) >> 1;
@@ -63,9 +67,8 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 		const uint8_t* u0 = img->u;
 		const uint8_t* v0 = img->v;
 		upsample_rgb_line_pair(y0, NULL, u0, v0, u0, v0, top_row, NULL, img->width);
-		if (os_write_all(fd, top_row, (size_t)img->width * 3u) != 0) {
-			free(top_row);
-			free(bottom_row);
+		if (os_write_all(fd, top_row, row_bytes) != 0) {
+			free(rows);
 			return -1;
 		}
 	}
@@ -83,21 +86,17 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 		const uint8_t* cur_v = img->v + (size_t)cur_cy * img->stride_uv;
 
 		upsample_rgb_line_pair(top_y, bottom_y, top_u, top_v, cur_u, cur_v, top_row, bottom_row, img->width);
-		if (os_write_all(fd, top_row, (size_t)img->width * 3u) != 0) {
-			free(top_row);
-			free(bottom_row);
-			return -1;
-		}
 		if (bottom_y != NULL) {
-			if (os_write_all(fd, bottom_row, (size_t)img->width * 3u) != 0) {
-				free(top_row);
-				free(bottom_row);
-				return -1;
-			}
+			if (os_write_all(fd, top_row, (size_t)row_bytes * 2u) != 0) goto write_error;
+		} else {
+			if (os_write_all(fd, top_row, row_bytes) != 0) goto write_error;
 		}
 	}
 
-	free(top_row);
-	free(bottom_row);
+	free(rows);
 	return 0;
+
+write_error:
+	free(rows);
+	return -1;
 }
