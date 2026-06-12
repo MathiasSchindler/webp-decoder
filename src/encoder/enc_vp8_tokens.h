@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../enc-m08_filter/enc_loopfilter.h"
+#include "enc_loopfilter.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -4,7 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "../src/enc-m01_riff/enc_riff.h"
+#include "../src/encoder/enc_riff.h"
 
 static void usage(const char* argv0) {
 	fprintf(stderr,

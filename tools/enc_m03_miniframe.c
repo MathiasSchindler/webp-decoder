@@ -1,5 +1,5 @@
-#include "../src/enc-m01_riff/enc_riff.h"
-#include "../src/enc-m03_vp8_headers/enc_vp8_miniframe.h"
+#include "../src/encoder/enc_riff.h"
+#include "../src/encoder/enc_vp8_miniframe.h"
 
 #include <errno.h>
 #include <stdio.h>

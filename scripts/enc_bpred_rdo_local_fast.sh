@@ -56,7 +56,7 @@ results_tsv="$tmpdir/results.tsv"
 			ref_ppm="$tmpdir/${src_stem}_${s}.ref.ppm"
 
 			if [ "$have_magick" -eq 1 ]; then
-				magick "$src" -auto-orient -resize "${s}x${s}>" -strip "$derived_png"
+				magick "$src" -auto-orient -resize "${s}x${s}>" -strip "PNG24:${derived_png}"
 			else
 				sips -Z "$s" -s format png "$src" --out "$derived_png" >/dev/null
 			fi

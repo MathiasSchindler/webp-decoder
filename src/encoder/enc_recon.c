@@ -1,8 +1,8 @@
 #include "enc_recon.h"
 
-#include "../enc-m05_intra/enc_transform.h"
-#include "../enc-m06_quant/enc_quant.h"
-#include "../enc-m07_tokens/enc_vp8_tokens.h"
+#include "enc_transform.h"
+#include "enc_quant.h"
+#include "enc_vp8_tokens.h"
 
 #include <errno.h>
 #include <stdlib.h>

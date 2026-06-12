@@ -108,3 +108,14 @@ These scripts gate the incremental encoder work described in [planenc.md](../pla
   - Encodes all macroblocks with `ymode=B_PRED` (4x4 luma intra), choosing per-subblock b_modes by SAD.
   - Chooses UV per macroblock among DC/V/H/TM by SAD.
   - Gates decoded RGB hashes and a raw mode-map hash (file contains y_modes then uv_modes then b_modes).
+
+### Encoder quality guardrails
+
+- `enc_quality_check.sh`
+  - PSNR/SSIM regression guardrail on `images/png-in/*.png`.
+  - Supports baseline refresh via `--update`.
+
+- `enc_butteraugli_check.sh`
+  - Butteraugli + output-size regression guardrail on `images/png-in/*.png` using `butteraugli_nolibc_png`.
+  - Encodes with a fixed profile (`--q 75 --mode bpred-rdo --loopfilter --token-probs adaptive`).
+  - Supports baseline refresh via `--update`.

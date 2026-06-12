@@ -3,12 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "enc-m00_png/enc_png.h"
-#include "enc-m01_riff/enc_riff.h"
-#include "enc-m04_yuv/enc_rgb_to_yuv.h"
-#include "enc-m07_tokens/enc_vp8_tokens.h"
-#include "enc-m08_filter/enc_loopfilter.h"
-#include "enc-m08_recon/enc_recon.h"
+#include "encoder/enc_png.h"
+#include "encoder/enc_riff.h"
+#include "encoder/enc_rgb_to_yuv.h"
+#include "encoder/enc_vp8_tokens.h"
+#include "encoder/enc_loopfilter.h"
+#include "encoder/enc_recon.h"
 
 typedef enum {
 	ENC_MODE_BPRED = 0,

@@ -3,8 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../enc-m04_yuv/enc_rgb_to_yuv.h"
-#include "../enc-m07_tokens/enc_vp8_tokens.h"
+#include "enc_rgb_to_yuv.h"
+#include "enc_vp8_tokens.h"
 
 #ifdef __cplusplus
 extern "C" {

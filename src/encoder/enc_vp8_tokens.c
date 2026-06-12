@@ -1,7 +1,7 @@
 #include "enc_vp8_tokens.h"
 
-#include "../enc-m02_vp8_bitwriter/enc_bool.h"
-#include "../enc-m04_yuv/enc_pad.h"
+#include "enc_bool.h"
+#include "enc_pad.h"
 
 #include <errno.h>
 #include <stdlib.h>

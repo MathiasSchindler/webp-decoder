@@ -3,8 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../src/enc-m00_png/enc_png.h"
-#include "../src/enc-m04_yuv/enc_rgb_to_yuv.h"
+#include "../src/encoder/enc_png.h"
+#include "../src/encoder/enc_rgb_to_yuv.h"
 
 static void usage(const char* argv0) {
 	fprintf(stderr,

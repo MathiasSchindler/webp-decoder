@@ -206,3 +206,34 @@ ssim_y=<val>
 - Add a Gaussian-window SSIM variant behind a flag.
 - Switch the “distorted” decode path from `dwebp -ppm` to our decoder once we want metrics to validate that pipeline end-to-end.
 - Define an explicit alpha compositing policy (today: alpha is ignored in the PNG→PPM helper).
+
+---
+
+## Butteraugli-driven lambda tuning (local)
+
+For quick `bpred-rdo` tuning runs, the lambda sweep script now supports two objectives:
+
+- `--objective ssim` (default): rank by mean SSIM desc, then mean bytes asc.
+- `--objective butteraugli`: rank by mean Butteraugli asc, then mean bytes asc.
+
+Examples:
+
+```sh
+# Existing SSIM-oriented ranking
+python3 scripts/enc_bpred_rdo_lambda_sweep.py images/commons-hq \
+  --sizes 256 --qs 40 60 80 \
+  --mul 1 2 3 4 6 8 --div 1 2 3 4 \
+  --objective ssim -j 4
+
+# New Butteraugli-oriented ranking
+python3 scripts/enc_bpred_rdo_lambda_sweep.py images/commons-hq \
+  --sizes 256 --qs 40 60 80 \
+  --mul 1 2 3 4 6 8 --div 1 2 3 4 \
+  --objective butteraugli -j 4
+```
+
+Notes:
+
+- Butteraugli mode uses the repo-local `./butteraugli_nolibc_png` binary.
+- It evaluates our `encoder` output decoded with our `decoder -png` against a resized PNG reference.
+- For ImageMagick inputs, PNG conversion is forced to PNG24 for compatibility with the in-repo PNG reader.

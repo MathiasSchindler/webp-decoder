@@ -16,18 +16,14 @@ This folder contains the decoder and encoder implementations, split into milesto
 - `m08_yuv2rgb_ppm/`: YUV->RGB + PPM writer
 - `m09_png/`: PNG writer for decoded output
 
-## Encoder milestones
+## Encoder
 
-- `enc-m00_png/`: PNG reader (input)
-- `enc-m01_riff/`: WebP RIFF container writer (output wrapper)
-- `enc-m02_vp8_bitwriter/`: VP8 bit writing (boolean encoder + helpers)
-- `enc-m03_vp8_headers/`: VP8 keyframe/header emission helpers
-- `enc-m04_yuv/`: RGB→YUV420 conversion + padding helpers
-- `enc-m05_intra/`: intra prediction + transforms
-- `enc-m06_quant/`: quantization + quality→qindex mapping
-- `enc-m07_tokens/`: tokenization + entropy coding of coeffs/modes
-- `enc-m08_filter/`: loopfilter parameter derivation / header plumbing
-- `enc-m08_recon/`: in-loop reconstruction + mode decision drivers
+- `encoder/`: consolidated encoder implementation
+	- PNG input, RIFF writer, VP8 bool/bit writing
+	- RGB→YUV conversion and padding helpers
+	- intra prediction, transform, quantization
+	- tokenization/entropy coding, loopfilter params
+	- in-loop reconstruction + mode decision drivers
 
 ## Entrypoints
 

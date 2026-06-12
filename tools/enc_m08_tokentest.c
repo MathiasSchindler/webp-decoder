@@ -5,11 +5,11 @@
 #include <string.h>
 
 #include "../src/common/os.h"
-#include "../src/enc-m00_png/enc_png.h"
-#include "../src/enc-m04_yuv/enc_rgb_to_yuv.h"
-#include "../src/enc-m05_intra/enc_intra_dc.h"
-#include "../src/enc-m06_quant/enc_quant.h"
-#include "../src/enc-m07_tokens/enc_vp8_tokens.h"
+#include "../src/encoder/enc_png.h"
+#include "../src/encoder/enc_rgb_to_yuv.h"
+#include "../src/encoder/enc_intra_dc.h"
+#include "../src/encoder/enc_quant.h"
+#include "../src/encoder/enc_vp8_tokens.h"
 #include "../src/m05_tokens/vp8_tokens.h"
 
 static void usage(const char* argv0) {

@@ -80,7 +80,8 @@ run_gates_parallel "Encoder gates" \
 	./scripts/enc_m09_bpredenc_check.sh \
 	./scripts/enc_m10_loopfilter_check.sh \
 	./scripts/enc_ultra_parity_check.sh \
-	./scripts/enc_quality_check.sh
+	./scripts/enc_quality_check.sh \
+	./scripts/enc_butteraugli_check.sh
 
 echo
 

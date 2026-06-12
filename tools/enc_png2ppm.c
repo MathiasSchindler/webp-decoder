@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "../src/enc-m00_png/enc_png.h"
+#include "../src/encoder/enc_png.h"
 
 static void usage(const char* argv0) {
 	fprintf(stderr, "Usage: %s <in.png> <out.ppm|->\n", argv0);

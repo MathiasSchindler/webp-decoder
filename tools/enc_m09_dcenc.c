@@ -3,11 +3,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../src/enc-m00_png/enc_png.h"
-#include "../src/enc-m01_riff/enc_riff.h"
-#include "../src/enc-m04_yuv/enc_rgb_to_yuv.h"
-#include "../src/enc-m07_tokens/enc_vp8_tokens.h"
-#include "../src/enc-m08_recon/enc_recon.h"
+#include "../src/encoder/enc_png.h"
+#include "../src/encoder/enc_riff.h"
+#include "../src/encoder/enc_rgb_to_yuv.h"
+#include "../src/encoder/enc_vp8_tokens.h"
+#include "../src/encoder/enc_recon.h"
 
 static void usage(const char* argv0) {
 	fprintf(stderr,

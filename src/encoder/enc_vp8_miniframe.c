@@ -1,6 +1,6 @@
 #include "enc_vp8_miniframe.h"
 
-#include "../enc-m02_vp8_bitwriter/enc_bool.h"
+#include "enc_bool.h"
 
 #include <errno.h>
 #include <stdlib.h>

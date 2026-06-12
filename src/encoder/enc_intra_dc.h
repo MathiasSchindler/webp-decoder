@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../enc-m04_yuv/enc_rgb_to_yuv.h"
+#include "enc_rgb_to_yuv.h"
 
 #ifdef __cplusplus
 extern "C" {
