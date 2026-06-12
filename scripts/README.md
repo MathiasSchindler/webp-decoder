@@ -28,7 +28,7 @@ This invokes `scripts/run_all.sh`.
 ## Milestone 1 (container parsing)
 
 - `m1_compare_info_with_webpinfo.sh`
-  - Runs `./decoder -info` and `../../libwebp/examples/webpinfo` over all `images/webp/*.webp`.
+  - Runs `./build/decoder -info` and `../../libwebp/examples/webpinfo` over all `images/webp/*.webp`.
   - Compares:
     - RIFF total file size
     - `VP8 ` chunk offset and length (in `webpinfo` convention)
@@ -40,19 +40,19 @@ This invokes `scripts/run_all.sh`.
 ## Milestone 2 (VP8 key-frame header)
 
 - `m2_compare_vp8hdr_with_webpinfo.sh`
-  - Compares the VP8 key-frame header fields printed by `./decoder -info` against `webpinfo -bitstream_info` for all `images/webp/*.webp`.
+  - Compares the VP8 key-frame header fields printed by `./build/decoder -info` against `webpinfo -bitstream_info` for all `images/webp/*.webp`.
   - Checks: Key frame / Profile / Display / Part. 0 length / Width+Height + X/Y scale.
 
 ## Milestone 3 (VP8 basic frame header)
 
 - `m3_compare_framehdr_basic_with_webpinfo.sh`
-  - Compares additional VP8 frame header fields printed by `./decoder -info` against `webpinfo -bitstream_info`.
+  - Compares additional VP8 frame header fields printed by `./build/decoder -info` against `webpinfo -bitstream_info`.
   - Checks: Color space, Clamp type, segmentation enabled, loop-filter basics, partition count, base Q and quant deltas.
 
 ## Milestone 4 (VP8 partition size table)
 
 - `m4_compare_all_partitions_with_webpinfo.sh`
-  - Compares all `Part. <i> length:` lines printed by `./decoder -info` against `webpinfo -bitstream_info`.
+  - Compares all `Part. <i> length:` lines printed by `./build/decoder -info` against `webpinfo -bitstream_info`.
   - This becomes meaningful once we have files with `Total partitions > 1`.
 
 - `m4_scan_total_partitions.sh`
@@ -61,11 +61,11 @@ This invokes `scripts/run_all.sh`.
 ## Milestone 5 (macroblock syntax + coefficient tokens)
 
 - `m5_coeff_hash_smoke.sh`
-  - Runs `./decoder -info` over both corpora and asserts we print a numeric `Coeff hash` line for every file.
+  - Runs `./build/decoder -info` over both corpora and asserts we print a numeric `Coeff hash` line for every file.
   - This is a smoke test to ensure macroblock parsing + token decoding stays bounded and deterministic.
 
 - `m5_compare_decode_ok_with_dwebp.sh`
-  - Ensures both our decoder (`./decoder -info`) and the oracle (`dwebp`) successfully decode every file in both corpora.
+  - Ensures both our decoder (`./build/decoder -info`) and the oracle (`dwebp`) successfully decode every file in both corpora.
   - This is a basic behavioral match against `dwebp` for “does it decode?” at the Milestone 5 (non-pixel) stage.
 
 - `m5_scan_outliers.sh`
@@ -83,7 +83,7 @@ This invokes `scripts/run_all.sh`.
 ## Milestone 6 (inverse transforms + intra prediction → YUV)
 
 - `m6_compare_yuv_with_dwebp.sh`
-  - Runs `./decoder -yuv` over the corpora and compares the raw I420 output against `dwebp -yuv -nofilter`.
+  - Runs `./build/decoder -yuv` over the corpora and compares the raw I420 output against `dwebp -yuv -nofilter`.
   - Uses `-nofilter` so the oracle output is pre-loopfilter (we implement the in-loop filter in Milestone 7).
 
 ---

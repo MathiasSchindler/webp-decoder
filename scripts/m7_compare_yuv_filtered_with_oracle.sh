@@ -7,7 +7,7 @@ ROOT_DIR=$(pwd)
 . "$ROOT_DIR/scripts/common.sh"
 require_libwebp_dwebp
 
-DECODER=./decoder
+DECODER=./build/decoder
 FFMPEG=ffmpeg
 
 if [[ ! -x "$DECODER" ]]; then

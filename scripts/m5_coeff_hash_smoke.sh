@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-DECODER=./decoder
+DECODER=./build/decoder
 
 if [[ ! -x "$DECODER" ]]; then
   echo "error: $DECODER not found; run 'make' first" >&2

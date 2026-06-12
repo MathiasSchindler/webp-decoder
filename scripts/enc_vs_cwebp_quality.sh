@@ -33,7 +33,7 @@ if [ "$#" -lt 1 ]; then
 	echo "  SIZES=\"256 512\"   (resize max dimension)" >&2
 	echo "  QS=\"30 40 ...\"     (quality sweep)" >&2
 	echo "  MODE=bpred|i16|dc    (our encoder mode)" >&2
-        echo "  OURS_FLAGS=\"...\"     (extra flags for ./encoder, e.g. --loopfilter)" >&2
+        echo "  OURS_FLAGS=\"...\"     (extra flags for ./build/encoder, e.g. --loopfilter)" >&2
     echo "  JOBS=1              (parallel jobs; >1 enables multicore)" >&2
 	exit 2
 fi
@@ -75,7 +75,7 @@ process_one_image_size() {
         local lib_ppm="$tmpdir/${src_stem}_${s}_${id}_lib_q${q}.ppm"
 
         # OURS_FLAGS can be used to enable experimental knobs (e.g. --loopfilter).
-        ./encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
+        ./build/encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
         [ -s "$ours_webp" ] || die "encoder produced no output: $ours_webp (src=$src size=$s q=$q mode=$mode flags='$ours_flags')"
 
         "$CWEBP" -quiet -q "$q" "$derived_png" -o "$lib_webp" >/dev/null 2>&1

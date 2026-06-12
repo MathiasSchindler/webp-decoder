@@ -200,6 +200,14 @@ size_t strlen(const char* s) {
 	return n;
 }
 
+int strcmp(const char* a, const char* b) {
+	while (*a && *a == *b) {
+		a++;
+		b++;
+	}
+	return (int)(unsigned char)*a - (int)(unsigned char)*b;
+}
+
 // Very small strtoul (base 10 only; sufficient for current usage).
 unsigned long strtoul(const char* nptr, char** endptr, int base) {
 	(void)base;
@@ -220,6 +228,25 @@ unsigned long strtoul(const char* nptr, char** endptr, int base) {
 	if (!any) *__errno_location() = EINVAL;
 	if (endptr) *endptr = (char*)p;
 	return v;
+}
+
+long strtol(const char* nptr, char** endptr, int base) {
+	(void)base;
+	const char* p = nptr;
+	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+	int neg = 0;
+	if (*p == '-' || *p == '+') {
+		neg = (*p == '-');
+		p++;
+	}
+	unsigned long v = strtoul(p, endptr, 10);
+	if (endptr && *endptr == p) *endptr = (char*)nptr;
+	return neg ? -(long)v : (long)v;
+}
+
+char* getenv(const char* name) {
+	(void)name;
+	return NULL;
 }
 
 static size_t align16(size_t n) { return (n + 15u) & ~(size_t)15u; }

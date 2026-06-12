@@ -11,7 +11,7 @@ fi
 
 cd "$root_dir"
 
-make -s decoder enc_pngdump enc_m04_miniframe
+make -s build/decoder enc_pngdump enc_m04_miniframe
 
 expected_file="scripts/enc_m04_miniframe_expected.txt"
 tmp_file="build/enc_m04_miniframe_manifest.tmp"
@@ -38,10 +38,10 @@ for c in "${cases[@]}"; do
   ./build/enc_m04_miniframe "$w" "$h" "$out_webp"
 
   # Must decode (macroblocks/tokens).
-  ./decoder -probe "$out_webp" >/dev/null
+  ./build/decoder -probe "$out_webp" >/dev/null
 
   # Decode to PNG, reparse PNG, hash raw RGB.
-  ./decoder -png "$out_webp" "$out_png"
+  ./build/decoder -png "$out_webp" "$out_png"
   ./build/enc_pngdump "$out_png" > "$out_rgb"
 
   want_bytes=$((w*h*3))

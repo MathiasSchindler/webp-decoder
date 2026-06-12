@@ -7,7 +7,7 @@ ROOT_DIR=$(pwd)
 ARTIFACT_DIR="$ROOT_DIR/build/test-artifacts/m5_scan_outliers"
 mkdir -p "$ARTIFACT_DIR"
 
-DECODER=./decoder
+DECODER=./build/decoder
 
 if [[ ! -x "$DECODER" ]]; then
   echo "error: $DECODER not found; run 'make' first" >&2

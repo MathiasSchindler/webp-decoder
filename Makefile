@@ -18,9 +18,9 @@ NOLIBC_SUPPORTED := 1
 endif
 endif
 
-BIN := decoder
-ENCODER := encoder
 BUILD_DIR := build
+BIN := $(BUILD_DIR)/decoder
+ENCODER := $(BUILD_DIR)/encoder
 ENC_PNGDUMP_BIN := build/enc_pngdump
 ENC_PNG2PPM_BIN := build/enc_png2ppm
 ENC_QUALITY_METRICS_BIN := build/enc_quality_metrics
@@ -35,8 +35,6 @@ ENC_M08_TOKENTEST_BIN := build/enc_m08_tokentest
 ENC_M09_DCENC_BIN := build/enc_m09_dcenc
 ENC_M09_MODEENC_BIN := build/enc_m09_modeenc
 ENC_M09_BPREDENC_BIN := build/enc_m09_bpredenc
-NOLIBC_BUILD_DIR := build/nolibc
-NOLIBC_BIN := decoder_nolibc
 
 VP8_DECODER_SHARED_SRC := \
 	src/vp8/vp8_quant.c \
@@ -65,8 +63,6 @@ SRC := \
 	src/decoder/yuv2rgb_ppm.c \
 	src/decoder/yuv2rgb_png.c
 
-OBJ := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(SRC))
-
 CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Werror \
 	-O3 -march=native -flto \
 	-fno-omit-frame-pointer -fno-common
@@ -89,9 +85,16 @@ LDFLAGS_COMMON := -flto
 .PHONY: enc_m09_modeenc
 .PHONY: enc_m09_bpredenc
 
+ifeq ($(NOLIBC_SUPPORTED),1)
 all: $(BIN) $(ENCODER)
+nolibc: all
+else
+all nolibc:
+	@echo "error: default builds are nolibc and are supported only on Linux x86_64" >&2
+	@exit 2
+endif
 
-test: all nolibc \
+test: all \
 	enc_pngdump enc_png2ppm enc_quality_metrics enc_webpwrap enc_boolselftest \
 	enc_m03_miniframe enc_m04_miniframe enc_m05_yuvdump enc_m06_intradump \
 	enc_m07_quantdump enc_m08_tokentest enc_m09_dcenc enc_m09_modeenc enc_m09_bpredenc
@@ -128,20 +131,10 @@ enc_m09_modeenc: $(ENC_M09_MODEENC_BIN)
 
 enc_m09_bpredenc: $(ENC_M09_BPREDENC_BIN)
 
-ifeq ($(NOLIBC_SUPPORTED),1)
-nolibc: $(NOLIBC_BIN)
-else
-nolibc:
-	@echo "error: nolibc targets are supported only on Linux x86_64" >&2
-	@echo "hint: use 'make' for the normal libc build" >&2
-	@exit 2
-endif
-
-$(BIN): $(OBJ)
-	$(CC) $(CFLAGS_COMMON) -o $@ $(OBJ) $(LDFLAGS_COMMON)
-
 ENCODER_SRC := \
 	src/encoder_main.c \
+	src/common/os.c \
+	src/common/fmt.c \
 	$(VP8_ENCODER_SHARED_SRC) \
 	src/encoder/enc_png.c \
 	src/encoder/enc_rgb_to_yuv.c \
@@ -155,16 +148,6 @@ ENCODER_SRC := \
 	src/encoder/enc_recon.c \
 	src/encoder/enc_bool.c \
 	src/encoder/enc_riff.c
-
-$(ENCODER): $(ENCODER_SRC) \
-	src/encoder/enc_png.h \
-	src/encoder/enc_rgb_to_yuv.h \
-	src/encoder/enc_pad.h \
-	src/encoder/enc_vp8_tokens.h \
-	src/encoder/enc_loopfilter.h \
-	src/encoder/enc_recon.h \
-	src/encoder/enc_riff.h
-	$(CC) $(CFLAGS_COMMON) -o $@ $(ENCODER_SRC) $(LDFLAGS_COMMON)
 
 ENC_PNGDUMP_SRC := \
 	tools/enc_pngdump.c \
@@ -398,11 +381,11 @@ $(ENC_M09_BPREDENC_BIN): $(ENC_M09_BPREDENC_SRC) \
 	@mkdir -p $(dir $@)
 	$(CC) -std=c11 -Wall -Wextra -Wpedantic -Werror -O2 -o $@ $(ENC_M09_BPREDENC_SRC)
 
-NOLIBC_SRC := $(SRC) \
+NOLIBC_DECODER_SRC := $(SRC) \
 	src/nolibc/syscall_glue.c
 
-NOLIBC_OBJ := $(patsubst src/%.c,$(NOLIBC_BUILD_DIR)/%.o,$(filter %.c,$(NOLIBC_SRC))) \
-	$(NOLIBC_BUILD_DIR)/nolibc/start.o
+NOLIBC_ENCODER_SRC := $(ENCODER_SRC) \
+	src/nolibc/syscall_glue.c
 
 NOLIBC_LTO := -flto
 
@@ -417,20 +400,13 @@ NOLIBC_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
 NOLIBC_LDFLAGS := -nostdlib -static \
 	-Wl,-e,_start -Wl,--gc-sections -Wl,--build-id=none -s
 
-$(NOLIBC_BIN): $(NOLIBC_OBJ)
-	$(CC) $(NOLIBC_LTO) -o $@ $(NOLIBC_OBJ) $(NOLIBC_LDFLAGS) -lgcc
-
-$(NOLIBC_BUILD_DIR)/%.o: src/%.c
+$(BIN): $(NOLIBC_DECODER_SRC) src/nolibc/start.S
 	@mkdir -p $(dir $@)
-	$(CC) $(NOLIBC_CFLAGS) -c $< -o $@
+	$(CC) $(NOLIBC_CFLAGS) -o $@ $(NOLIBC_DECODER_SRC) src/nolibc/start.S $(NOLIBC_LDFLAGS) -lgcc
 
-$(NOLIBC_BUILD_DIR)/nolibc/start.o: src/nolibc/start.S
+$(ENCODER): $(NOLIBC_ENCODER_SRC) src/nolibc/start.S
 	@mkdir -p $(dir $@)
-	$(CC) -c $< -o $@
-
-$(BUILD_DIR)/%.o: src/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_COMMON) -c $< -o $@
+	$(CC) $(NOLIBC_CFLAGS) -o $@ $(NOLIBC_ENCODER_SRC) src/nolibc/start.S $(NOLIBC_LDFLAGS) -lgcc
 
 clean:
-	rm -rf $(BUILD_DIR) $(BIN) $(ENCODER) $(NOLIBC_BIN)
+	rm -rf $(BUILD_DIR) decoder encoder decoder_nolibc encoder_nolibc

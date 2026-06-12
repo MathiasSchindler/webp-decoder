@@ -7,7 +7,7 @@ ROOT_DIR=$(pwd)
 . "$ROOT_DIR/scripts/common.sh"
 resolve_libwebp_tools
 
-DECODER=./decoder
+DECODER=./build/decoder
 FFMPEG=ffmpeg
 
 if [[ ! -x "$DECODER" ]]; then

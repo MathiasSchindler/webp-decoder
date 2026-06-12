@@ -33,7 +33,7 @@ See [plandec.md](plandec.md) for current status and verification notes.
 
 ## Build
 
-Requirements: a reasonably recent C toolchain on Linux/macOS.
+Requirements: a reasonably recent C toolchain on Linux x86_64.
 
 ```sh
 make
@@ -41,39 +41,24 @@ make
 
 This produces two binaries:
 
-- `decoder`
-- `encoder`
+- `build/decoder`
+- `build/encoder`
 
-### Build everything
-
-If you want the normal binaries plus the nolibc decoder in one go:
-
-```sh
-./scripts/build_all.sh
-```
-
-### NOLIBC (syscall-only)
-
-On Linux x86_64 you can build a static syscall-only variant with a full CLI:
-
-```sh
-make nolibc
-```
-
-This produces `decoder_nolibc`.
+The default build is syscall-only/nolibc. No root-level `decoder` or `encoder`
+binary is produced.
 
 ## Usage
 
 ```sh
-./decoder -info input.webp
+./build/decoder -info input.webp
 
 # Raw I420 (Y plane then U then V)
-./decoder -yuv  input.webp out.i420   # unfiltered
-./decoder -yuvf input.webp out.i420   # filtered (loop filter enabled)
+./build/decoder -yuv  input.webp out.i420   # unfiltered
+./build/decoder -yuvf input.webp out.i420   # filtered (loop filter enabled)
 
 # RGB outputs
-./decoder -ppm input.webp out.ppm
-./decoder -png input.webp out.png
+./build/decoder -ppm input.webp out.ppm
+./build/decoder -png input.webp out.png
 ```
 
 ## Encoder (PNG -> WebP)
@@ -87,19 +72,19 @@ Basic usage:
 
 ```sh
 # Encode PNG -> WebP (default: --mode bpred-rdo, --q 75)
-./encoder input.png out.webp
+./build/encoder input.png out.webp
 
 # Explicit baseline mode (simple reference)
-./encoder --mode bpred input.png out.webp
+./build/encoder --mode bpred input.png out.webp
 
 # Choose quality and intra mode
-./encoder --q 90 --mode i16 input.png out.webp
+./build/encoder --q 90 --mode i16 input.png out.webp
 
 # Opt-in: write loopfilter header params
-./encoder --loopfilter --q 75 input.png out.webp
+./build/encoder --loopfilter --q 75 input.png out.webp
 
 # Inspect using our decoder
-./decoder -info out.webp
+./build/decoder -info out.webp
 ```
 
 Notes:

@@ -1,8 +1,8 @@
 #include <errno.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "common/fmt.h"
 #include "encoder/enc_png.h"
 #include "encoder/enc_riff.h"
 #include "encoder/enc_rgb_to_yuv.h"
@@ -18,29 +18,38 @@ typedef enum {
 } EncMode;
 
 static void usage(const char* argv0) {
-	fprintf(stderr,
-	        "Usage: %s [--q <0..100>] [--mode <bpred|bpred-rdo|i16|dc>] [--loopfilter] [--token-probs <default|adaptive|adaptive2>] [--mb-skip] [--bpred-rdo-lambda-mul N] [--bpred-rdo-lambda-div N] [--bpred-rdo-rate <proxy|entropy|dry-run>] [--bpred-rdo-signal <proxy|entropy>] [--bpred-rdo-quant <default|ac-deadzone>] [--bpred-rdo-ac-deadzone N] [--bpred-rdo-qscale-y-ac N] [--bpred-rdo-qscale-uv-ac N] [--bpred-rdo-satd-prune-k N] <in.png> <out.webp>\n"
-	        "\n"
-	        "Standalone VP8 keyframe (lossy) encoder producing a simple WebP container.\n"
-	        "\n"
-	        "Options:\n"
-	        "  --q <0..100>           Quality (mapped to VP8 qindex). Default: 75\n"
-	        "  --mode <bpred|bpred-rdo|i16|dc>  Intra mode strategy. Default: bpred-rdo\n"
-	        "  --loopfilter | --lf    Write deterministic loopfilter header params derived from qindex\n"
-	        "  --token-probs <default|adaptive|adaptive2>  Emit coefficient token prob updates. Default: adaptive\n"
-	        "  --mb-skip              Experimental: signal mb_skip_coeff and omit tokens for all-zero MBs\n"
-	        "  --bpred-rdo-lambda-mul N  Tune bpred-rdo: multiply lambda(qindex) by N (default 10)\n"
-	        "  --bpred-rdo-lambda-div N  Tune bpred-rdo: divide lambda(qindex) by N (default 1)\n"
-	        "  --bpred-rdo-rate <proxy|entropy|dry-run>  Tune bpred-rdo: rate estimator (default dry-run)\n"
-	        "  --bpred-rdo-signal <proxy|entropy>  Tune bpred-rdo: mode signaling cost model (default proxy)\n"
-	        "  --bpred-rdo-quant <default|ac-deadzone>  Tune bpred-rdo: quantization tweak (default ac-deadzone)\n"
-	        "  --bpred-rdo-ac-deadzone N  Tune bpred-rdo: AC deadzone threshold percent (default 70)\n"
-	        "  --bpred-rdo-qscale-y-dc N  Tune bpred-rdo: scale Y DC quant step percent (default 100)\n"
-	        "  --bpred-rdo-qscale-y-ac N  Tune bpred-rdo: scale Y AC quant step percent (default 100)\n"
-	        "  --bpred-rdo-qscale-uv-dc N  Tune bpred-rdo: scale UV DC quant step percent (default 100)\n"
-	        "  --bpred-rdo-qscale-uv-ac N  Tune bpred-rdo: scale UV AC quant step percent (default 130)\n"
-	        "  --bpred-rdo-satd-prune-k N  Tune bpred-rdo: keep best N 4x4 modes by SATD before full eval (default 0=off)\n",
-	        argv0);
+	fmt_write_str(2, "Usage: ");
+	fmt_write_str(2, argv0);
+	fmt_write_str(2, " [--q <0..100>] [--mode <bpred|bpred-rdo|i16|dc>] [--loopfilter] [--token-probs <default|adaptive|adaptive2>] [--mb-skip] [--bpred-rdo-lambda-mul N] [--bpred-rdo-lambda-div N] [--bpred-rdo-rate <proxy|entropy|dry-run>] [--bpred-rdo-signal <proxy|entropy>] [--bpred-rdo-quant <default|ac-deadzone>] [--bpred-rdo-ac-deadzone N] [--bpred-rdo-qscale-y-ac N] [--bpred-rdo-qscale-uv-ac N] [--bpred-rdo-satd-prune-k N] <in.png> <out.webp>\n"
+	                 "\n"
+	                 "Standalone VP8 keyframe (lossy) encoder producing a simple WebP container.\n"
+	                 "\n"
+	                 "Options:\n"
+	                 "  --q <0..100>           Quality (mapped to VP8 qindex). Default: 75\n"
+	                 "  --mode <bpred|bpred-rdo|i16|dc>  Intra mode strategy. Default: bpred-rdo\n"
+	                 "  --loopfilter | --lf    Write deterministic loopfilter header params derived from qindex\n"
+	                 "  --token-probs <default|adaptive|adaptive2>  Emit coefficient token prob updates. Default: adaptive\n"
+	                 "  --mb-skip              Experimental: signal mb_skip_coeff and omit tokens for all-zero MBs\n"
+	                 "  --bpred-rdo-lambda-mul N  Tune bpred-rdo: multiply lambda(qindex) by N (default 10)\n"
+	                 "  --bpred-rdo-lambda-div N  Tune bpred-rdo: divide lambda(qindex) by N (default 1)\n"
+	                 "  --bpred-rdo-rate <proxy|entropy|dry-run>  Tune bpred-rdo: rate estimator (default dry-run)\n"
+	                 "  --bpred-rdo-signal <proxy|entropy>  Tune bpred-rdo: mode signaling cost model (default proxy)\n"
+	                 "  --bpred-rdo-quant <default|ac-deadzone>  Tune bpred-rdo: quantization tweak (default ac-deadzone)\n"
+	                 "  --bpred-rdo-ac-deadzone N  Tune bpred-rdo: AC deadzone threshold percent (default 70)\n"
+	                 "  --bpred-rdo-qscale-y-dc N  Tune bpred-rdo: scale Y DC quant step percent (default 100)\n"
+	                 "  --bpred-rdo-qscale-y-ac N  Tune bpred-rdo: scale Y AC quant step percent (default 100)\n"
+	                 "  --bpred-rdo-qscale-uv-dc N  Tune bpred-rdo: scale UV DC quant step percent (default 100)\n"
+	                 "  --bpred-rdo-qscale-uv-ac N  Tune bpred-rdo: scale UV AC quant step percent (default 130)\n"
+	                 "  --bpred-rdo-satd-prune-k N  Tune bpred-rdo: keep best N 4x4 modes by SATD before full eval (default 0=off)\n");
+}
+
+static void write_path_error(const char* path, const char* msg) {
+	fmt_write_str(2, path);
+	fmt_write_str(2, ": ");
+	fmt_write_str(2, msg);
+	fmt_write_str(2, " (errno=");
+	fmt_write_i32(2, errno);
+	fmt_write_str(2, ")\n");
 }
 
 static int parse_int(const char* s, int* out) {
@@ -258,15 +267,14 @@ int main(int argc, char** argv) {
 
 	EncPngImage img;
 	if (enc_png_read_file(in_path, &img) != 0) {
-		fprintf(stderr,
-		        "enc_png_read_file failed for %s (errno=%d: %s)\n",
-		        in_path,
-		        errno,
-		        (errno != 0) ? strerror(errno) : "unknown");
+		write_path_error(in_path, "enc_png_read_file failed");
 		return 1;
 	}
 	if (!(img.channels == 3 || img.channels == 4)) {
-		fprintf(stderr, "%s: unsupported channels=%u\n", in_path, img.channels);
+		fmt_write_str(2, in_path);
+		fmt_write_str(2, ": unsupported channels=");
+		fmt_write_u32(2, img.channels);
+		fmt_write_nl(2);
 		enc_png_free(&img);
 		return 1;
 	}
@@ -274,7 +282,7 @@ int main(int argc, char** argv) {
 	EncYuv420Image yuv;
 	const uint32_t stride = img.width * (uint32_t)img.channels;
 	if (enc_yuv420_from_rgb_libwebp(img.data, img.width, img.height, stride, img.channels, &yuv) != 0) {
-		fprintf(stderr, "%s: RGB->YUV failed (errno=%d)\n", in_path, errno);
+		write_path_error(in_path, "RGB->YUV failed");
 		enc_png_free(&img);
 		return 1;
 	}
@@ -342,7 +350,7 @@ int main(int argc, char** argv) {
 		                                       &qindex);
 	}
 	if (rc != 0) {
-		fprintf(stderr, "%s: VP8 analysis/quant/recon failed (errno=%d)\n", in_path, errno);
+		write_path_error(in_path, "VP8 analysis/quant/recon failed");
 		free(coeffs);
 		free(uv_modes);
 		free(b_modes);
@@ -499,7 +507,7 @@ int main(int argc, char** argv) {
 	}
 
 	if (rc != 0 || !vp8 || vp8_size == 0) {
-		fprintf(stderr, "%s: VP8 bitstream build failed (errno=%d)\n", in_path, errno);
+		write_path_error(in_path, "VP8 bitstream build failed");
 		free(vp8);
 		free(coeffs);
 		free(uv_modes);
@@ -511,7 +519,7 @@ int main(int argc, char** argv) {
 	}
 
 	if (enc_webp_write_vp8_file(out_path, vp8, vp8_size) != 0) {
-		fprintf(stderr, "%s: enc_webp_write_vp8_file failed (errno=%d)\n", out_path, errno);
+		write_path_error(out_path, "enc_webp_write_vp8_file failed");
 		free(vp8);
 		free(coeffs);
 		free(uv_modes);

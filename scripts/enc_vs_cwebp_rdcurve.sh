@@ -39,7 +39,7 @@ if [ "$#" -ne 1 ]; then
 	echo "Env overrides:" >&2
 	echo "  SIZE=512                 (resize max dimension)" >&2
 	echo "  MODE=bpred|bpred-rdo|i16|dc  (our encoder mode)" >&2
-	echo "  OURS_FLAGS=\"...\"          (extra flags for ./encoder, e.g. --loopfilter)" >&2
+	echo "  OURS_FLAGS=\"...\"          (extra flags for ./build/encoder, e.g. --loopfilter)" >&2
 	echo "  QMIN=1 QMAX=100          (quality sweep range)" >&2
 		echo "  SKIP_BAD_Q=0|1           (continue on decode/metrics failure; records nan)" >&2
 	echo "  LIBWEBP_BIN_DIR=/opt/homebrew/bin  (or your libwebp examples dir)" >&2
@@ -73,7 +73,7 @@ fi
 		ours_webp="$tmpdir/${src_stem}_${size}_ours_q${q}.webp"
 		lib_webp="$tmpdir/${src_stem}_${size}_lib_q${q}.webp"
 
-		./encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
+		./build/encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
 		[ -s "$ours_webp" ] || die "encoder produced no output: $ours_webp"
 		"$CWEBP" -quiet -q "$q" "$derived_png" -o "$lib_webp" >/dev/null 2>&1
 		[ -s "$lib_webp" ] || die "cwebp produced no output: $lib_webp"

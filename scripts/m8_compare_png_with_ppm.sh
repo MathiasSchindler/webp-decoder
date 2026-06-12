@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-DECODER=./decoder
+DECODER=./build/decoder
 
 if [[ ! -x "$DECODER" ]]; then
   echo "error: $DECODER not found; run 'make' first" >&2
@@ -135,7 +135,7 @@ def parse_png_rgb8_uncompressed(path: str):
   return width, height, bytes(pix)
 
 
-decoder = os.environ.get("DECODER", "./decoder")
+decoder = os.environ.get("DECODER", "./build/decoder")
 files = os.environ.get("FILES", "").splitlines()
 if not files:
   raise SystemExit("no files provided")

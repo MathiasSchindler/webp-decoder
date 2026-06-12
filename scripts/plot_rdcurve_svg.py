@@ -235,7 +235,7 @@ def render_svg(
     )
     svg_lines.append(f'<line x1="{legend_x}" y1="{legend_y+18}" x2="{legend_x+18}" y2="{legend_y+18}" stroke="{ours_color}" stroke-width="3"/>')
     svg_lines.append(
-        f'<text x="{legend_x+24}" y="{legend_y+22}" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="12" fill="#111">ours (./encoder)</text>'
+        f'<text x="{legend_x+24}" y="{legend_y+22}" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="12" fill="#111">ours (build/encoder)</text>'
     )
 
     svg_lines.append("</svg>\n")

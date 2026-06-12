@@ -11,7 +11,7 @@ need() {
   fi
 }
 
-need ./decoder
-need ./encoder
+need ./build/decoder
+need ./build/encoder
 
 echo "OK: required binaries present (decoder, encoder)"

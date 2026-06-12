@@ -44,8 +44,8 @@ score_png_pair() {
 		out_webp="$tmpdir/$base.out.webp"
 		out_png="$tmpdir/$base.out.png"
 
-		./encoder --q "$q" --mode "$mode" --loopfilter --token-probs "$token_probs" "$f" "$out_webp" >/dev/null 2>&1
-		./decoder -png "$out_webp" "$out_png" >/dev/null 2>&1
+		./build/encoder --q "$q" --mode "$mode" --loopfilter --token-probs "$token_probs" "$f" "$out_webp" >/dev/null 2>&1
+		./build/decoder -png "$out_webp" "$out_png" >/dev/null 2>&1
 
 		bytes=$(wc -c < "$out_webp" | tr -d ' ')
 		score=$(score_png_pair "$f" "$out_png")

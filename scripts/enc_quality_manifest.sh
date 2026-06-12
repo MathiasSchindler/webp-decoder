@@ -33,7 +33,7 @@ fi
 		out_ppm="$tmpdir/$base.out.ppm"
 
 		./build/enc_png2ppm "$f" "$ref_ppm" >/dev/null 2>&1
-		./encoder --q "$q" --mode "$mode" $lf_flag "$f" "$out_webp" >/dev/null 2>&1
+		./build/encoder --q "$q" --mode "$mode" $lf_flag "$f" "$out_webp" >/dev/null 2>&1
 		"$DWEBP" -quiet "$out_webp" -ppm -o "$out_ppm" >/dev/null 2>&1
 
 		metrics=$(./build/enc_quality_metrics "$ref_ppm" "$out_ppm") || exit 1

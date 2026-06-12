@@ -33,7 +33,7 @@ if [ "$#" -lt 1 ]; then
 	echo "  SIZES=\"256\"          (resize max dimension)" >&2
 	echo "  QS=\"40 60 80\"        (quality sweep)" >&2
 	echo "  MODE=bpred-rdo|bpred   (our encoder mode)" >&2
-	echo "  OURS_FLAGS=\"...\"      (extra flags for ./encoder, e.g. --loopfilter)" >&2
+	echo "  OURS_FLAGS=\"...\"      (extra flags for ./build/encoder, e.g. --loopfilter)" >&2
 	exit 2
 fi
 
@@ -67,8 +67,8 @@ results_tsv="$tmpdir/results.tsv"
 				ours_webp="$tmpdir/${src_stem}_${s}_${mode}_q${q}.webp"
 				ours_ppm="$tmpdir/${src_stem}_${s}_${mode}_q${q}.ppm"
 
-				./encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
-				./decoder -ppm "$ours_webp" "$ours_ppm" >/dev/null
+				./build/encoder --q "$q" --mode "$mode" $ours_flags "$derived_png" "$ours_webp" >/dev/null
+				./build/decoder -ppm "$ours_webp" "$ours_ppm" >/dev/null
 
 				ours_bytes=$(wc -c < "$ours_webp" | tr -d ' ')
 				ours_metrics=$(./build/enc_quality_metrics "$ref_ppm" "$ours_ppm")

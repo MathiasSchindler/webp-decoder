@@ -28,7 +28,7 @@ trap 'rm -f "$TMP_WEBP" "$TMP_PNG" "$TMP_MODES"' EXIT
 		found=1
 		for q in $QUALS; do
 			./build/enc_m09_modeenc --q "$q" --dump-modes "$TMP_MODES" "$f" "$TMP_WEBP" 2>/dev/null
-			./decoder -png "$TMP_WEBP" "$TMP_PNG" 2>/dev/null
+			./build/decoder -png "$TMP_WEBP" "$TMP_PNG" 2>/dev/null
 			rgb=$(./build/enc_pngdump --rgb "$TMP_PNG" - 2>/dev/null | sha256sum | awk '{print $1}')
 			modes=$(sha256sum "$TMP_MODES" | awk '{print $1}')
 			printf '%s  q=%s  rgb=%s  modes=%s\n' "$f" "$q" "$rgb" "$modes"

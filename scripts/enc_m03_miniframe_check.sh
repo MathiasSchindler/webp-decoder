@@ -11,7 +11,7 @@ fi
 
 cd "$root_dir"
 
-make -s decoder enc_pngdump enc_m03_miniframe
+make -s build/decoder enc_pngdump enc_m03_miniframe
 
 out_webp="build/enc_m03_miniframe.webp"
 out_png="build/enc_m03_miniframe.png"
@@ -23,10 +23,10 @@ rm -f "$out_webp" "$out_png" "$out_rgb"
 ./build/enc_m03_miniframe "$out_webp"
 
 # Must decode (macroblocks/tokens).
-./decoder -probe "$out_webp" >/dev/null
+./build/decoder -probe "$out_webp" >/dev/null
 
 # Produce a PNG and re-parse it with our encoder-side PNG reader.
-./decoder -png "$out_webp" "$out_png"
+./build/decoder -png "$out_webp" "$out_png"
 ./build/enc_pngdump "$out_png" > "$out_rgb"
 
 # Sanity: 16*16 RGB bytes.

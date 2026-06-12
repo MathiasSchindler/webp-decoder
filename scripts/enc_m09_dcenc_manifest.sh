@@ -25,7 +25,7 @@ trap 'rm -f "$TMP_WEBP" "$TMP_PNG"' EXIT
 		found=1
 		for q in $QUALS; do
 			./build/enc_m09_dcenc --q "$q" "$f" "$TMP_WEBP" 2>/dev/null
-			./decoder -png "$TMP_WEBP" "$TMP_PNG" 2>/dev/null
+			./build/decoder -png "$TMP_WEBP" "$TMP_PNG" 2>/dev/null
 			h=$(./build/enc_pngdump --rgb "$TMP_PNG" - 2>/dev/null | sha256sum | awk '{print $1}')
 			printf '%s  q=%s  %s\n' "$f" "$q" "$h"
 		done
