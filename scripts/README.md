@@ -49,8 +49,14 @@ scripts/decoder_quality_parity_report.py
 
 - `benchmark_quality_size_matrix.py`
   - Generates a WebP corpus from `images/commons/*.jpg` across configurable quality values and target megapixel buckets, then benchmarks our `-ppm` output against a generated system-libwebp RGB+PPM helper.
-  - Writes `quality_size_per_file.csv`, aggregated `quality_size_matrix.csv`, and `quality_size_heatmap.svg/html`.
+  - Writes `quality_size_per_file.csv`, aggregated `quality_size_matrix.csv`, `quality_size_heatmap.svg/html`, `quality_size_summary.md/html`, and by-quality/by-size summary CSVs.
+  - Pass `--baseline-matrix path/to/quality_size_matrix.csv` to add `quality_size_regression_delta.csv` and a red/green `quality_size_regression_heatmap.svg/html` showing current-vs-baseline changes in our advantage and MP/s.
   - Example: `scripts/benchmark_quality_size_matrix.py --out-dir build/profile/quality-size-matrix --qualities 0,10,20,30,40,50,60,70,80,90,100 --megapixels 0.25,0.5,1,2,4,8,16,32`.
+
+- `profile_micro.py`
+  - Runs the decoder's opt-in `-profile_micro` mode over the generated Commons/q80 stress inputs and combines the per-file CSV rows.
+  - Captures entropy/token sub-timers, coefficient/block classes, reconstruction/prediction/IDCT classes, loopfilter edge categories, and PPM output sub-timers.
+  - Example: `scripts/profile_micro.py --out-dir build/profile/microprofile --runs 1 --max-files 8`.
 
 ## Milestone 1 (container parsing)
 

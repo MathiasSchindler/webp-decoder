@@ -293,22 +293,17 @@ static inline int bool_fast_decode_bool(BoolDecoderFastState* s, uint8_t prob) {
 	uint32_t split = 1u + (((range - 1u) * (uint32_t)prob) >> 8);
 	uint32_t bigsplit = split << 8;
 
-	int bit;
-	if (value >= bigsplit) {
-		range -= split;
-		value -= bigsplit;
-		bit = 1;
-	} else {
-		range = split;
-		bit = 0;
-	}
+	uint32_t bit = value >= bigsplit;
+	uint32_t mask = 0u - bit;
+	value -= bigsplit & mask;
+	range = split + ((range - (split << 1)) & mask);
 
 	uint8_t shift = bool_decoder_norm_shift((uint8_t)range);
 	s->range = range << shift;
 	s->value = value << shift;
 	s->count += shift;
 	bool_fast_refill(s);
-	return bit;
+	return (int)bit;
 }
 
 static inline int bool_fast_decode_bit(BoolDecoderFastState* s) {
@@ -317,22 +312,17 @@ static inline int bool_fast_decode_bit(BoolDecoderFastState* s) {
 	uint32_t split = (range + 1u) >> 1;
 	uint32_t bigsplit = split << 8;
 
-	int bit;
-	if (value >= bigsplit) {
-		range -= split;
-		value -= bigsplit;
-		bit = 1;
-	} else {
-		range = split;
-		bit = 0;
-	}
+	uint32_t bit = value >= bigsplit;
+	uint32_t mask = 0u - bit;
+	value -= bigsplit & mask;
+	range = split + ((range - (split << 1)) & mask);
 
 	uint8_t shift = bool_decoder_norm_shift((uint8_t)range);
 	s->range = range << shift;
 	s->value = value << shift;
 	s->count += shift;
 	bool_fast_refill(s);
-	return bit;
+	return (int)bit;
 }
 
 static inline uint32_t vp8_read_extra_cat_fast(BoolDecoderFastState* s, int cat) {
@@ -378,6 +368,48 @@ static inline void record_coeff_token(Vp8CoeffStats* stats, int token, uint32_t 
 	if (token == dct_eob) stats->coeff_eob_tokens++;
 	else if (token == DCT_0) stats->coeff_zero_tokens++;
 	else if (token == DCT_1) stats->coeff_one_tokens++;
+}
+
+typedef enum {
+	COEFFS_ZERO = 0,
+	COEFFS_DC_ONLY = 1,
+	COEFFS_HAS_AC = 2,
+} EntropyCoeffClass;
+
+static inline uint64_t prof_now_ns(const Vp8EntropyProfile* profile) {
+	return profile ? os_monotonic_raw_ns() : 0;
+}
+
+static inline void prof_add_ns(uint64_t* dst, uint64_t start) {
+	if (dst && start) *dst += os_monotonic_raw_ns() - start;
+}
+
+static inline void prof_note_refill(Vp8EntropyProfile* profile, const BoolDecoder* d, const uint8_t* before_buf,
+                                    uint32_t before_overread, uint64_t elapsed_ns) {
+	if (!profile) return;
+	if (d->buf != before_buf || d->overread_bytes != before_overread) {
+		profile->bool_refill_events++;
+		profile->bool_refill_ns += elapsed_ns;
+	}
+}
+
+static EntropyCoeffClass entropy_coeffs_classify(const int16_t coeffs[16]) {
+	if (coeffs[0] != 0) {
+		for (int i = 1; i < 16; i++) {
+			if (coeffs[i] != 0) return COEFFS_HAS_AC;
+		}
+		return COEFFS_DC_ONLY;
+	}
+	for (int i = 1; i < 16; i++) {
+		if (coeffs[i] != 0) return COEFFS_HAS_AC;
+	}
+	return COEFFS_ZERO;
+}
+
+static void entropy_profile_zero(Vp8EntropyProfile* profile) {
+	if (!profile) return;
+	volatile uint64_t* p = (volatile uint64_t*)(void*)profile;
+	for (size_t i = 0; i < sizeof(*profile) / sizeof(uint64_t); i++) p[i] = 0;
 }
 
 static inline int read_coeff_token_profiled(BoolDecoder* d,
@@ -494,7 +526,7 @@ static int decode_block_fast_state(BoolDecoderFastState* bd,
 		int band = (int)coeff_bands[i];
 		const uint8_t* probs = coeff_probs_plane[band][ctx3];
 
-		if (!prev_token_was_zero && !bool_fast_decode_bool(bd, probs[0])) break;
+		if (BOOL_DECODER_UNLIKELY(!prev_token_was_zero && !bool_fast_decode_bool(bd, probs[0]))) break;
 		if (!bool_fast_decode_bool(bd, probs[1])) {
 			ctx3 = 0;
 			prev_token_was_zero = 1;
@@ -502,7 +534,7 @@ static int decode_block_fast_state(BoolDecoderFastState* bd,
 		}
 
 		int abs_value;
-		if (!bool_fast_decode_bool(bd, probs[2])) {
+		if (BOOL_DECODER_LIKELY(!bool_fast_decode_bool(bd, probs[2]))) {
 			abs_value = 1;
 			ctx3 = 1;
 		} else {
@@ -543,6 +575,7 @@ static int decode_block_profiled(BoolDecoder* d,
                                  uint8_t above_has,
                                  int16_t out_block[16],
                                  Vp8CoeffStats* out_stats,
+                                 Vp8EntropyProfile* profile,
                                  uint32_t mb_index,
                                  uint32_t plane,
                                  uint32_t block_index) {
@@ -554,7 +587,15 @@ static int decode_block_profiled(BoolDecoder* d,
 		int band = (int)coeff_bands[i];
 		const uint8_t* probs = coeff_probs_plane[band][ctx3];
 
+		const uint8_t* before_buf = d->buf;
+		uint32_t before_overread = d->overread_bytes;
+		uint64_t t0 = prof_now_ns(profile);
 		int token = read_coeff_token_profiled(d, probs, prev_token_was_zero, out_stats);
+		uint64_t elapsed = t0 ? (os_monotonic_raw_ns() - t0) : 0;
+		if (profile) {
+			profile->token_tree_ns += elapsed;
+			prof_note_refill(profile, d, before_buf, before_overread, elapsed);
+		}
 		if (bool_decoder_overread(d)) {
 			record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/0);
 		}
@@ -568,7 +609,15 @@ static int decode_block_profiled(BoolDecoder* d,
 		} else {
 			static const int cat_base[6] = {5, 7, 11, 19, 35, 67};
 			int cat = token - dct_cat1;
+			before_buf = d->buf;
+			before_overread = d->overread_bytes;
+			t0 = prof_now_ns(profile);
 			uint32_t extra = vp8_read_extra_cat_profiled(d, cat, out_stats);
+			elapsed = t0 ? (os_monotonic_raw_ns() - t0) : 0;
+			if (profile) {
+				profile->token_extra_bits_ns += elapsed;
+				prof_note_refill(profile, d, before_buf, before_overread, elapsed);
+			}
 			if (bool_decoder_overread(d)) {
 				record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/1);
 			}
@@ -578,7 +627,15 @@ static int decode_block_profiled(BoolDecoder* d,
 		if (abs_value != 0) {
 			out_stats->coeff_bool_calls++;
 			out_stats->coeff_sign_bits++;
+			before_buf = d->buf;
+			before_overread = d->overread_bytes;
+			t0 = prof_now_ns(profile);
 			int sign = bool_decode_bit(d);
+			elapsed = t0 ? (os_monotonic_raw_ns() - t0) : 0;
+			if (profile) {
+				profile->token_sign_bits_ns += elapsed;
+				prof_note_refill(profile, d, before_buf, before_overread, elapsed);
+			}
 			if (bool_decoder_overread(d)) {
 				record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/2);
 			}
@@ -590,9 +647,11 @@ static int decode_block_profiled(BoolDecoder* d,
 			if (absu > out_stats->coeff_abs_max) out_stats->coeff_abs_max = absu;
 		}
 
+		t0 = prof_now_ns(profile);
 		if (abs_value == 0) ctx3 = 0;
 		else if (abs_value == 1) ctx3 = 1;
 		else ctx3 = 2;
+		if (profile) profile->token_context_update_ns += os_monotonic_raw_ns() - t0;
 
 		out_stats->coeff_context_updates++;
 		prev_token_was_zero = (token == DCT_0);
@@ -604,6 +663,7 @@ static int decode_block_profiled(BoolDecoder* d,
 static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHeader* kf, uint8_t total_partitions,
 					  const MbInfo* mbs, uint32_t mb_cols, uint32_t mb_rows, Vp8CoeffStats* out,
 					  Vp8DecodedFrame* frame, uint64_t* io_hash, int collect_stats,
+					  Vp8EntropyProfile* profile,
 					  Vp8MacroblockCoeffVisitor visitor, void* visitor_user,
 					  Vp8MacroblockVisitor mb_visitor, void* mb_visitor_user,
 					  const uint8_t* bpred_modes) {
@@ -688,8 +748,13 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
 					if (coeff_out == block) memset(block, 0, sizeof(block));
 					if (collect_stats) {
+						uint64_t t0 = prof_now_ns(profile);
 						has = decode_block_profiled(&d, g_coeff_probs[1], 0, left_has, above_has, coeff_out, out,
-						                           mb_index, /*plane=*/1, /*block_index=*/0);
+						                           profile, mb_index, /*plane=*/1, /*block_index=*/0);
+						if (profile) {
+							profile->token_plane_ns[1] += os_monotonic_raw_ns() - t0;
+							profile->token_block_class[1][entropy_coeffs_classify(coeff_out)]++;
+						}
 					} else {
 						has = decode_block_fast_state(&token_bd, g_coeff_probs[1], 0, left_has, above_has, coeff_out);
 					}
@@ -700,6 +765,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 						}
 					}
 				} else {
+					if (profile) profile->token_block_class[1][COEFFS_ZERO]++;
 					if (io_hash) {
 						for (int i = 0; i < 16; i++) {
 							*io_hash = fnv1a64_i32(*io_hash, 0);
@@ -734,9 +800,14 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 						int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
 						if (coeff_out == block) memset(block, 0, sizeof(block));
 						if (collect_stats) {
+							uint64_t t0 = prof_now_ns(profile);
 							has = decode_block_profiled(&d, g_coeff_probs[y_plane], first_coeff, left_has, above_has,
-							                           coeff_out, out, mb_index, /*plane=*/0,
+							                           coeff_out, out, profile, mb_index, /*plane=*/0,
 							                           /*block_index=*/(uint32_t)(rr * 4 + cc));
+							if (profile) {
+								profile->token_plane_ns[0] += os_monotonic_raw_ns() - t0;
+								profile->token_block_class[0][entropy_coeffs_classify(coeff_out)]++;
+							}
 						} else {
 							has = decode_block_fast_state(&token_bd, g_coeff_probs[y_plane], first_coeff, left_has, above_has, coeff_out);
 						}
@@ -747,6 +818,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 							}
 						}
 					} else {
+						if (profile) profile->token_block_class[0][COEFFS_ZERO]++;
 						if (io_hash) {
 							for (int i = 0; i < 16; i++) {
 								*io_hash = fnv1a64_i32(*io_hash, 0);
@@ -782,9 +854,14 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 						int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
 						if (coeff_out == block) memset(block, 0, sizeof(block));
 						if (collect_stats) {
+							uint64_t t0 = prof_now_ns(profile);
 							has = decode_block_profiled(&d, g_coeff_probs[2], 0, left_has, above_has, coeff_out, out,
-							                           mb_index, /*plane=*/2,
+							                           profile, mb_index, /*plane=*/2,
 							                           /*block_index=*/(uint32_t)(rr * 2 + cc));
+							if (profile) {
+								profile->token_plane_ns[2] += os_monotonic_raw_ns() - t0;
+								profile->token_block_class[2][entropy_coeffs_classify(coeff_out)]++;
+							}
 						} else {
 							has = decode_block_fast_state(&token_bd, g_coeff_probs[2], 0, left_has, above_has, coeff_out);
 						}
@@ -795,6 +872,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 							}
 						}
 					} else {
+						if (profile) profile->token_block_class[2][COEFFS_ZERO]++;
 						if (io_hash) {
 							for (int i = 0; i < 16; i++) {
 								*io_hash = fnv1a64_i32(*io_hash, 0);
@@ -828,9 +906,14 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 						int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
 						if (coeff_out == block) memset(block, 0, sizeof(block));
 						if (collect_stats) {
+							uint64_t t0 = prof_now_ns(profile);
 							has = decode_block_profiled(&d, g_coeff_probs[2], 0, left_has, above_has, coeff_out, out,
-							                           mb_index, /*plane=*/3,
+							                           profile, mb_index, /*plane=*/3,
 							                           /*block_index=*/(uint32_t)(rr * 2 + cc));
+							if (profile) {
+								profile->token_plane_ns[3] += os_monotonic_raw_ns() - t0;
+								profile->token_block_class[3][entropy_coeffs_classify(coeff_out)]++;
+							}
 						} else {
 							has = decode_block_fast_state(&token_bd, g_coeff_probs[2], 0, left_has, above_has, coeff_out);
 						}
@@ -841,6 +924,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 							}
 						}
 					} else {
+						if (profile) profile->token_block_class[3][COEFFS_ZERO]++;
 						if (io_hash) {
 							for (int i = 0; i < 16; i++) {
 								*io_hash = fnv1a64_i32(*io_hash, 0);
@@ -965,12 +1049,14 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
                                              int collect_stats,
                                              int store_syntax,
                                              int store_coeffs,
+                                             Vp8EntropyProfile* profile,
                                              Vp8MacroblockCoeffVisitor visitor,
                                              void* visitor_user,
                                              Vp8MacroblockVisitor mb_visitor,
                                              void* mb_visitor_user) {
 	if (!out) return -1;
 	*out = (Vp8DecodedFrame){0};
+	entropy_profile_zero(profile);
 
 	Vp8KeyFrameHeader kf;
 	if (vp8_parse_keyframe_header(vp8_payload, &kf) != 0) {
@@ -1045,6 +1131,7 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 	out->stats.part0_size_bytes = (uint32_t)part0.size;
 	BoolDecoder d;
 	if (bool_decoder_init(&d, part0) != 0) return -1;
+	uint64_t part0_header_start = prof_now_ns(profile);
 
 	// Key-frame-only: color_space and clamping_type.
 	(void)bool_decode_bool(&d, 128);
@@ -1149,6 +1236,7 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 	}
 
 	// Token partition size table is ignored for now; our test corpus has Total partitions: 1.
+	prof_add_ns(profile ? &profile->part0_header_ns : NULL, part0_header_start);
 
 	// Macroblock prediction records (partition 0 remainder)
 	MbInfo* mbs = (MbInfo*)xcalloc_array(mb_total, sizeof(MbInfo));
@@ -1173,24 +1261,31 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 	for (uint32_t mb_r = 0; mb_r < mb_rows; mb_r++) {
 		intra_bmode left_bmodes[4] = {B_DC_PRED, B_DC_PRED, B_DC_PRED, B_DC_PRED};
 		for (uint32_t mb_c = 0; mb_c < mb_cols; mb_c++) {
+			uint64_t mb_syntax_start = prof_now_ns(profile);
 			uint32_t mb_index = mb_r * mb_cols + mb_c;
 			uint8_t seg_id = 0;
 			mbs[mb_index].bmode_offset = MBINFO_NO_BMODE_OFFSET;
 			if (segmentation_enabled && update_mb_segmentation_map) {
+				uint64_t t0 = prof_now_ns(profile);
 				seg_id = read_mb_segment_fast(&mb_bd, mb_segment_tree_probs);
+				prof_add_ns(profile ? &profile->part0_segment_read_ns : NULL, t0);
 			}
 			mbs[mb_index].segment_id = seg_id;
 			if (out->segment_id) out->segment_id[mb_index] = seg_id;
 
 			uint8_t skip_coeff = 0;
 			if (mb_no_skip_coeff) {
+				uint64_t t0 = prof_now_ns(profile);
 				skip_coeff = (uint8_t)bool_fast_decode_bool(&mb_bd, prob_skip_false);
+				prof_add_ns(profile ? &profile->part0_skip_read_ns : NULL, t0);
 			}
 			if (skip_coeff) mbs[mb_index].flags |= MBINFO_SKIP_COEFF;
 			if (out->skip_coeff) out->skip_coeff[mb_index] = skip_coeff;
 			if (collect_stats && skip_coeff) out->stats.mb_skip_coeff++;
 
+			uint64_t ymode_t0 = prof_now_ns(profile);
 			intra_mbmode ymode = read_kf_ymode_fast(&mb_bd);
+			prof_add_ns(profile ? &profile->part0_ymode_read_ns : NULL, ymode_t0);
 			mbs[mb_index].ymode = (uint8_t)ymode;
 			if (out->ymode) out->ymode[mb_index] = (uint8_t)ymode;
 			if (collect_stats && (unsigned)ymode < 5u) out->stats.ymode_counts[(unsigned)ymode]++;
@@ -1199,6 +1294,7 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 				intra_bmode local[4][4];
 				for (int rr = 0; rr < 4; rr++)
 					for (int cc = 0; cc < 4; cc++) local[rr][cc] = B_DC_PRED;
+				uint64_t bmode_t0 = prof_now_ns(profile);
 				for (int rr = 0; rr < 4; rr++) {
 					for (int cc = 0; cc < 4; cc++) {
 						intra_bmode A = (rr == 0) ? above_bmodes[mb_c * 4 + cc] : local[rr - 1][cc];
@@ -1209,6 +1305,7 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 						if (collect_stats && (unsigned)local[rr][cc] < 10u) out->stats.bmode_counts[(unsigned)local[rr][cc]]++;
 					}
 				}
+				prof_add_ns(profile ? &profile->part0_bmode_read_ns : NULL, bmode_t0);
 				for (int cc = 0; cc < 4; cc++) above_bmodes[mb_c * 4 + cc] = local[3][cc];
 				for (int rr = 0; rr < 4; rr++) left_bmodes[rr] = local[rr][3];
 				if (mb_visitor && bpred_mode_store_append(&bpred_store, local, &mbs[mb_index].bmode_offset) != 0) {
@@ -1228,10 +1325,13 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 						if (out->bmode) out->bmode[(size_t)mb_index * 16u + (size_t)(rr * 4 + cc)] = (uint8_t)derived;
 			}
 
+			uint64_t uv_t0 = prof_now_ns(profile);
 			unsigned uv_mode = read_kf_uv_mode_fast(&mb_bd);
+			prof_add_ns(profile ? &profile->part0_uvmode_read_ns : NULL, uv_t0);
 			mbs[mb_index].uv_mode = (uint8_t)uv_mode;
 			if (out->uv_mode) out->uv_mode[mb_index] = (uint8_t)uv_mode;
 			if (collect_stats && uv_mode < 4u) out->stats.uv_mode_counts[uv_mode]++;
+			prof_add_ns(profile ? &profile->part0_mb_syntax_ns : NULL, mb_syntax_start);
 		}
 	}
 
@@ -1283,8 +1383,9 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 	}
 
 	uint64_t h = collect_stats ? fnv1a64_init() : 0;
+	uint64_t token_decode_start = prof_now_ns(profile);
 	if (decode_all_coeffs_keyframe(vp8_payload, &kf, total_partitions, mbs, mb_cols, mb_rows, &out->stats,
-	                               (store_syntax || store_coeffs) ? out : NULL, collect_stats ? &h : NULL, collect_stats,
+	                               (store_syntax || store_coeffs) ? out : NULL, collect_stats ? &h : NULL, collect_stats, profile,
 	                               visitor, visitor_user, mb_visitor, mb_visitor_user, bpred_store.data) != 0) {
 		bpred_mode_store_free(&bpred_store);
 		free(above_bmodes);
@@ -1292,6 +1393,7 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 		vp8_decoded_frame_free(out);
 		return -1;
 	}
+	prof_add_ns(profile ? &profile->token_decode_ns : NULL, token_decode_start);
 	bpred_mode_store_free(&bpred_store);
 	free(above_bmodes);
 
@@ -1323,7 +1425,12 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 
 int vp8_decode_decoded_frame(ByteSpan vp8_payload, Vp8DecodedFrame* out) {
 	return vp8_decode_decoded_frame_internal(vp8_payload, out, /*collect_stats=*/0, /*store_syntax=*/1, /*store_coeffs=*/1,
-	                                         NULL, NULL, NULL, NULL);
+	                                         NULL, NULL, NULL, NULL, NULL);
+}
+
+int vp8_decode_decoded_frame_profiled(ByteSpan vp8_payload, Vp8DecodedFrame* out, Vp8EntropyProfile* profile) {
+	return vp8_decode_decoded_frame_internal(vp8_payload, out, /*collect_stats=*/1, /*store_syntax=*/1, /*store_coeffs=*/1,
+	                                         profile, NULL, NULL, NULL, NULL);
 }
 
 int vp8_decode_decoded_frame_visit_coeffs(ByteSpan vp8_payload, Vp8DecodedFrame* out,
@@ -1333,7 +1440,7 @@ int vp8_decode_decoded_frame_visit_coeffs(ByteSpan vp8_payload, Vp8DecodedFrame*
 		return -1;
 	}
 	return vp8_decode_decoded_frame_internal(vp8_payload, out, /*collect_stats=*/0, /*store_syntax=*/1, /*store_coeffs=*/0,
-	                                         visitor, user, NULL, NULL);
+	                                         NULL, visitor, user, NULL, NULL);
 }
 
 int vp8_decode_decoded_frame_visit_macroblocks(ByteSpan vp8_payload, Vp8DecodedFrame* out,
@@ -1343,14 +1450,14 @@ int vp8_decode_decoded_frame_visit_macroblocks(ByteSpan vp8_payload, Vp8DecodedF
 		return -1;
 	}
 	return vp8_decode_decoded_frame_internal(vp8_payload, out, /*collect_stats=*/0, /*store_syntax=*/0, /*store_coeffs=*/0,
-	                                         NULL, NULL, visitor, user);
+	                                         NULL, NULL, NULL, visitor, user);
 }
 
 int vp8_decode_coeff_stats(ByteSpan vp8_payload, Vp8CoeffStats* out) {
 	if (!out) return -1;
 	Vp8DecodedFrame f;
 	if (vp8_decode_decoded_frame_internal(vp8_payload, &f, /*collect_stats=*/1, /*store_syntax=*/0, /*store_coeffs=*/0,
-	                                      NULL, NULL, NULL, NULL) != 0)
+	                                      NULL, NULL, NULL, NULL, NULL) != 0)
 		return -1;
 	*out = f.stats;
 	vp8_decoded_frame_free(&f);

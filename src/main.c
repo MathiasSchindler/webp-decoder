@@ -5,6 +5,7 @@
 #include "decoder/vp8_frame_header_basic.h"
 #include "decoder/vp8_tokens.h"
 #include "decoder/vp8_recon.h"
+#include "decoder/vp8_loopfilter.h"
 
 #include "decoder/yuv2rgb_ppm.h"
 #include "decoder/yuv2rgb_png.h"
@@ -26,6 +27,7 @@ static void usage(void) {
 	fmt_write_str(2, "  decoder -ppm <file.webp> <out.ppm>\n");
 	fmt_write_str(2, "  decoder -png <file.webp> <out.png>\n");
 	fmt_write_str(2, "  decoder -profile_stages <file.webp> <out.ppm>\n");
+	fmt_write_str(2, "  decoder -profile_micro <file.webp> <out.ppm>\n");
 	fmt_write_str(2, "  decoder -diff_mb <file.webp> <oracle.i420>\n");
 }
 
@@ -803,6 +805,18 @@ static void print_profile_row(const char* kind, const char* name, uint64_t value
 	fmt_write_nl(1);
 }
 
+static void print_profile_row_parts(const char* kind, const char* a, const char* b, const char* c, const char* d, uint64_t value) {
+	fmt_write_str(1, kind);
+	fmt_write_str(1, ",");
+	fmt_write_str(1, a);
+	if (b) fmt_write_str(1, b);
+	if (c) fmt_write_str(1, c);
+	if (d) fmt_write_str(1, d);
+	fmt_write_str(1, ",");
+	fmt_write_u64(1, value);
+	fmt_write_nl(1);
+}
+
 static int cmd_profile_stages(const char* in_path, const char* out_path) {
 	uint64_t total_start = os_monotonic_raw_ns();
 	uint64_t t0 = total_start;
@@ -919,6 +933,197 @@ static int cmd_profile_stages(const char* in_path, const char* out_path) {
 	print_profile_row("stage", "ppm_output_total", ppm_profile.total_ns);
 	print_profile_row("stage", "output_close", output_close_ns);
 	print_profile_row("stage", "total_profiled", total_ns);
+	return 0;
+}
+
+static int cmd_profile_micro(const char* in_path, const char* out_path) {
+	uint64_t total_start = os_monotonic_raw_ns();
+	ByteSpan file;
+	file.data = NULL;
+	file.size = 0;
+	if (os_map_file_readonly(in_path, &file) != 0) {
+		fmt_write_str(2, "error: cannot open/map file\n");
+		return 1;
+	}
+
+	WebPContainer c;
+	if (webp_parse_simple_lossy(file, &c) != 0) {
+		fmt_write_str(2, "error: not a supported simple lossy WebP (RIFF/WEBP + single VP8 chunk)\n");
+		os_unmap_file(file);
+		return 1;
+	}
+	ByteSpan vp8_payload = {
+		.data = file.data + c.vp8_chunk_offset,
+		.size = c.vp8_chunk_size,
+	};
+
+	Vp8KeyFrameHeader kf;
+	if (vp8_parse_keyframe_header(vp8_payload, &kf) != 0 || !kf.is_key_frame) {
+		fmt_write_str(2, "error: VP8 key-frame header parse failed\n");
+		os_unmap_file(file);
+		return 1;
+	}
+
+	Vp8DecodedFrame decoded;
+	Vp8EntropyProfile entropy_profile;
+	uint64_t t0 = os_monotonic_raw_ns();
+	if (vp8_decode_decoded_frame_profiled(vp8_payload, &decoded, &entropy_profile) != 0) {
+		fmt_write_str(2, "error: VP8 profiled macroblock/token decode failed\n");
+		os_unmap_file(file);
+		return 1;
+	}
+	uint64_t entropy_total_ns = os_monotonic_raw_ns() - t0;
+
+	Yuv420Image filtered;
+	Vp8ReconProfile recon_profile;
+	Vp8LoopfilterProfile loopfilter_profile;
+	t0 = os_monotonic_raw_ns();
+	if (vp8_reconstruct_keyframe_yuv_filtered_profiled(&kf, &decoded, &filtered, &recon_profile, &loopfilter_profile) != 0) {
+		fmt_write_str(2, "error: VP8 profiled reconstruction/loopfilter failed\n");
+		vp8_decoded_frame_free(&decoded);
+		os_unmap_file(file);
+		return 1;
+	}
+	uint64_t recon_loopfilter_total_ns = os_monotonic_raw_ns() - t0;
+
+	t0 = os_monotonic_raw_ns();
+	int fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0) {
+		fmt_write_str(2, "error: cannot open output file\n");
+		yuv420_free(&filtered);
+		vp8_decoded_frame_free(&decoded);
+		os_unmap_file(file);
+		return 1;
+	}
+	Yuv420PpmProfile ppm_profile;
+	if (yuv420_write_ppm_fd_profiled(fd, &filtered, &ppm_profile) != 0) {
+		fmt_write_str(2, "error: PPM write failed\n");
+		(void)close(fd);
+		yuv420_free(&filtered);
+		vp8_decoded_frame_free(&decoded);
+		os_unmap_file(file);
+		return 1;
+	}
+	(void)close(fd);
+	uint64_t output_total_ns = os_monotonic_raw_ns() - t0;
+
+	uint64_t width = filtered.width;
+	uint64_t height = filtered.height;
+	yuv420_free(&filtered);
+	uint64_t total_ns = os_monotonic_raw_ns() - total_start;
+
+	fmt_write_str(1, "kind,name,value\n");
+	print_profile_row("meta", "width", width);
+	print_profile_row("meta", "height", height);
+	print_profile_row("stage_ns", "entropy_total_wall", entropy_total_ns);
+	print_profile_row("stage_ns", "reconstruction_loopfilter_wall", recon_loopfilter_total_ns);
+	print_profile_row("stage_ns", "ppm_output_wall", output_total_ns);
+	print_profile_row("stage_ns", "total_profile_micro", total_ns);
+
+	print_profile_row("entropy_ns", "part0_header", entropy_profile.part0_header_ns);
+	print_profile_row("entropy_ns", "part0_mb_syntax", entropy_profile.part0_mb_syntax_ns);
+	print_profile_row("entropy_ns", "part0_segment_read", entropy_profile.part0_segment_read_ns);
+	print_profile_row("entropy_ns", "part0_skip_read", entropy_profile.part0_skip_read_ns);
+	print_profile_row("entropy_ns", "part0_ymode_read", entropy_profile.part0_ymode_read_ns);
+	print_profile_row("entropy_ns", "part0_bmode_read", entropy_profile.part0_bmode_read_ns);
+	print_profile_row("entropy_ns", "part0_uvmode_read", entropy_profile.part0_uvmode_read_ns);
+	print_profile_row("entropy_ns", "token_decode", entropy_profile.token_decode_ns);
+	print_profile_row("entropy_ns", "token_tree", entropy_profile.token_tree_ns);
+	print_profile_row("entropy_ns", "token_extra_bits", entropy_profile.token_extra_bits_ns);
+	print_profile_row("entropy_ns", "token_sign_bits", entropy_profile.token_sign_bits_ns);
+	print_profile_row("entropy_ns", "token_context_update", entropy_profile.token_context_update_ns);
+	print_profile_row("entropy_count", "bool_refill_events", entropy_profile.bool_refill_events);
+	print_profile_row("entropy_ns", "bool_refill_inclusive", entropy_profile.bool_refill_ns);
+	static const char* const plane_names[4] = {"y", "y2", "u", "v"};
+	static const char* const class_names[3] = {"zero", "dc_only", "has_ac"};
+	for (int p = 0; p < 4; p++) {
+		print_profile_row_parts("entropy_ns", "token_plane_", plane_names[p], NULL, NULL, entropy_profile.token_plane_ns[p]);
+		for (int cidx = 0; cidx < 3; cidx++) {
+			print_profile_row_parts("entropy_count", "token_block_", plane_names[p], "_", class_names[cidx],
+			                        entropy_profile.token_block_class[p][cidx]);
+		}
+	}
+	print_profile_row("entropy_count", "coeff_token_reads", decoded.stats.coeff_token_reads);
+	print_profile_row("entropy_count", "coeff_token_path_bits", decoded.stats.coeff_token_path_bits);
+	print_profile_row("entropy_count", "coeff_zero_tokens", decoded.stats.coeff_zero_tokens);
+	print_profile_row("entropy_count", "coeff_one_tokens", decoded.stats.coeff_one_tokens);
+	print_profile_row("entropy_count", "coeff_eob_tokens", decoded.stats.coeff_eob_tokens);
+	print_profile_row("entropy_count", "coeff_extra_bits", decoded.stats.coeff_extra_bits);
+	print_profile_row("entropy_count", "coeff_sign_bits", decoded.stats.coeff_sign_bits);
+	print_profile_row("entropy_count", "coeff_context_updates", decoded.stats.coeff_context_updates);
+
+	static const char* const ymode_names[5] = {"dc", "v", "h", "tm", "b_pred"};
+	for (int i = 0; i < 5; i++) {
+		print_profile_row_parts("recon_ns", "y_predict_", ymode_names[i], NULL, NULL, recon_profile.y_prediction_ns[i]);
+		print_profile_row_parts("recon_count", "y_predict_", ymode_names[i], "_calls", NULL,
+		                        recon_profile.y_prediction_calls[i]);
+	}
+	static const char* const uv_names[4] = {"dc", "v", "h", "tm"};
+	for (int i = 0; i < 4; i++) {
+		print_profile_row_parts("recon_ns", "uv_predict_", uv_names[i], NULL, NULL, recon_profile.uv_prediction_ns[i]);
+		print_profile_row_parts("recon_count", "uv_predict_", uv_names[i], "_calls", NULL,
+		                        recon_profile.uv_prediction_calls[i]);
+	}
+	static const char* const b_names[10] = {"b_dc", "b_tm", "b_ve", "b_he", "b_ld", "b_rd", "b_vr", "b_vl", "b_hd", "b_hu"};
+	for (int i = 0; i < 10; i++) {
+		print_profile_row_parts("recon_ns", "b_predict_", b_names[i], NULL, NULL, recon_profile.b_prediction_ns[i]);
+		print_profile_row_parts("recon_count", "b_predict_", b_names[i], "_calls", NULL,
+		                        recon_profile.b_prediction_calls[i]);
+	}
+	for (int i = 0; i < 3; i++) {
+		print_profile_row_parts("recon_ns", "idct_", class_names[i], NULL, NULL, recon_profile.idct_ns[i]);
+		print_profile_row_parts("recon_ns", "y2_wht_", class_names[i], NULL, NULL, recon_profile.y2_wht_ns[i]);
+	}
+	print_profile_row("recon_ns", "copy_block", recon_profile.copy_block_ns);
+	print_profile_row("recon_ns", "add_constant", recon_profile.add_constant_ns);
+	print_profile_row("recon_ns", "add_residue", recon_profile.add_residue_ns);
+	print_profile_row("recon_count", "copy_block_calls", recon_profile.copy_block_calls);
+	print_profile_row("recon_count", "add_constant_calls", recon_profile.add_constant_calls);
+	print_profile_row("recon_count", "add_residue_calls", recon_profile.add_residue_calls);
+	for (int p = 0; p < 4; p++) {
+		for (int cidx = 0; cidx < 3; cidx++) {
+			print_profile_row_parts("recon_count", "recon_block_", plane_names[p], "_", class_names[cidx],
+			                        recon_profile.block_class[p][cidx]);
+		}
+	}
+
+	print_profile_row("loopfilter_count", "disabled_or_skipped_mbs", loopfilter_profile.disabled_or_skipped_mbs);
+#define PRINT_LF(field) print_profile_row("loopfilter_ns", #field, loopfilter_profile.field)
+#define PRINT_LF_CALLS(field) print_profile_row("loopfilter_count", #field, loopfilter_profile.field)
+	PRINT_LF(simple_vertical_mb_luma_ns);
+	PRINT_LF(simple_vertical_sub_luma_ns);
+	PRINT_LF(simple_horizontal_mb_luma_ns);
+	PRINT_LF(simple_horizontal_sub_luma_ns);
+	PRINT_LF(normal_vertical_mb_luma_ns);
+	PRINT_LF(normal_vertical_mb_chroma_ns);
+	PRINT_LF(normal_vertical_sub_luma_ns);
+	PRINT_LF(normal_vertical_sub_chroma_ns);
+	PRINT_LF(normal_horizontal_mb_luma_ns);
+	PRINT_LF(normal_horizontal_mb_chroma_ns);
+	PRINT_LF(normal_horizontal_sub_luma_ns);
+	PRINT_LF(normal_horizontal_sub_chroma_ns);
+	PRINT_LF_CALLS(simple_vertical_mb_luma_calls);
+	PRINT_LF_CALLS(simple_vertical_sub_luma_calls);
+	PRINT_LF_CALLS(simple_horizontal_mb_luma_calls);
+	PRINT_LF_CALLS(simple_horizontal_sub_luma_calls);
+	PRINT_LF_CALLS(normal_vertical_mb_luma_calls);
+	PRINT_LF_CALLS(normal_vertical_mb_chroma_calls);
+	PRINT_LF_CALLS(normal_vertical_sub_luma_calls);
+	PRINT_LF_CALLS(normal_vertical_sub_chroma_calls);
+	PRINT_LF_CALLS(normal_horizontal_mb_luma_calls);
+	PRINT_LF_CALLS(normal_horizontal_mb_chroma_calls);
+	PRINT_LF_CALLS(normal_horizontal_sub_luma_calls);
+	PRINT_LF_CALLS(normal_horizontal_sub_chroma_calls);
+#undef PRINT_LF
+#undef PRINT_LF_CALLS
+
+	print_profile_row("ppm_ns", "ppm_header_write", ppm_profile.header_write_ns);
+	print_profile_row("ppm_ns", "yuv_to_rgb_output_format", ppm_profile.yuv_to_rgb_ns);
+	print_profile_row("ppm_ns", "ppm_pixel_writes", ppm_profile.pixel_write_ns);
+	print_profile_row("ppm_ns", "ppm_output_total", ppm_profile.total_ns);
+
+	vp8_decoded_frame_free(&decoded);
+	os_unmap_file(file);
 	return 0;
 }
 
@@ -1108,6 +1313,13 @@ int main(int argc, char** argv) {
 			return 2;
 		}
 		return cmd_profile_stages(argv[2], argv[3]);
+	}
+	if (strcmp(argv[1], "-profile_micro") == 0) {
+		if (argc != 4) {
+			usage();
+			return 2;
+		}
+		return cmd_profile_micro(argv[2], argv[3]);
 	}
 	if (argv[1][0] == '-' && argv[1][1] == 'i' && argv[1][2] == 'n' && argv[1][3] == 'f' &&
 	    argv[1][4] == 'o' && argv[1][5] == '\0') {

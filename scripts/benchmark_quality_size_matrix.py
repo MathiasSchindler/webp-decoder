@@ -232,6 +232,259 @@ def color_for_advantage(percent: float) -> str:
     return f"rgb({r},{g},{b})"
 
 
+def color_for_delta(delta_pp: float) -> str:
+    intensity = min(abs(delta_pp) / 25.0, 1.0)
+    if delta_pp >= 0.0:
+        r = int(245 * (1.0 - intensity) + 30 * intensity)
+        g = int(250 * (1.0 - intensity) + 150 * intensity)
+        b = int(245 * (1.0 - intensity) + 60 * intensity)
+    else:
+        r = int(250 * (1.0 - intensity) + 190 * intensity)
+        g = int(245 * (1.0 - intensity) + 45 * intensity)
+        b = int(245 * (1.0 - intensity) + 45 * intensity)
+    return f"rgb({r},{g},{b})"
+
+
+def row_float(row: dict[str, object], name: str) -> float:
+    return float(row[name])
+
+
+def matrix_key(row: dict[str, object]) -> tuple[str, float]:
+    return str(row["quality"]), round(float(row["target_mpix"]), 9)
+
+
+def faster_label(advantage_pct: float) -> str:
+    if advantage_pct > 0.0005:
+        return "ours"
+    if advantage_pct < -0.0005:
+        return "libwebp"
+    return "tie"
+
+
+def relative_delta_pct(current: float, baseline: float) -> str:
+    if baseline == 0.0:
+        return ""
+    return f"{(current / baseline - 1.0) * 100.0:.3f}"
+
+
+def write_dict_csv(path: Path, rows: list[dict[str, object]], fieldnames: list[str]) -> None:
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def load_matrix_csv(path: Path) -> dict[tuple[str, float], dict[str, object]]:
+    rows: dict[tuple[str, float], dict[str, object]] = {}
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        required = {"target_mpix", "quality", "ours_mp_s", "libwebp_mp_s", "ours_advantage_pct"}
+        missing = required.difference(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{path} is missing required columns: {', '.join(sorted(missing))}")
+        for row in reader:
+            rows[matrix_key(row)] = row
+    return rows
+
+
+def compute_regression_rows(
+    cell_rows: list[dict[str, object]],
+    baseline_rows: dict[tuple[str, float], dict[str, object]],
+) -> list[dict[str, object]]:
+    delta_rows: list[dict[str, object]] = []
+    for current in cell_rows:
+        baseline = baseline_rows.get(matrix_key(current))
+        if baseline is None:
+            continue
+        current_adv = row_float(current, "ours_advantage_pct")
+        baseline_adv = row_float(baseline, "ours_advantage_pct")
+        current_ours = row_float(current, "ours_mp_s")
+        baseline_ours = row_float(baseline, "ours_mp_s")
+        current_lib = row_float(current, "libwebp_mp_s")
+        baseline_lib = row_float(baseline, "libwebp_mp_s")
+        delta_rows.append({
+            "target_mpix": current["target_mpix"],
+            "quality": current["quality"],
+            "current_files": current["files"],
+            "baseline_files": baseline.get("files", ""),
+            "current_ours_advantage_pct": f"{current_adv:.3f}",
+            "baseline_ours_advantage_pct": f"{baseline_adv:.3f}",
+            "delta_advantage_pp": f"{current_adv - baseline_adv:.3f}",
+            "current_ours_mp_s": f"{current_ours:.3f}",
+            "baseline_ours_mp_s": f"{baseline_ours:.3f}",
+            "delta_ours_mp_s": f"{current_ours - baseline_ours:.3f}",
+            "delta_ours_mp_s_pct": relative_delta_pct(current_ours, baseline_ours),
+            "current_libwebp_mp_s": f"{current_lib:.3f}",
+            "baseline_libwebp_mp_s": f"{baseline_lib:.3f}",
+            "delta_libwebp_mp_s": f"{current_lib - baseline_lib:.3f}",
+            "delta_libwebp_mp_s_pct": relative_delta_pct(current_lib, baseline_lib),
+            "current_faster": faster_label(current_adv),
+            "baseline_faster": faster_label(baseline_adv),
+        })
+    return delta_rows
+
+
+def aggregate_cells(cell_rows: list[dict[str, object]], group_field: str) -> list[dict[str, object]]:
+    groups: dict[str, list[dict[str, object]]] = {}
+    for row in cell_rows:
+        value = str(row[group_field])
+        groups.setdefault(value, []).append(row)
+
+    out: list[dict[str, object]] = []
+    for value, rows in groups.items():
+        mp = sum(row_float(r, "megapixels") for r in rows)
+        ours_s = sum(row_float(r, "ours_seconds") for r in rows)
+        lib_s = sum(row_float(r, "libwebp_seconds") for r in rows)
+        advantages = [row_float(r, "ours_advantage_pct") for r in rows]
+        labels = [faster_label(a) for a in advantages]
+        out.append({
+            "dimension": group_field,
+            "value": value,
+            "cells": len(rows),
+            "ours_faster_cells": labels.count("ours"),
+            "libwebp_faster_cells": labels.count("libwebp"),
+            "tied_cells": labels.count("tie"),
+            "megapixels": f"{mp:.6f}",
+            "ours_seconds": f"{ours_s:.9f}",
+            "libwebp_seconds": f"{lib_s:.9f}",
+            "ours_mp_s": f"{(mp / ours_s) if ours_s else 0.0:.3f}",
+            "libwebp_mp_s": f"{(mp / lib_s) if lib_s else 0.0:.3f}",
+            "ours_advantage_pct": f"{((lib_s / ours_s - 1.0) * 100.0) if ours_s else 0.0:.3f}",
+            "average_cell_advantage_pct": f"{statistics.mean(advantages):.3f}" if advantages else "0.000",
+        })
+
+    def sort_key(row: dict[str, object]) -> float:
+        try:
+            return float(row["value"])
+        except ValueError:
+            return math.inf
+
+    return sorted(out, key=sort_key)
+
+
+def md_table(headers: list[str], rows: list[list[object]]) -> list[str]:
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(str(cell) for cell in row) + " |")
+    return lines
+
+
+def format_cell(row: dict[str, object], value_field: str = "ours_advantage_pct") -> str:
+    return f"q{row['quality']} @ {float(row['target_mpix']):g} MP ({float(row[value_field]):+.3f})"
+
+
+def write_summary_markdown(
+    out: Path,
+    cell_rows: list[dict[str, object]],
+    by_quality: list[dict[str, object]],
+    by_size: list[dict[str, object]],
+    delta_rows: list[dict[str, object]] | None,
+    baseline_matrix: Path | None,
+) -> None:
+    lines: list[str] = ["# Decoder quality/size matrix summary", ""]
+    if not cell_rows:
+        lines.extend(["No matrix cells were generated.", ""])
+        out.write_text("\n".join(lines))
+        return
+
+    advantages = [row_float(r, "ours_advantage_pct") for r in cell_rows]
+    labels = [faster_label(a) for a in advantages]
+    best = sorted(cell_rows, key=lambda r: row_float(r, "ours_advantage_pct"), reverse=True)[:5]
+    worst = sorted(cell_rows, key=lambda r: row_float(r, "ours_advantage_pct"))[:5]
+    lines.extend([
+        "## Current matrix",
+        "",
+        f"- Cells: {len(cell_rows)}",
+        f"- Ours faster: {labels.count('ours')}",
+        f"- libwebp faster: {labels.count('libwebp')}",
+        f"- Tied: {labels.count('tie')}",
+        f"- Best cell: {format_cell(best[0])}",
+        f"- Worst cell: {format_cell(worst[0])}",
+        "",
+        "### Best cells by our advantage",
+        "",
+    ])
+    lines.extend(md_table(["cell", "ours MP/s", "libwebp MP/s"], [
+        [format_cell(r), r["ours_mp_s"], r["libwebp_mp_s"]] for r in best
+    ]))
+    lines.extend(["", "### Worst cells by our advantage", ""])
+    lines.extend(md_table(["cell", "ours MP/s", "libwebp MP/s"], [
+        [format_cell(r), r["ours_mp_s"], r["libwebp_mp_s"]] for r in worst
+    ]))
+    lines.extend(["", "### By quality", ""])
+    lines.extend(md_table(["q", "cells", "ours faster", "libwebp faster", "advantage %", "ours MP/s", "libwebp MP/s"], [
+        [
+            f"q{r['value']}",
+            r["cells"],
+            r["ours_faster_cells"],
+            r["libwebp_faster_cells"],
+            r["ours_advantage_pct"],
+            r["ours_mp_s"],
+            r["libwebp_mp_s"],
+        ] for r in by_quality
+    ]))
+    lines.extend(["", "### By target pixel size", ""])
+    lines.extend(md_table(["target", "cells", "ours faster", "libwebp faster", "advantage %", "ours MP/s", "libwebp MP/s"], [
+        [
+            f"{float(r['value']):g} MP",
+            r["cells"],
+            r["ours_faster_cells"],
+            r["libwebp_faster_cells"],
+            r["ours_advantage_pct"],
+            r["ours_mp_s"],
+            r["libwebp_mp_s"],
+        ] for r in by_size
+    ]))
+
+    if baseline_matrix is not None:
+        lines.extend(["", "## Regression vs baseline", "", f"Baseline: `{baseline_matrix}`", ""])
+        if not delta_rows:
+            lines.extend(["No matching baseline cells were found.", ""])
+        else:
+            deltas = [row_float(r, "delta_advantage_pp") for r in delta_rows]
+            improved = sum(1 for d in deltas if d > 0.0005)
+            regressed = sum(1 for d in deltas if d < -0.0005)
+            flat = len(deltas) - improved - regressed
+            best_delta = sorted(delta_rows, key=lambda r: row_float(r, "delta_advantage_pp"), reverse=True)[:5]
+            worst_delta = sorted(delta_rows, key=lambda r: row_float(r, "delta_advantage_pp"))[:5]
+            lines.extend([
+                f"- Matched cells: {len(delta_rows)}",
+                f"- Missing baseline cells: {len(cell_rows) - len(delta_rows)}",
+                f"- Improved advantage cells: {improved}",
+                f"- Regressed advantage cells: {regressed}",
+                f"- Unchanged cells: {flat}",
+                f"- Best delta: {format_cell(best_delta[0], 'delta_advantage_pp')} pp",
+                f"- Worst delta: {format_cell(worst_delta[0], 'delta_advantage_pp')} pp",
+                "",
+                "### Best advantage deltas",
+                "",
+            ])
+            lines.extend(md_table(["cell", "delta pp", "current adv", "baseline adv", "ours MP/s delta"], [
+                [
+                    f"q{r['quality']} @ {float(r['target_mpix']):g} MP",
+                    r["delta_advantage_pp"],
+                    r["current_ours_advantage_pct"],
+                    r["baseline_ours_advantage_pct"],
+                    r["delta_ours_mp_s"],
+                ] for r in best_delta
+            ]))
+            lines.extend(["", "### Worst advantage deltas", ""])
+            lines.extend(md_table(["cell", "delta pp", "current adv", "baseline adv", "ours MP/s delta"], [
+                [
+                    f"q{r['quality']} @ {float(r['target_mpix']):g} MP",
+                    r["delta_advantage_pp"],
+                    r["current_ours_advantage_pct"],
+                    r["baseline_ours_advantage_pct"],
+                    r["delta_ours_mp_s"],
+                ] for r in worst_delta
+            ]))
+
+    out.write_text("\n".join(lines) + "\n")
+
+
 def write_heatmap_svg(cells: list[dict[str, object]], qualities: list[str], mpix_values: list[float], out: Path) -> None:
     cell_w = 98
     cell_h = 46
@@ -278,14 +531,85 @@ def write_heatmap_svg(cells: list[dict[str, object]], qualities: list[str], mpix
     out.write_text("\n".join(lines) + "\n")
 
 
-def write_heatmap_html(svg_name: str, out: Path) -> None:
+def write_regression_heatmap_svg(cells: list[dict[str, object]], qualities: list[str], mpix_values: list[float], out: Path) -> None:
+    cell_w = 112
+    cell_h = 52
+    left = 100
+    top = 72
+    width = left + cell_w * len(qualities) + 40
+    height = top + cell_h * len(mpix_values) + 90
+    by_key = {(str(c["quality"]), float(c["target_mpix"])): c for c in cells}
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        '<text x="20" y="28" font-family="sans-serif" font-size="18" font-weight="700">Decoder regression delta by WebP quality and pixel size</text>',
+        '<text x="20" y="50" font-family="sans-serif" font-size="12">Green: current advantage improved. Red: regressed. Cell text: advantage delta and current/baseline our MP/s.</text>',
+    ]
+    for ix, q in enumerate(qualities):
+        x = left + ix * cell_w + cell_w / 2
+        lines.append(f'<text x="{x:.1f}" y="{top - 18}" text-anchor="middle" font-family="sans-serif" font-size="12">q{html.escape(q)}</text>')
+    for iy, mpix in enumerate(mpix_values):
+        y = top + iy * cell_h
+        lines.append(f'<text x="{left - 10}" y="{y + 28}" text-anchor="end" font-family="sans-serif" font-size="12">{mpix:g} MP</text>')
+        for ix, q in enumerate(qualities):
+            x = left + ix * cell_w
+            c = by_key.get((q, mpix))
+            if not c:
+                fill = "rgb(238,238,238)"
+                text1 = "n/a"
+                text2 = ""
+            else:
+                delta = float(c["delta_advantage_pp"])
+                fill = color_for_delta(delta)
+                text1 = f'{delta:+.1f} pp'
+                text2 = f'{float(c["current_ours_mp_s"]):.0f}/{float(c["baseline_ours_mp_s"]):.0f} MP/s'
+            lines.append(f'<rect x="{x}" y="{y}" width="{cell_w - 2}" height="{cell_h - 2}" fill="{fill}" stroke="#fff"/>')
+            lines.append(f'<text x="{x + cell_w / 2:.1f}" y="{y + 20}" text-anchor="middle" font-family="sans-serif" font-size="12" font-weight="700">{html.escape(text1)}</text>')
+            lines.append(f'<text x="{x + cell_w / 2:.1f}" y="{y + 38}" text-anchor="middle" font-family="sans-serif" font-size="10">{html.escape(text2)}</text>')
+    legend_y = top + cell_h * len(mpix_values) + 36
+    lines.extend([
+        f'<rect x="{left}" y="{legend_y}" width="24" height="14" fill="{color_for_delta(15)}" stroke="#ccc"/>',
+        f'<text x="{left + 32}" y="{legend_y + 12}" font-family="sans-serif" font-size="12">improved</text>',
+        f'<rect x="{left + 140}" y="{legend_y}" width="24" height="14" fill="{color_for_delta(-15)}" stroke="#ccc"/>',
+        f'<text x="{left + 172}" y="{legend_y + 12}" font-family="sans-serif" font-size="12">regressed</text>',
+        '</svg>',
+    ])
+    out.write_text("\n".join(lines) + "\n")
+
+
+def write_heatmap_html(
+    svg_name: str,
+    out: Path,
+    summary_name: str | None = None,
+    regression_svg_name: str | None = None,
+    title: str = "Decoder quality/size heatmap",
+) -> None:
+    links = ""
+    if summary_name:
+        links += f"<p>Summary: <a href='{html.escape(summary_name)}'>{html.escape(summary_name)}</a>.</p>"
+    if regression_svg_name:
+        links += f"<p>Regression delta heatmap: <a href='{html.escape(regression_svg_name)}'>{html.escape(regression_svg_name)}</a>.</p>"
     out.write_text(
         "<!doctype html><meta charset='utf-8'>"
-        "<title>Decoder quality/size heatmap</title>"
+        f"<title>{html.escape(title)}</title>"
         "<style>body{font-family:sans-serif;margin:24px;max-width:1200px}</style>"
-        "<h1>Decoder quality/size heatmap</h1>"
+        f"<h1>{html.escape(title)}</h1>"
         f"<p>Open the SVG directly or view it below: <a href='{html.escape(svg_name)}'>{html.escape(svg_name)}</a>.</p>"
+        f"{links}"
         f"<img src='{html.escape(svg_name)}' alt='quality size heatmap'>\n"
+    )
+
+
+def write_summary_html(markdown_path: Path, out: Path) -> None:
+    markdown = markdown_path.read_text()
+    out.write_text(
+        "<!doctype html><meta charset='utf-8'>"
+        "<title>Decoder quality/size summary</title>"
+        "<style>body{font-family:sans-serif;margin:24px;max-width:1200px}"
+        "pre{white-space:pre-wrap;line-height:1.35}</style>"
+        "<h1>Decoder quality/size summary</h1>"
+        f"<p>Markdown source: <a href='{html.escape(markdown_path.name)}'>{html.escape(markdown_path.name)}</a>.</p>"
+        f"<pre>{html.escape(markdown)}</pre>\n"
     )
 
 
@@ -300,6 +624,10 @@ def main() -> int:
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--force-generate", action="store_true")
     parser.add_argument("--skip-generate", action="store_true")
+    parser.add_argument(
+        "--baseline-matrix",
+        help="Optional prior quality_size_matrix.csv to compare against the current run.",
+    )
     args = parser.parse_args()
 
     root = repo_root()
@@ -401,12 +729,101 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(cell_rows)
 
+    summary_fields = [
+        "dimension",
+        "value",
+        "cells",
+        "ours_faster_cells",
+        "libwebp_faster_cells",
+        "tied_cells",
+        "megapixels",
+        "ours_seconds",
+        "libwebp_seconds",
+        "ours_mp_s",
+        "libwebp_mp_s",
+        "ours_advantage_pct",
+        "average_cell_advantage_pct",
+    ]
+    by_quality_rows = aggregate_cells(cell_rows, "quality")
+    by_size_rows = aggregate_cells(cell_rows, "target_mpix")
+    by_quality_csv = out_dir / "quality_size_by_quality.csv"
+    by_size_csv = out_dir / "quality_size_by_size.csv"
+    write_dict_csv(by_quality_csv, by_quality_rows, summary_fields)
+    write_dict_csv(by_size_csv, by_size_rows, summary_fields)
+
+    baseline_matrix: Path | None = None
+    delta_rows: list[dict[str, object]] | None = None
+    delta_csv: Path | None = None
+    regression_svg: Path | None = None
+    regression_html: Path | None = None
+    if args.baseline_matrix:
+        baseline_matrix = Path(args.baseline_matrix)
+        if not baseline_matrix.is_absolute():
+            baseline_matrix = root / baseline_matrix
+        try:
+            baseline_rows = load_matrix_csv(baseline_matrix)
+        except (OSError, ValueError) as exc:
+            print(f"failed to load baseline matrix: {exc}", file=sys.stderr)
+            return 2
+        delta_rows = compute_regression_rows(cell_rows, baseline_rows)
+        delta_fields = [
+            "target_mpix",
+            "quality",
+            "current_files",
+            "baseline_files",
+            "current_ours_advantage_pct",
+            "baseline_ours_advantage_pct",
+            "delta_advantage_pp",
+            "current_ours_mp_s",
+            "baseline_ours_mp_s",
+            "delta_ours_mp_s",
+            "delta_ours_mp_s_pct",
+            "current_libwebp_mp_s",
+            "baseline_libwebp_mp_s",
+            "delta_libwebp_mp_s",
+            "delta_libwebp_mp_s_pct",
+            "current_faster",
+            "baseline_faster",
+        ]
+        delta_csv = out_dir / "quality_size_regression_delta.csv"
+        write_dict_csv(delta_csv, delta_rows, delta_fields)
+        regression_svg = out_dir / "quality_size_regression_heatmap.svg"
+        write_regression_heatmap_svg(delta_rows, qualities, mpix_values, regression_svg)
+        regression_html = out_dir / "quality_size_regression_heatmap.html"
+
+    summary_md = out_dir / "quality_size_summary.md"
+    write_summary_markdown(summary_md, cell_rows, by_quality_rows, by_size_rows, delta_rows, baseline_matrix)
+    summary_html = out_dir / "quality_size_summary.html"
+    write_summary_html(summary_md, summary_html)
+
     svg = out_dir / "quality_size_heatmap.svg"
     write_heatmap_svg(cell_rows, qualities, mpix_values, svg)
-    write_heatmap_html(svg.name, out_dir / "quality_size_heatmap.html")
+    write_heatmap_html(
+        svg.name,
+        out_dir / "quality_size_heatmap.html",
+        summary_name=summary_html.name,
+        regression_svg_name=regression_svg.name if regression_svg else None,
+    )
+    if regression_svg and regression_html:
+        write_heatmap_html(
+            regression_svg.name,
+            regression_html,
+            summary_name=summary_html.name,
+            title="Decoder quality/size regression heatmap",
+        )
 
     print(f"wrote {per_file_csv}")
     print(f"wrote {matrix_csv}")
+    print(f"wrote {by_quality_csv}")
+    print(f"wrote {by_size_csv}")
+    print(f"wrote {summary_md}")
+    print(f"wrote {summary_html}")
+    if delta_csv:
+        print(f"wrote {delta_csv}")
+    if regression_svg:
+        print(f"wrote {regression_svg}")
+    if regression_html:
+        print(f"wrote {regression_html}")
     print(f"wrote {svg}")
     print(f"wrote {out_dir / 'quality_size_heatmap.html'}")
     return 0

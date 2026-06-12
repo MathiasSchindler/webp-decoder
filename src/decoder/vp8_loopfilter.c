@@ -235,7 +235,16 @@ static void calc_params_keyframe(const Vp8DecodedFrame* decoded, uint32_t mb, in
 	*hev_threshold = hev;
 }
 
-int vp8_loopfilter_apply_keyframe(Yuv420Image* padded_img, const Vp8DecodedFrame* decoded) {
+#define LF_PROFILE_ADD(ns_field, calls_field, start_)         \
+	do {                                                      \
+		if (profile) {                                       \
+			profile->ns_field += os_monotonic_raw_ns() - (start_); \
+			profile->calls_field++;                         \
+		}                                                     \
+	} while (0)
+
+static int vp8_loopfilter_apply_keyframe_internal(Yuv420Image* padded_img, const Vp8DecodedFrame* decoded,
+                                                  Vp8LoopfilterProfile* profile) {
 	if (!padded_img || !decoded) {
 		errno = EINVAL;
 		return -1;
@@ -244,12 +253,18 @@ int vp8_loopfilter_apply_keyframe(Yuv420Image* padded_img, const Vp8DecodedFrame
 		errno = EINVAL;
 		return -1;
 	}
-	if (decoded->lf_level == 0 && !decoded->segmentation_enabled && !decoded->lf_delta_enabled) return 0;
+	if (decoded->lf_level == 0 && !decoded->segmentation_enabled && !decoded->lf_delta_enabled) {
+		if (profile) profile->disabled_or_skipped_mbs = decoded->mb_total;
+		return 0;
+	}
 
 	uint32_t mb_cols = decoded->mb_cols;
 	uint32_t mb_rows = decoded->mb_rows;
 	int stride_y = (int)padded_img->stride_y;
 	int stride_uv = (int)padded_img->stride_uv;
+	int constant_params = !decoded->segmentation_enabled && !decoded->lf_delta_enabled;
+	int base_edge_limit = 0, base_interior_limit = 0, base_hev_threshold = 0;
+	if (constant_params) calc_params_keyframe(decoded, 0, &base_edge_limit, &base_interior_limit, &base_hev_threshold);
 
 	for (uint32_t mb_r = 0; mb_r < mb_rows; mb_r++) {
 		uint8_t* y_row = padded_img->y + (size_t)mb_r * 16u * padded_img->stride_y;
@@ -258,9 +273,12 @@ int vp8_loopfilter_apply_keyframe(Yuv420Image* padded_img, const Vp8DecodedFrame
 		for (uint32_t mb_c = 0; mb_c < mb_cols; mb_c++) {
 			uint32_t mb = mb_r * mb_cols + mb_c;
 
-			int edge_limit = 0, interior_limit = 0, hev_threshold = 0;
-			calc_params_keyframe(decoded, mb, &edge_limit, &interior_limit, &hev_threshold);
-			if (edge_limit == 0) continue;
+			int edge_limit = base_edge_limit, interior_limit = base_interior_limit, hev_threshold = base_hev_threshold;
+			if (!constant_params) calc_params_keyframe(decoded, mb, &edge_limit, &interior_limit, &hev_threshold);
+			if (edge_limit == 0) {
+				if (profile) profile->disabled_or_skipped_mbs++;
+				continue;
+			}
 
 			uint8_t* y = y_row + (size_t)mb_c * 16u;
 			uint8_t* u = u_row + (size_t)mb_c * 8u;
@@ -272,51 +290,121 @@ int vp8_loopfilter_apply_keyframe(Yuv420Image* padded_img, const Vp8DecodedFrame
 				int mb_limit = (edge_limit + 2) * 2 + interior_limit;
 				int b_limit = edge_limit * 2 + interior_limit;
 
-				if (mb_c) filter_v_edge_simple(y, stride_y, mb_limit);
+				if (mb_c) {
+					uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
+					filter_v_edge_simple(y, stride_y, mb_limit);
+					LF_PROFILE_ADD(simple_vertical_mb_luma_ns, simple_vertical_mb_luma_calls, t0);
+				}
 				if (filter_subblocks) {
+					uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_v_edge_simple(y + 4, stride_y, b_limit);
+					LF_PROFILE_ADD(simple_vertical_sub_luma_ns, simple_vertical_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_v_edge_simple(y + 8, stride_y, b_limit);
+					LF_PROFILE_ADD(simple_vertical_sub_luma_ns, simple_vertical_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_v_edge_simple(y + 12, stride_y, b_limit);
+					LF_PROFILE_ADD(simple_vertical_sub_luma_ns, simple_vertical_sub_luma_calls, t0);
 				}
 
-				if (mb_r) filter_h_edge_simple(y, stride_y, mb_limit);
+				if (mb_r) {
+					uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
+					filter_h_edge_simple(y, stride_y, mb_limit);
+					LF_PROFILE_ADD(simple_horizontal_mb_luma_ns, simple_horizontal_mb_luma_calls, t0);
+				}
 				if (filter_subblocks) {
+					uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_h_edge_simple(y + 4 * padded_img->stride_y, stride_y, b_limit);
+					LF_PROFILE_ADD(simple_horizontal_sub_luma_ns, simple_horizontal_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_h_edge_simple(y + 8 * padded_img->stride_y, stride_y, b_limit);
+					LF_PROFILE_ADD(simple_horizontal_sub_luma_ns, simple_horizontal_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_h_edge_simple(y + 12 * padded_img->stride_y, stride_y, b_limit);
+					LF_PROFILE_ADD(simple_horizontal_sub_luma_ns, simple_horizontal_sub_luma_calls, t0);
 				}
 			} else {
 				int mb_edge_limit = edge_limit + 2;
 				if (mb_c) {
+					uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_mb_v_edge(y, stride_y, mb_edge_limit, interior_limit, hev_threshold, 2);
+					LF_PROFILE_ADD(normal_vertical_mb_luma_ns, normal_vertical_mb_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_mb_v_edge(u, stride_uv, mb_edge_limit, interior_limit, hev_threshold, 1);
+					LF_PROFILE_ADD(normal_vertical_mb_chroma_ns, normal_vertical_mb_chroma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_mb_v_edge(v, stride_uv, mb_edge_limit, interior_limit, hev_threshold, 1);
+					LF_PROFILE_ADD(normal_vertical_mb_chroma_ns, normal_vertical_mb_chroma_calls, t0);
 				}
 
 				if (filter_subblocks) {
+					uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_v_edge(y + 4, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					LF_PROFILE_ADD(normal_vertical_sub_luma_ns, normal_vertical_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_v_edge(y + 8, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					LF_PROFILE_ADD(normal_vertical_sub_luma_ns, normal_vertical_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_v_edge(y + 12, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					LF_PROFILE_ADD(normal_vertical_sub_luma_ns, normal_vertical_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_v_edge(u + 4, stride_uv, edge_limit, interior_limit, hev_threshold, 1);
+					LF_PROFILE_ADD(normal_vertical_sub_chroma_ns, normal_vertical_sub_chroma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_v_edge(v + 4, stride_uv, edge_limit, interior_limit, hev_threshold, 1);
+					LF_PROFILE_ADD(normal_vertical_sub_chroma_ns, normal_vertical_sub_chroma_calls, t0);
 				}
 
 				if (mb_r) {
+					uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_mb_h_edge(y, stride_y, mb_edge_limit, interior_limit, hev_threshold, 2);
+					LF_PROFILE_ADD(normal_horizontal_mb_luma_ns, normal_horizontal_mb_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_mb_h_edge(u, stride_uv, mb_edge_limit, interior_limit, hev_threshold, 1);
+					LF_PROFILE_ADD(normal_horizontal_mb_chroma_ns, normal_horizontal_mb_chroma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_mb_h_edge(v, stride_uv, mb_edge_limit, interior_limit, hev_threshold, 1);
+					LF_PROFILE_ADD(normal_horizontal_mb_chroma_ns, normal_horizontal_mb_chroma_calls, t0);
 				}
 
 				if (filter_subblocks) {
+					uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_h_edge(y + 4 * padded_img->stride_y, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					LF_PROFILE_ADD(normal_horizontal_sub_luma_ns, normal_horizontal_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_h_edge(y + 8 * padded_img->stride_y, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					LF_PROFILE_ADD(normal_horizontal_sub_luma_ns, normal_horizontal_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_h_edge(y + 12 * padded_img->stride_y, stride_y, edge_limit, interior_limit, hev_threshold, 2);
+					LF_PROFILE_ADD(normal_horizontal_sub_luma_ns, normal_horizontal_sub_luma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_h_edge(u + 4 * padded_img->stride_uv, stride_uv, edge_limit, interior_limit, hev_threshold, 1);
+					LF_PROFILE_ADD(normal_horizontal_sub_chroma_ns, normal_horizontal_sub_chroma_calls, t0);
+					t0 = profile ? os_monotonic_raw_ns() : 0;
 					filter_subblock_h_edge(v + 4 * padded_img->stride_uv, stride_uv, edge_limit, interior_limit, hev_threshold, 1);
+					LF_PROFILE_ADD(normal_horizontal_sub_chroma_ns, normal_horizontal_sub_chroma_calls, t0);
 				}
 			}
 		}
 	}
 
 	return 0;
+}
+
+#undef LF_PROFILE_ADD
+
+static void loopfilter_profile_zero(Vp8LoopfilterProfile* profile) {
+	if (!profile) return;
+	volatile uint64_t* p = (volatile uint64_t*)(void*)profile;
+	for (size_t i = 0; i < sizeof(*profile) / sizeof(uint64_t); i++) p[i] = 0;
+}
+
+int vp8_loopfilter_apply_keyframe(Yuv420Image* padded_img, const Vp8DecodedFrame* decoded) {
+	return vp8_loopfilter_apply_keyframe_internal(padded_img, decoded, NULL);
+}
+
+int vp8_loopfilter_apply_keyframe_profiled(Yuv420Image* padded_img, const Vp8DecodedFrame* decoded,
+                                           Vp8LoopfilterProfile* profile) {
+	loopfilter_profile_zero(profile);
+	return vp8_loopfilter_apply_keyframe_internal(padded_img, decoded, profile);
 }

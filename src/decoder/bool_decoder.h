@@ -25,6 +25,9 @@ typedef struct {
 #endif
 
 static inline uint8_t bool_decoder_norm_shift(uint8_t range) {
+#if defined(__GNUC__) || defined(__clang__)
+	return (uint8_t)(__builtin_clz((unsigned)range) - 24);
+#else
 	static const uint8_t shift[256] = {
 		0, 7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4,
 		3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
@@ -44,6 +47,7 @@ static inline uint8_t bool_decoder_norm_shift(uint8_t range) {
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	};
 	return shift[range];
+#endif
 }
 
 static inline void bool_decoder_refill_inline(BoolDecoder* d) {
@@ -62,22 +66,17 @@ static inline int bool_decode_bool_inline(BoolDecoder* d, uint8_t prob) {
 	uint32_t split = 1u + (((uint32_t)(range - 1u) * (uint32_t)prob) >> 8);
 	uint32_t bigsplit = split << 8;
 
-	int bit;
-	if (value >= bigsplit) {
-		range = (uint8_t)(range - split);
-		value -= bigsplit;
-		bit = 1;
-	} else {
-		range = (uint8_t)split;
-		bit = 0;
-	}
+	uint32_t bit = value >= bigsplit;
+	uint32_t mask = 0u - bit;
+	value -= bigsplit & mask;
+	range = (uint8_t)(split + (((uint32_t)range - (split << 1)) & mask));
 
 	uint8_t shift = bool_decoder_norm_shift(range);
 	d->range = (uint8_t)(range << shift);
 	d->value = value << shift;
 	d->count += shift;
 	if (BOOL_DECODER_UNLIKELY(d->count >= 0)) bool_decoder_refill_inline(d);
-	return bit;
+	return (int)bit;
 }
 
 static inline int bool_decode_bit_inline(BoolDecoder* d) {
@@ -86,22 +85,17 @@ static inline int bool_decode_bit_inline(BoolDecoder* d) {
 	uint32_t split = ((uint32_t)range + 1u) >> 1;
 	uint32_t bigsplit = split << 8;
 
-	int bit;
-	if (value >= bigsplit) {
-		range = (uint8_t)(range - split);
-		value -= bigsplit;
-		bit = 1;
-	} else {
-		range = (uint8_t)split;
-		bit = 0;
-	}
+	uint32_t bit = value >= bigsplit;
+	uint32_t mask = 0u - bit;
+	value -= bigsplit & mask;
+	range = (uint8_t)(split + (((uint32_t)range - (split << 1)) & mask));
 
 	uint8_t shift = bool_decoder_norm_shift(range);
 	d->range = (uint8_t)(range << shift);
 	d->value = value << shift;
 	d->count += shift;
 	if (BOOL_DECODER_UNLIKELY(d->count >= 0)) bool_decoder_refill_inline(d);
-	return bit;
+	return (int)bit;
 }
 
 static inline uint32_t bool_decode_literal_inline(BoolDecoder* d, int bits) {

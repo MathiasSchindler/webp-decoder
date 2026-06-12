@@ -61,6 +61,25 @@ typedef struct {
 } Vp8CoeffStats;
 
 typedef struct {
+	uint64_t part0_header_ns;
+	uint64_t part0_mb_syntax_ns;
+	uint64_t part0_segment_read_ns;
+	uint64_t part0_skip_read_ns;
+	uint64_t part0_ymode_read_ns;
+	uint64_t part0_bmode_read_ns;
+	uint64_t part0_uvmode_read_ns;
+	uint64_t token_decode_ns;
+	uint64_t token_tree_ns;
+	uint64_t token_extra_bits_ns;
+	uint64_t token_sign_bits_ns;
+	uint64_t token_context_update_ns;
+	uint64_t token_plane_ns[4];       // 0=Y, 1=Y2, 2=U, 3=V
+	uint64_t token_block_class[4][3]; // per plane: zero, DC-only, has AC
+	uint64_t bool_refill_events;
+	uint64_t bool_refill_ns;
+} Vp8EntropyProfile;
+
+typedef struct {
 	uint32_t mb_cols;
 	uint32_t mb_rows;
 	uint32_t mb_total;
@@ -139,6 +158,10 @@ int vp8_decode_coeff_stats(ByteSpan vp8_payload, Vp8CoeffStats* out);
 // Decodes keyframe macroblock syntax + coefficient tokens and stores the results
 // in heap-allocated arrays in `out`. Call vp8_decoded_frame_free() when done.
 int vp8_decode_decoded_frame(ByteSpan vp8_payload, Vp8DecodedFrame* out);
+
+// Opt-in profiling variant. Fills `profile` with deeper entropy/syntax timers
+// while decoding; normal decode entry points do not collect these timings.
+int vp8_decode_decoded_frame_profiled(ByteSpan vp8_payload, Vp8DecodedFrame* out, Vp8EntropyProfile* profile);
 
 // Decodes keyframe macroblock syntax, but streams coefficients one macroblock at
 // a time to `visitor` instead of storing frame-sized coefficient arrays.

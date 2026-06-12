@@ -1,5 +1,11 @@
 #include "vp8_pred.h"
 
+#if defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && \
+    !defined(VP8_DISABLE_X86_SIMD)
+#include <emmintrin.h>
+#define VP8_PRED_SSE2 1
+#endif
+
 static inline uint8_t clamp255_i32(int32_t v) {
 	if (v < 0) return 0;
 	if (v > 255) return 255;
@@ -8,6 +14,19 @@ static inline uint8_t clamp255_i32(int32_t v) {
 
 static inline uint8_t avg3(uint8_t x, uint8_t y, uint8_t z) { return (uint8_t)((x + y + y + z + 2) >> 2); }
 static inline uint8_t avg2(uint8_t x, uint8_t y) { return (uint8_t)((x + y + 1) >> 1); }
+
+#if VP8_PRED_SSE2
+static inline uint32_t load_u32le(const uint8_t* p) {
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static inline void store_u32le(uint8_t* p, uint32_t v) {
+	p[0] = (uint8_t)v;
+	p[1] = (uint8_t)(v >> 8);
+	p[2] = (uint8_t)(v >> 16);
+	p[3] = (uint8_t)(v >> 24);
+}
+#endif
 
 void vp8_bpred4x4(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8_t* L, uint8_t mode) {
 #define D(r, c) dst[(uint32_t)(r) * stride + (uint32_t)(c)]
@@ -24,6 +43,16 @@ void vp8_bpred4x4(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8_t
 			break;
 		}
 		case 1: {
+#if VP8_PRED_SSE2
+			const __m128i zero = _mm_setzero_si128();
+			const __m128i a = _mm_unpacklo_epi8(_mm_cvtsi32_si128((int)load_u32le(A)), zero);
+			const __m128i p = _mm_set1_epi16((short)A[-1]);
+			for (int r = 0; r < 4; r++) {
+				const __m128i out = _mm_add_epi16(_mm_sub_epi16(a, p), _mm_set1_epi16((short)L[r]));
+				store_u32le(dst + (uint32_t)r * stride, (uint32_t)_mm_cvtsi128_si32(_mm_packus_epi16(out, zero)));
+			}
+			break;
+#endif
 			for (int r = 0; r < 4; r++)
 				for (int c = 0; c < 4; c++) D(r, c) = clamp255_i32((int32_t)L[r] + (int32_t)A[c] - (int32_t)A[-1]);
 			break;

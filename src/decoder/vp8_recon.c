@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86))
+#if defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && \
+    !defined(VP8_DISABLE_X86_SIMD)
 #include <emmintrin.h>
 #define VP8_RECON_SSE2 1
 #endif
@@ -37,6 +38,22 @@ static inline void store_u32le(uint8_t* p, uint32_t v) {
 
 static inline int dc_q(int q) { return vp8_dc_q(q); }
 static inline int ac_q(int q) { return vp8_ac_q(q); }
+
+static void fill_block(uint8_t* dst, uint32_t stride, uint32_t n, uint8_t v) {
+#if VP8_RECON_SSE2
+	if (n == 16) {
+		const __m128i vv = _mm_set1_epi8((char)v);
+		for (uint32_t r = 0; r < 16; r++) _mm_storeu_si128((__m128i*)(void*)(dst + (size_t)r * stride), vv);
+		return;
+	}
+	if (n == 8) {
+		const __m128i vv = _mm_set1_epi8((char)v);
+		for (uint32_t r = 0; r < 8; r++) _mm_storel_epi64((__m128i*)(void*)(dst + (size_t)r * stride), vv);
+		return;
+	}
+#endif
+	for (uint32_t r = 0; r < n; r++) memset(dst + (size_t)r * stride, v, n);
+}
 
 typedef enum {
 	TOKEN_BLOCK_Y1 = 0,
@@ -111,6 +128,26 @@ static CoeffClass coeffs_classify(const int16_t* coeffs, int first) {
 	return (first == 0 || coeffs[0] == 0) ? COEFFS_ZERO : COEFFS_DC_ONLY;
 }
 
+#if VP8_RECON_SSE2
+static void dequant_block4_sse2(const int16_t* coeffs, int dc_factor, int ac_factor, int16_t out[16]) {
+	const __m128i ac = _mm_set1_epi16((short)ac_factor);
+	const __m128i c0 = _mm_loadu_si128((const __m128i*)(const void*)coeffs);
+	const __m128i c1 = _mm_loadu_si128((const __m128i*)(const void*)(coeffs + 8));
+	_mm_storeu_si128((__m128i*)(void*)out, _mm_mullo_epi16(c0, ac));
+	_mm_storeu_si128((__m128i*)(void*)(out + 8), _mm_mullo_epi16(c1, ac));
+	out[0] = (int16_t)(coeffs[0] * dc_factor);
+}
+
+static void dequant_block4_with_dc_sse2(int16_t dc, const int16_t* coeffs, int ac_factor, int16_t out[16]) {
+	const __m128i ac = _mm_set1_epi16((short)ac_factor);
+	const __m128i c0 = _mm_loadu_si128((const __m128i*)(const void*)coeffs);
+	const __m128i c1 = _mm_loadu_si128((const __m128i*)(const void*)(coeffs + 8));
+	_mm_storeu_si128((__m128i*)(void*)out, _mm_mullo_epi16(c0, ac));
+	_mm_storeu_si128((__m128i*)(void*)(out + 8), _mm_mullo_epi16(c1, ac));
+	out[0] = dc;
+}
+#endif
+
 static void copy_block4(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride) {
 	if (dst == pred && dst_stride == pred_stride) return;
 	for (uint32_t rr = 0; rr < 4; rr++) {
@@ -167,46 +204,98 @@ static void add_block4_residue(uint8_t* dst, uint32_t dst_stride, const uint8_t*
 }
 
 static void reconstruct_block4(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
-                               const int16_t* coeffs, int dc_factor, int ac_factor) {
+                               const int16_t* coeffs, int dc_factor, int ac_factor, Vp8ReconProfile* profile,
+                               uint32_t plane) {
 	CoeffClass cc = coeffs_classify(coeffs, 1);
+	if (profile && plane < 4u) profile->block_class[plane][(int)cc]++;
 	if (cc == COEFFS_ZERO && coeffs[0] == 0) {
+		uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 		copy_block4(dst, dst_stride, pred, pred_stride);
+		if (profile) {
+			profile->copy_block_ns += os_monotonic_raw_ns() - t0;
+			profile->copy_block_calls++;
+			profile->idct_ns[COEFFS_ZERO] += os_monotonic_raw_ns() - t0;
+		}
 		return;
 	}
 
 	if (cc != COEFFS_HAS_AC) {
 		int16_t dc = (int16_t)(coeffs[0] * dc_factor);
+		uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 		add_block4_constant(dst, dst_stride, pred, pred_stride, inv_dct4x4_dc_value(dc));
-		return;
-	}
-
-	int16_t cdeq[16];
-	for (int i = 0; i < 16; i++) {
-		int fct = (i == 0) ? dc_factor : ac_factor;
-		cdeq[i] = (int16_t)(coeffs[i] * fct);
-	}
-	int16_t res[16];
-	inv_dct4x4(cdeq, res);
-	add_block4_residue(dst, dst_stride, pred, pred_stride, res);
-}
-
-static void reconstruct_block4_with_dc(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
-                                       int16_t dc, const int16_t* coeffs, int ac_factor) {
-	if (coeffs_classify(coeffs, 1) != COEFFS_HAS_AC) {
-		if (dc == 0) {
-			copy_block4(dst, dst_stride, pred, pred_stride);
-		} else {
-			add_block4_constant(dst, dst_stride, pred, pred_stride, inv_dct4x4_dc_value(dc));
+		if (profile) {
+			profile->add_constant_ns += os_monotonic_raw_ns() - t0;
+			profile->add_constant_calls++;
+			profile->idct_ns[COEFFS_DC_ONLY] += os_monotonic_raw_ns() - t0;
 		}
 		return;
 	}
 
 	int16_t cdeq[16];
+#if VP8_RECON_SSE2
+	dequant_block4_sse2(coeffs, dc_factor, ac_factor, cdeq);
+#else
+	for (int i = 0; i < 16; i++) {
+		int fct = (i == 0) ? dc_factor : ac_factor;
+		cdeq[i] = (int16_t)(coeffs[i] * fct);
+	}
+#endif
+	int16_t res[16];
+	uint64_t idct_t0 = profile ? os_monotonic_raw_ns() : 0;
+	inv_dct4x4(cdeq, res);
+	if (profile) profile->idct_ns[COEFFS_HAS_AC] += os_monotonic_raw_ns() - idct_t0;
+	uint64_t add_t0 = profile ? os_monotonic_raw_ns() : 0;
+	add_block4_residue(dst, dst_stride, pred, pred_stride, res);
+	if (profile) {
+		profile->add_residue_ns += os_monotonic_raw_ns() - add_t0;
+		profile->add_residue_calls++;
+	}
+}
+
+static void reconstruct_block4_with_dc(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
+                                       int16_t dc, const int16_t* coeffs, int ac_factor, Vp8ReconProfile* profile,
+                                       uint32_t plane) {
+	CoeffClass cc = coeffs_classify(coeffs, 1);
+	CoeffClass effective = (cc == COEFFS_HAS_AC) ? COEFFS_HAS_AC : (dc == 0 ? COEFFS_ZERO : COEFFS_DC_ONLY);
+	if (profile && plane < 4u) profile->block_class[plane][(int)effective]++;
+	if (cc != COEFFS_HAS_AC) {
+		if (dc == 0) {
+			uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
+			copy_block4(dst, dst_stride, pred, pred_stride);
+			if (profile) {
+				profile->copy_block_ns += os_monotonic_raw_ns() - t0;
+				profile->copy_block_calls++;
+				profile->idct_ns[COEFFS_ZERO] += os_monotonic_raw_ns() - t0;
+			}
+		} else {
+			uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
+			add_block4_constant(dst, dst_stride, pred, pred_stride, inv_dct4x4_dc_value(dc));
+			if (profile) {
+				profile->add_constant_ns += os_monotonic_raw_ns() - t0;
+				profile->add_constant_calls++;
+				profile->idct_ns[COEFFS_DC_ONLY] += os_monotonic_raw_ns() - t0;
+			}
+		}
+		return;
+	}
+
+	int16_t cdeq[16];
+#if VP8_RECON_SSE2
+	dequant_block4_with_dc_sse2(dc, coeffs, ac_factor, cdeq);
+#else
 	cdeq[0] = dc;
 	for (int i = 1; i < 16; i++) cdeq[i] = (int16_t)(coeffs[i] * ac_factor);
+#endif
 	int16_t res[16];
+	uint64_t idct_t0 = profile ? os_monotonic_raw_ns() : 0;
 	inv_dct4x4(cdeq, res);
+	if (profile) profile->idct_ns[COEFFS_HAS_AC] += os_monotonic_raw_ns() - idct_t0;
+	uint64_t add_t0 = profile ? os_monotonic_raw_ns() : 0;
 	add_block4_residue(dst, dst_stride, pred, pred_stride, res);
+	if (profile) {
+		profile->add_residue_ns += os_monotonic_raw_ns() - add_t0;
+		profile->add_residue_calls++;
+	}
 }
 
 // --- Prediction ---
@@ -214,10 +303,7 @@ static void reconstruct_block4_with_dc(uint8_t* dst, uint32_t dst_stride, const 
 static void pred_dc(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8_t* L, uint32_t n, int have_above,
                     int have_left, uint8_t above_oob, uint8_t left_oob) {
 	if (!have_above && !have_left) {
-		for (uint32_t r = 0; r < n; r++) {
-			uint8_t* row = dst + (size_t)r * stride;
-			for (uint32_t c = 0; c < n; c++) row[c] = 128;
-		}
+		fill_block(dst, stride, n, 128);
 		return;
 	}
 	int sum = 0;
@@ -235,28 +321,45 @@ static void pred_dc(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8
 	uint8_t v = (uint8_t)((sum + (1 << (shf - 1))) >> shf);
 	(void)above_oob;
 	(void)left_oob;
-	for (uint32_t r = 0; r < n; r++) {
-		uint8_t* row = dst + (size_t)r * stride;
-		for (uint32_t c = 0; c < n; c++) row[c] = v;
-	}
+	fill_block(dst, stride, n, v);
 }
 
 static void pred_v(uint8_t* dst, uint32_t stride, const uint8_t* A, uint32_t n, int have_above, uint8_t above_oob) {
+	if (!have_above) {
+		fill_block(dst, stride, n, above_oob);
+		return;
+	}
+#if VP8_RECON_SSE2
+	if (n == 16) {
+		const __m128i row = _mm_loadu_si128((const __m128i*)(const void*)A);
+		for (uint32_t r = 0; r < 16; r++) _mm_storeu_si128((__m128i*)(void*)(dst + (size_t)r * stride), row);
+		return;
+	}
+	if (n == 8) {
+		const __m128i row = _mm_loadl_epi64((const __m128i*)(const void*)A);
+		for (uint32_t r = 0; r < 8; r++) _mm_storel_epi64((__m128i*)(void*)(dst + (size_t)r * stride), row);
+		return;
+	}
+#endif
 	for (uint32_t r = 0; r < n; r++) {
-		if (have_above) {
-			uint8_t* row = dst + (size_t)r * stride;
-			for (uint32_t c = 0; c < n; c++) row[c] = A[c];
-		} else {
-			memset(dst + (size_t)r * stride, above_oob, n);
-		}
+		memcpy(dst + (size_t)r * stride, A, n);
 	}
 }
 
 static void pred_h(uint8_t* dst, uint32_t stride, const uint8_t* L, uint32_t n, int have_left, uint8_t left_oob) {
 	for (uint32_t r = 0; r < n; r++) {
 		uint8_t v = have_left ? L[r] : left_oob;
-		uint8_t* row = dst + (size_t)r * stride;
-		for (uint32_t c = 0; c < n; c++) row[c] = v;
+#if VP8_RECON_SSE2
+		if (n == 16) {
+			_mm_storeu_si128((__m128i*)(void*)(dst + (size_t)r * stride), _mm_set1_epi8((char)v));
+			continue;
+		}
+		if (n == 8) {
+			_mm_storel_epi64((__m128i*)(void*)(dst + (size_t)r * stride), _mm_set1_epi8((char)v));
+			continue;
+		}
+#endif
+		memset(dst + (size_t)r * stride, v, n);
 	}
 }
 
@@ -274,6 +377,35 @@ static void pred_tm(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8
 		// RFC 6386 Section 12: pixels above the top row (including above-left) are 127.
 		P = above_oob;
 	}
+#if VP8_RECON_SSE2
+	if (n == 16) {
+		const __m128i zero = _mm_setzero_si128();
+		const __m128i p = _mm_set1_epi16((short)P);
+		const __m128i a = have_above ? _mm_loadu_si128((const __m128i*)(const void*)A) : _mm_set1_epi8((char)above_oob);
+		const __m128i a_lo = _mm_unpacklo_epi8(a, zero);
+		const __m128i a_hi = _mm_unpackhi_epi8(a, zero);
+		for (uint32_t r = 0; r < 16; r++) {
+			uint8_t Lv = have_left ? L[r] : left_oob;
+			const __m128i l = _mm_set1_epi16((short)Lv);
+			const __m128i out_lo = _mm_add_epi16(_mm_sub_epi16(a_lo, p), l);
+			const __m128i out_hi = _mm_add_epi16(_mm_sub_epi16(a_hi, p), l);
+			_mm_storeu_si128((__m128i*)(void*)(dst + (size_t)r * stride), _mm_packus_epi16(out_lo, out_hi));
+		}
+		return;
+	}
+	if (n == 8) {
+		const __m128i zero = _mm_setzero_si128();
+		const __m128i p = _mm_set1_epi16((short)P);
+		const __m128i a = have_above ? _mm_loadl_epi64((const __m128i*)(const void*)A) : _mm_set1_epi8((char)above_oob);
+		const __m128i a_lo = _mm_unpacklo_epi8(a, zero);
+		for (uint32_t r = 0; r < 8; r++) {
+			uint8_t Lv = have_left ? L[r] : left_oob;
+			const __m128i out = _mm_add_epi16(_mm_sub_epi16(a_lo, p), _mm_set1_epi16((short)Lv));
+			_mm_storel_epi64((__m128i*)(void*)(dst + (size_t)r * stride), _mm_packus_epi16(out, zero));
+		}
+		return;
+	}
+#endif
 	for (uint32_t r = 0; r < n; r++) {
 		uint8_t Lv = have_left ? L[r] : left_oob;
 		for (uint32_t c = 0; c < n; c++) {
@@ -382,7 +514,7 @@ typedef struct {
 
 static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFrame* decoded, const DequantFactors dqf[4],
                                             uint32_t mb, const Vp8MacroblockSyntax* syntax,
-                                            const ReconCoeffView* coeffs) {
+                                            const ReconCoeffView* coeffs, Vp8ReconProfile* profile) {
 	uint32_t mb_cols = decoded->mb_cols;
 	uint32_t mb_r = mb / mb_cols;
 	uint32_t mb_c = mb - mb_r * mb_cols;
@@ -443,15 +575,25 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 				}
 
 				uint8_t* dst = pad->y + (size_t)sy * pad->stride_y + sx;
+				uint64_t pred_t0 = profile ? os_monotonic_raw_ns() : 0;
 				if (!syntax->has_coeff) {
 					vp8_bpred4x4(dst, pad->stride_y, A, L4, mode);
 				} else {
 					uint8_t B[4][4];
 					vp8_bpred4x4(&B[0][0], 4, A, L4, mode);
+					if (profile && mode < 10u) {
+						profile->b_prediction_ns[mode] += os_monotonic_raw_ns() - pred_t0;
+						profile->b_prediction_calls[mode]++;
+					}
 
 					const int16_t* cq = coeffs->y + (size_t)sb * 16u;
 					reconstruct_block4(dst, pad->stride_y, &B[0][0], 4, cq, q->factor[TOKEN_BLOCK_Y1][0],
-					                   q->factor[TOKEN_BLOCK_Y1][1]);
+					                   q->factor[TOKEN_BLOCK_Y1][1], profile, 0);
+					continue;
+				}
+				if (profile && mode < 10u) {
+					profile->b_prediction_ns[mode] += os_monotonic_raw_ns() - pred_t0;
+					profile->b_prediction_calls[mode]++;
 				}
 			}
 		}
@@ -470,6 +612,7 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 		int have_above = (y != 0);
 		int have_left = (x != 0);
 
+		uint64_t pred_t0 = profile ? os_monotonic_raw_ns() : 0;
 		switch (ymode) {
 			case 0: pred_dc(pred_y_dst, pred_y_stride, A16, L16, 16, have_above, have_left, 127, 129); break;
 			case 1: pred_v(pred_y_dst, pred_y_stride, A16, 16, have_above, 127); break;
@@ -483,11 +626,20 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 			}
 			default: pred_dc(pred_y_dst, pred_y_stride, A16, L16, 16, have_above, have_left, 127, 129); break;
 		}
+		if (profile) {
+			uint32_t idx = (ymode < 5u) ? ymode : 0u;
+			profile->y_prediction_ns[idx] += os_monotonic_raw_ns() - pred_t0;
+			profile->y_prediction_calls[idx]++;
+		}
 
 		if (syntax->has_coeff) {
 			int16_t y2_dc[16];
 			const int16_t* y2q = coeffs->y2;
 			CoeffClass y2_class = coeffs_classify(y2q, 1);
+			CoeffClass y2_effective = y2_class;
+			if (y2_class == COEFFS_ZERO && y2q[0] != 0) y2_effective = COEFFS_DC_ONLY;
+			if (profile) profile->block_class[1][(int)y2_effective]++;
+			uint64_t y2_t0 = profile ? os_monotonic_raw_ns() : 0;
 			if (y2_class == COEFFS_ZERO && y2q[0] == 0) {
 				memset(y2_dc, 0, sizeof(y2_dc));
 			} else if (y2_class != COEFFS_HAS_AC) {
@@ -495,12 +647,17 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 				inv_wht4x4_dc_only(dc, y2_dc);
 			} else {
 				int16_t y2_deq[16];
+#if VP8_RECON_SSE2
+				dequant_block4_sse2(y2q, q->factor[TOKEN_BLOCK_Y2][0], q->factor[TOKEN_BLOCK_Y2][1], y2_deq);
+#else
 				for (int i = 0; i < 16; i++) {
 					int fct = (i == 0) ? q->factor[TOKEN_BLOCK_Y2][0] : q->factor[TOKEN_BLOCK_Y2][1];
 					y2_deq[i] = (int16_t)(y2q[i] * fct);
 				}
+#endif
 				inv_wht4x4(y2_deq, y2_dc);
 			}
+			if (profile) profile->y2_wht_ns[(int)y2_effective] += os_monotonic_raw_ns() - y2_t0;
 
 			for (uint32_t sb_r = 0; sb_r < 4; sb_r++) {
 				for (uint32_t sb_c = 0; sb_c < 4; sb_c++) {
@@ -510,7 +667,7 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 					uint32_t by = sb_r * 4u;
 					reconstruct_block4_with_dc(pad->y + (size_t)(y + by) * pad->stride_y + x + bx, pad->stride_y,
 					                           pred_y + (size_t)by * 16u + bx, 16, y2_dc[(int)sb_r * 4 + (int)sb_c], cq,
-					                           q->factor[TOKEN_BLOCK_Y1][1]);
+					                           q->factor[TOKEN_BLOCK_Y1][1], profile, 0);
 				}
 			}
 		}
@@ -536,6 +693,7 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 	get_left_col(pad->v, pad->stride_uv, ch, cx, cy, 8, 129, L8v);
 	int have_above_c = (cy != 0);
 	int have_left_c = (cx != 0);
+	uint64_t uv_pred_t0 = profile ? os_monotonic_raw_ns() : 0;
 	switch (syntax->uv_mode) {
 		case 0:
 			pred_dc(pred_u_dst, pred_uv_stride, A8u, L8u, 8, have_above_c, have_left_c, 127, 129);
@@ -567,6 +725,11 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 			pred_dc(pred_v_dst, pred_uv_stride, A8v, L8v, 8, have_above_c, have_left_c, 127, 129);
 			break;
 	}
+	if (profile) {
+		uint32_t idx = (syntax->uv_mode < 4u) ? syntax->uv_mode : 0u;
+		profile->uv_prediction_ns[idx] += os_monotonic_raw_ns() - uv_pred_t0;
+		profile->uv_prediction_calls[idx]++;
+	}
 
 	if (!syntax->has_coeff) return;
 
@@ -579,17 +742,19 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 		uint32_t by = br * 4u;
 		reconstruct_block4(pad->u + (size_t)(cy + by) * pad->stride_uv + cx + bx, pad->stride_uv,
 		                   pred_u + (size_t)by * 8u + bx, 8, cuq, q->factor[TOKEN_BLOCK_UV][0],
-		                   q->factor[TOKEN_BLOCK_UV][1]);
+		                   q->factor[TOKEN_BLOCK_UV][1], profile, 2);
 		reconstruct_block4(pad->v + (size_t)(cy + by) * pad->stride_uv + cx + bx, pad->stride_uv,
 		                   pred_vp + (size_t)by * 8u + bx, 8, cvq, q->factor[TOKEN_BLOCK_UV][0],
-		                   q->factor[TOKEN_BLOCK_UV][1]);
+		                   q->factor[TOKEN_BLOCK_UV][1], profile, 3);
 	}
 }
 
 static int finish_keyframe_yuv(const Vp8KeyFrameHeader* kf, const Vp8DecodedFrame* decoded, Yuv420Image* pad,
-                               Yuv420Image* out, int apply_loopfilter) {
+                               Yuv420Image* out, int apply_loopfilter, Vp8LoopfilterProfile* loopfilter_profile) {
 	if (apply_loopfilter) {
-		if (vp8_loopfilter_apply_keyframe(pad, decoded) != 0) {
+		int rc = loopfilter_profile ? vp8_loopfilter_apply_keyframe_profiled(pad, decoded, loopfilter_profile) :
+		                              vp8_loopfilter_apply_keyframe(pad, decoded);
+		if (rc != 0) {
 			yuv420_free(pad);
 			return -1;
 		}
@@ -622,7 +787,8 @@ static int finish_keyframe_yuv(const Vp8KeyFrameHeader* kf, const Vp8DecodedFram
 }
 
 static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, const Vp8DecodedFrame* decoded, Yuv420Image* out,
-								  int apply_loopfilter) {
+								  int apply_loopfilter, Vp8ReconProfile* recon_profile,
+								  Vp8LoopfilterProfile* loopfilter_profile) {
 	if (!kf || !decoded || !out) {
 		errno = EINVAL;
 		return -1;
@@ -664,11 +830,17 @@ static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, co
 				.uv_mode = decoded->uv_mode[mb],
 				.bmode = decoded->bmode ? (decoded->bmode + (size_t)mb * 16u) : NULL,
 			};
-			reconstruct_macroblock_keyframe(&pad, decoded, dqf, mb, &syntax, &coeffs);
+			reconstruct_macroblock_keyframe(&pad, decoded, dqf, mb, &syntax, &coeffs, recon_profile);
 		}
 	}
 
-	return finish_keyframe_yuv(kf, decoded, &pad, out, apply_loopfilter);
+	return finish_keyframe_yuv(kf, decoded, &pad, out, apply_loopfilter, loopfilter_profile);
+}
+
+static void recon_profile_zero(Vp8ReconProfile* profile) {
+	if (!profile) return;
+	volatile uint64_t* p = (volatile uint64_t*)(void*)profile;
+	for (size_t i = 0; i < sizeof(*profile) / sizeof(uint64_t); i++) p[i] = 0;
 }
 
 typedef struct {
@@ -723,7 +895,7 @@ static int fused_recon_visit(void* user, uint32_t mb_index, const Vp8MacroblockS
 		.u = &coeffs->u[0][0],
 		.v = &coeffs->v[0][0],
 	};
-	reconstruct_macroblock_keyframe(&state->pad, state->decoded, state->dqf, mb_index, syntax, &view);
+	reconstruct_macroblock_keyframe(&state->pad, state->decoded, state->dqf, mb_index, syntax, &view, NULL);
 	return 0;
 }
 
@@ -754,17 +926,24 @@ static int vp8_decode_reconstruct_keyframe_yuv_internal(ByteSpan vp8_payload, Yu
 		return -1;
 	}
 
-	int rc = finish_keyframe_yuv(&kf, &decoded, &state.pad, out, apply_loopfilter);
+	int rc = finish_keyframe_yuv(&kf, &decoded, &state.pad, out, apply_loopfilter, NULL);
 	vp8_decoded_frame_free(&decoded);
 	return rc;
 }
 
 int vp8_reconstruct_keyframe_yuv(const Vp8KeyFrameHeader* kf, const Vp8DecodedFrame* decoded, Yuv420Image* out) {
-	return vp8_reconstruct_keyframe_yuv_internal(kf, decoded, out, 0);
+	return vp8_reconstruct_keyframe_yuv_internal(kf, decoded, out, 0, NULL, NULL);
 }
 
 int vp8_reconstruct_keyframe_yuv_filtered(const Vp8KeyFrameHeader* kf, const Vp8DecodedFrame* decoded, Yuv420Image* out) {
-	return vp8_reconstruct_keyframe_yuv_internal(kf, decoded, out, 1);
+	return vp8_reconstruct_keyframe_yuv_internal(kf, decoded, out, 1, NULL, NULL);
+}
+
+int vp8_reconstruct_keyframe_yuv_filtered_profiled(const Vp8KeyFrameHeader* kf, const Vp8DecodedFrame* decoded,
+                                                   Yuv420Image* out, Vp8ReconProfile* recon_profile,
+                                                   Vp8LoopfilterProfile* loopfilter_profile) {
+	recon_profile_zero(recon_profile);
+	return vp8_reconstruct_keyframe_yuv_internal(kf, decoded, out, 1, recon_profile, loopfilter_profile);
 }
 
 int vp8_decode_reconstruct_keyframe_yuv(ByteSpan vp8_payload, Yuv420Image* out) {
