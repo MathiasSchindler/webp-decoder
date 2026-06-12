@@ -16,6 +16,14 @@ typedef struct {
 	uint32_t overread_bytes;
 } BoolDecoder;
 
+#if defined(__GNUC__) || defined(__clang__)
+#define BOOL_DECODER_LIKELY(x) __builtin_expect(!!(x), 1)
+#define BOOL_DECODER_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define BOOL_DECODER_LIKELY(x) (x)
+#define BOOL_DECODER_UNLIKELY(x) (x)
+#endif
+
 static inline uint8_t bool_decoder_norm_shift(uint8_t range) {
 	static const uint8_t shift[256] = {
 		0, 7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4,
@@ -39,15 +47,13 @@ static inline uint8_t bool_decoder_norm_shift(uint8_t range) {
 }
 
 static inline void bool_decoder_refill_inline(BoolDecoder* d) {
-	while (d->count >= 0) {
-		if (d->buf < d->end) {
-			d->value |= (uint32_t)(*d->buf++) << d->count;
-		} else {
-			d->overread = 1;
-			d->overread_bytes++;
-		}
-		d->count -= 8;
+	if (BOOL_DECODER_LIKELY(d->buf < d->end)) {
+		d->value |= (uint32_t)(*d->buf++) << d->count;
+	} else {
+		d->overread = 1;
+		d->overread_bytes++;
 	}
+	d->count -= 8;
 }
 
 static inline int bool_decode_bool_inline(BoolDecoder* d, uint8_t prob) {
@@ -70,7 +76,7 @@ static inline int bool_decode_bool_inline(BoolDecoder* d, uint8_t prob) {
 	d->range = (uint8_t)(range << shift);
 	d->value = value << shift;
 	d->count += shift;
-	if (d->count >= 0) bool_decoder_refill_inline(d);
+	if (BOOL_DECODER_UNLIKELY(d->count >= 0)) bool_decoder_refill_inline(d);
 	return bit;
 }
 
@@ -94,7 +100,7 @@ static inline int bool_decode_bit_inline(BoolDecoder* d) {
 	d->range = (uint8_t)(range << shift);
 	d->value = value << shift;
 	d->count += shift;
-	if (d->count >= 0) bool_decoder_refill_inline(d);
+	if (BOOL_DECODER_UNLIKELY(d->count >= 0)) bool_decoder_refill_inline(d);
 	return bit;
 }
 

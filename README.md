@@ -129,22 +129,22 @@ RUNS=5 scripts/benchmark_decoder_modes.py build/profile/final-speed-validation-d
 `perf` was present, but `perf_event_paranoid=4` prevented useful hardware or
 software event profiling; the artifact keeps the attempted `perf stat` output.
 
-Current Commons stage/core profile after the follow-up entropy/loopfilter
-hotspot pass
-(`build/profile/hotspot-integration-comparison-20260612T1357/`, 2026-06-12):
+Current Commons stage/core profile after the second-round entropy,
+reconstruction, RGB, loopfilter, and PNG hotspot pass
+(`build/profile/opt2-integrated-comparison-20260612T1420/`, 2026-06-12):
 
 - Corpus: 28 generated Commons WebPs, 378.031 MP per run; median of 5 runs.
-- Our cumulative modes: `-info` 142.55 MP/s, `-yuv` 199.21 MP/s, `-yuvf`
-  166.97 MP/s, `-ppm` 133.41 MP/s, `-png` 113.35 MP/s.
-- System libwebp core helpers: YUV no-filter 326.59 MP/s, YUV filtered
-  278.35 MP/s, RGB buffer 214.31 MP/s, RGB+PPM 213.83 MP/s.
-- Comparative PPM: ffmpeg 76.83 MP/s, ImageMagick 102.10 MP/s.
-- Derived cumulative deltas: our loopfilter adds 0.366 s, RGB/PPM output adds
-  0.569 s, and PNG output adds 1.071 s. Internal `-profile_stages` reports
-  token decode at 1.340 s, reconstruction at 0.890 s, derived loopfilter at
-  0.328 s, YUV-to-RGB formatting at 0.536 s, and PPM pixel writes at 0.025 s.
-  The largest remaining PPM gap to libwebp is still RGB formatting plus core
-  entropy/reconstruction throughput.
+- Our cumulative modes: `-info` 150.64 MP/s, `-yuv` 225.09 MP/s, `-yuvf`
+  186.26 MP/s, `-ppm` 167.50 MP/s, `-png` 146.15 MP/s.
+- System libwebp core helpers: YUV no-filter 325.13 MP/s, YUV filtered
+  282.71 MP/s, RGB buffer 214.57 MP/s, RGB+PPM 215.64 MP/s.
+- Comparative PPM: ffmpeg 76.55 MP/s, ImageMagick 101.16 MP/s.
+- Derived cumulative deltas: our loopfilter adds 0.350 s, RGB/PPM output adds
+  0.227 s, and PNG output adds 0.557 s. Internal `-profile_stages` reports
+  token decode at 1.273 s, reconstruction at 0.754 s, derived loopfilter at
+  0.311 s, YUV-to-RGB formatting at 0.235 s, and PPM pixel writes at 0.025 s.
+  The largest remaining gap to libwebp is now mostly core entropy,
+  reconstruction, and loopfilter throughput.
 
 Caveats: these are local machine timings over the generated Commons artifact
 set and include process startup, file reads, allocation, and decode work. The

@@ -219,10 +219,93 @@ static inline void yuv_to_rgb8_row_avx2(const uint8_t* y,
 	store_rgb8_avx2(dst, clip_fixed6_to_u8_avx2(r), clip_fixed6_to_u8_avx2(g), clip_fixed6_to_u8_avx2(b));
 }
 
+static inline __m128i load_u8x8(const uint8_t* p) {
+	return _mm_loadl_epi64((const __m128i*)p);
+}
+
+static inline __m128i load_u8x8_to_u16(const uint8_t* p) {
+	return _mm_unpacklo_epi8(load_u8x8(p), _mm_setzero_si128());
+}
+
+static inline __m128i pack_interleaved_u8(__m128i a, __m128i b) {
+	const __m128i zero = _mm_setzero_si128();
+	return _mm_unpacklo_epi8(_mm_packus_epi16(a, zero), _mm_packus_epi16(b, zero));
+}
+
+static inline void yuv_to_rgb8_vec_avx2(__m128i y8, __m128i u8, __m128i v8, uint8_t* dst) {
+	const __m256i yy = _mm256_cvtepu8_epi32(y8);
+	const __m256i uu = _mm256_cvtepu8_epi32(u8);
+	const __m256i vv = _mm256_cvtepu8_epi32(v8);
+	const __m256i y_mul = mult_hi_u8_avx2(yy, 19077);
+	const __m256i r = _mm256_sub_epi32(_mm256_add_epi32(y_mul, mult_hi_u8_avx2(vv, 26149)),
+	                                  _mm256_set1_epi32(14234));
+	const __m256i g = _mm256_add_epi32(_mm256_sub_epi32(_mm256_sub_epi32(y_mul, mult_hi_u8_avx2(uu, 6419)),
+	                                                   mult_hi_u8_avx2(vv, 13320)),
+	                                  _mm256_set1_epi32(8708));
+	const __m256i b = _mm256_sub_epi32(_mm256_add_epi32(y_mul, mult_hi_u8_avx2(uu, 33050)),
+	                                  _mm256_set1_epi32(17685));
+	store_rgb8_avx2(dst, clip_fixed6_to_u8_avx2(r), clip_fixed6_to_u8_avx2(g), clip_fixed6_to_u8_avx2(b));
+}
+
 typedef struct {
 	uint8_t top0_u, top0_v, top1_u, top1_v;
 	uint8_t bottom0_u, bottom0_v, bottom1_u, bottom1_v;
 } Vp8UvEdge;
+
+typedef struct {
+	__m128i top_u;
+	__m128i top_v;
+	__m128i bottom_u;
+	__m128i bottom_v;
+} Vp8UvEdge8;
+
+static inline Vp8UvEdge8 make_uv_edges8(const uint8_t* top_u,
+                                        const uint8_t* top_v,
+                                        const uint8_t* cur_u,
+                                        const uint8_t* cur_v,
+                                        uint32_t x) {
+	const __m128i tl_u = load_u8x8_to_u16(top_u + x - 1u);
+	const __m128i tl_v = load_u8x8_to_u16(top_v + x - 1u);
+	const __m128i l_u = load_u8x8_to_u16(cur_u + x - 1u);
+	const __m128i l_v = load_u8x8_to_u16(cur_v + x - 1u);
+	const __m128i t_u = load_u8x8_to_u16(top_u + x);
+	const __m128i t_v = load_u8x8_to_u16(top_v + x);
+	const __m128i u = load_u8x8_to_u16(cur_u + x);
+	const __m128i v = load_u8x8_to_u16(cur_v + x);
+	const __m128i bias = _mm_set1_epi16(8);
+
+	const __m128i diag_12_u =
+	    _mm_srli_epi16(_mm_add_epi16(_mm_add_epi16(_mm_add_epi16(tl_u, u),
+	                                              _mm_add_epi16(t_u, _mm_slli_epi16(t_u, 1))),
+	                                  _mm_add_epi16(_mm_add_epi16(l_u, _mm_slli_epi16(l_u, 1)), bias)),
+	                  3);
+	const __m128i diag_12_v =
+	    _mm_srli_epi16(_mm_add_epi16(_mm_add_epi16(_mm_add_epi16(tl_v, v),
+	                                              _mm_add_epi16(t_v, _mm_slli_epi16(t_v, 1))),
+	                                  _mm_add_epi16(_mm_add_epi16(l_v, _mm_slli_epi16(l_v, 1)), bias)),
+	                  3);
+	const __m128i diag_03_u =
+	    _mm_srli_epi16(_mm_add_epi16(_mm_add_epi16(_mm_add_epi16(t_u, l_u),
+	                                              _mm_add_epi16(tl_u, _mm_slli_epi16(tl_u, 1))),
+	                                  _mm_add_epi16(_mm_add_epi16(u, _mm_slli_epi16(u, 1)), bias)),
+	                  3);
+	const __m128i diag_03_v =
+	    _mm_srli_epi16(_mm_add_epi16(_mm_add_epi16(_mm_add_epi16(t_v, l_v),
+	                                              _mm_add_epi16(tl_v, _mm_slli_epi16(tl_v, 1))),
+	                                  _mm_add_epi16(_mm_add_epi16(v, _mm_slli_epi16(v, 1)), bias)),
+	                  3);
+
+	Vp8UvEdge8 e;
+	e.top_u = pack_interleaved_u8(_mm_srli_epi16(_mm_add_epi16(diag_12_u, tl_u), 1),
+	                             _mm_srli_epi16(_mm_add_epi16(diag_03_u, t_u), 1));
+	e.top_v = pack_interleaved_u8(_mm_srli_epi16(_mm_add_epi16(diag_12_v, tl_v), 1),
+	                             _mm_srli_epi16(_mm_add_epi16(diag_03_v, t_v), 1));
+	e.bottom_u = pack_interleaved_u8(_mm_srli_epi16(_mm_add_epi16(diag_03_u, l_u), 1),
+	                                _mm_srli_epi16(_mm_add_epi16(diag_12_u, u), 1));
+	e.bottom_v = pack_interleaved_u8(_mm_srli_epi16(_mm_add_epi16(diag_03_v, l_v), 1),
+	                                _mm_srli_epi16(_mm_add_epi16(diag_12_v, v), 1));
+	return e;
+}
 
 static inline Vp8UvEdge make_uv_edge(uint32_t tl_u,
                                      uint32_t tl_v,
@@ -312,6 +395,18 @@ void vp8_upsample_rgb_line_sse2(const uint8_t* top_y,
 
 	uint32_t x = 1;
 #if defined(VP8_YUV_RGB_HAVE_AVX2)
+	for (; x + 7u <= last_pixel_pair; x += 8u) {
+		const Vp8UvEdge8 e = make_uv_edges8(top_u, top_v, cur_u, cur_v, x);
+		const __m128i y = _mm_loadu_si128((const __m128i*)(top_y + 2u * x - 1u));
+		yuv_to_rgb8_vec_avx2(y, e.top_u, e.top_v, top_dst + (2u * x - 1u) * 3u);
+		yuv_to_rgb8_vec_avx2(_mm_srli_si128(y, 8), _mm_srli_si128(e.top_u, 8), _mm_srli_si128(e.top_v, 8),
+		                     top_dst + (2u * x - 1u) * 3u + 24u);
+
+		tl_u = top_u[x + 7u];
+		tl_v = top_v[x + 7u];
+		l_u = cur_u[x + 7u];
+		l_v = cur_v[x + 7u];
+	}
 	for (; x + 3u <= last_pixel_pair; x += 4u) {
 		const uint32_t t0_u = top_u[x];
 		const uint32_t t0_v = top_v[x];
@@ -448,6 +543,22 @@ void vp8_upsample_rgb_line_pair_sse2(const uint8_t* top_y,
 
 	uint32_t x = 1;
 #if defined(VP8_YUV_RGB_HAVE_AVX2)
+	for (; x + 7u <= last_pixel_pair; x += 8u) {
+		const Vp8UvEdge8 e = make_uv_edges8(top_u, top_v, cur_u, cur_v, x);
+		const __m128i ty = _mm_loadu_si128((const __m128i*)(top_y + 2u * x - 1u));
+		const __m128i by = _mm_loadu_si128((const __m128i*)(bottom_y + 2u * x - 1u));
+		yuv_to_rgb8_vec_avx2(ty, e.top_u, e.top_v, top_dst + (2u * x - 1u) * 3u);
+		yuv_to_rgb8_vec_avx2(_mm_srli_si128(ty, 8), _mm_srli_si128(e.top_u, 8), _mm_srli_si128(e.top_v, 8),
+		                     top_dst + (2u * x - 1u) * 3u + 24u);
+		yuv_to_rgb8_vec_avx2(by, e.bottom_u, e.bottom_v, bottom_dst + (2u * x - 1u) * 3u);
+		yuv_to_rgb8_vec_avx2(_mm_srli_si128(by, 8), _mm_srli_si128(e.bottom_u, 8), _mm_srli_si128(e.bottom_v, 8),
+		                     bottom_dst + (2u * x - 1u) * 3u + 24u);
+
+		tl_u = top_u[x + 7u];
+		tl_v = top_v[x + 7u];
+		l_u = cur_u[x + 7u];
+		l_v = cur_v[x + 7u];
+	}
 	for (; x + 3u <= last_pixel_pair; x += 4u) {
 		const uint32_t t0_u = top_u[x];
 		const uint32_t t0_v = top_v[x];

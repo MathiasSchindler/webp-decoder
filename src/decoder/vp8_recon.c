@@ -86,7 +86,25 @@ typedef enum {
 	COEFFS_HAS_AC = 2,
 } CoeffClass;
 
+static inline int coeffs_have_nonzero_ac(const int16_t* coeffs) {
+#if VP8_RECON_SSE2
+	const __m128i zero = _mm_setzero_si128();
+	__m128i a = _mm_loadu_si128((const __m128i*)(const void*)(coeffs + 1));
+	__m128i b = _mm_loadu_si128((const __m128i*)(const void*)(coeffs + 8));
+	__m128i z = _mm_cmpeq_epi16(_mm_or_si128(a, b), zero);
+	return _mm_movemask_epi8(z) != 0xffff;
+#else
+	for (int i = 1; i < 16; i++) {
+		if (coeffs[i] != 0) return 1;
+	}
+	return 0;
+#endif
+}
+
 static CoeffClass coeffs_classify(const int16_t* coeffs, int first) {
+	if (first == 1) {
+		return coeffs_have_nonzero_ac(coeffs) ? COEFFS_HAS_AC : (coeffs[0] == 0 ? COEFFS_ZERO : COEFFS_DC_ONLY);
+	}
 	for (int i = first; i < 16; i++) {
 		if (coeffs[i] != 0) return COEFFS_HAS_AC;
 	}
@@ -94,8 +112,14 @@ static CoeffClass coeffs_classify(const int16_t* coeffs, int first) {
 }
 
 static void copy_block4(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride) {
+	if (dst == pred && dst_stride == pred_stride) return;
 	for (uint32_t rr = 0; rr < 4; rr++) {
-		memcpy(dst + (size_t)rr * dst_stride, pred + (size_t)rr * pred_stride, 4);
+		const uint8_t* s = pred + (size_t)rr * pred_stride;
+		uint8_t* d = dst + (size_t)rr * dst_stride;
+		d[0] = s[0];
+		d[1] = s[1];
+		d[2] = s[2];
+		d[3] = s[3];
 	}
 }
 
@@ -190,7 +214,10 @@ static void reconstruct_block4_with_dc(uint8_t* dst, uint32_t dst_stride, const 
 static void pred_dc(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8_t* L, uint32_t n, int have_above,
                     int have_left, uint8_t above_oob, uint8_t left_oob) {
 	if (!have_above && !have_left) {
-		for (uint32_t r = 0; r < n; r++) memset(dst + (size_t)r * stride, 128, n);
+		for (uint32_t r = 0; r < n; r++) {
+			uint8_t* row = dst + (size_t)r * stride;
+			for (uint32_t c = 0; c < n; c++) row[c] = 128;
+		}
 		return;
 	}
 	int sum = 0;
@@ -208,13 +235,17 @@ static void pred_dc(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8
 	uint8_t v = (uint8_t)((sum + (1 << (shf - 1))) >> shf);
 	(void)above_oob;
 	(void)left_oob;
-	for (uint32_t r = 0; r < n; r++) memset(dst + (size_t)r * stride, v, n);
+	for (uint32_t r = 0; r < n; r++) {
+		uint8_t* row = dst + (size_t)r * stride;
+		for (uint32_t c = 0; c < n; c++) row[c] = v;
+	}
 }
 
 static void pred_v(uint8_t* dst, uint32_t stride, const uint8_t* A, uint32_t n, int have_above, uint8_t above_oob) {
 	for (uint32_t r = 0; r < n; r++) {
 		if (have_above) {
-			memcpy(dst + (size_t)r * stride, A, n);
+			uint8_t* row = dst + (size_t)r * stride;
+			for (uint32_t c = 0; c < n; c++) row[c] = A[c];
 		} else {
 			memset(dst + (size_t)r * stride, above_oob, n);
 		}
@@ -224,7 +255,8 @@ static void pred_v(uint8_t* dst, uint32_t stride, const uint8_t* A, uint32_t n, 
 static void pred_h(uint8_t* dst, uint32_t stride, const uint8_t* L, uint32_t n, int have_left, uint8_t left_oob) {
 	for (uint32_t r = 0; r < n; r++) {
 		uint8_t v = have_left ? L[r] : left_oob;
-		memset(dst + (size_t)r * stride, v, n);
+		uint8_t* row = dst + (size_t)r * stride;
+		for (uint32_t c = 0; c < n; c++) row[c] = v;
 	}
 }
 
@@ -249,10 +281,6 @@ static void pred_tm(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8
 			dst[r * stride + c] = clamp255_i32((int32_t)Lv + (int32_t)Av - (int32_t)P);
 		}
 	}
-}
-
-static void subblock_predict(uint8_t B[4][4], const uint8_t* A, const uint8_t* L, uint8_t mode) {
-	vp8_bpred4x4(&B[0][0], 4, A, L, mode);
 }
 
 static int checked_mul_size(size_t a, size_t b, size_t* out) {
@@ -323,29 +351,25 @@ void yuv420_free(Yuv420Image* img) {
 
 static void get_above_row(const uint8_t* plane, uint32_t stride, uint32_t width, uint32_t x, uint32_t y, uint32_t n,
                           uint8_t fill, uint8_t* out) {
+	(void)width;
 	if (y == 0) {
 		for (uint32_t i = 0; i < n; i++) out[i] = fill;
 		return;
 	}
-	uint32_t row = y - 1;
-	for (uint32_t i = 0; i < n; i++) {
-		uint32_t xx = x + i;
-		if (xx >= width) xx = width - 1;
-		out[i] = plane[row * stride + xx];
-	}
+	const uint8_t* src = plane + (size_t)(y - 1u) * stride + x;
+	for (uint32_t i = 0; i < n; i++) out[i] = src[i];
 }
 
 static void get_left_col(const uint8_t* plane, uint32_t stride, uint32_t height, uint32_t x, uint32_t y, uint32_t n,
                          uint8_t fill, uint8_t* out) {
+	(void)height;
 	if (x == 0) {
 		for (uint32_t i = 0; i < n; i++) out[i] = fill;
 		return;
 	}
 	uint32_t col = x - 1;
 	for (uint32_t i = 0; i < n; i++) {
-		uint32_t yy = y + i;
-		if (yy >= height) yy = height - 1;
-		out[i] = plane[yy * stride + col];
+		out[i] = plane[(y + i) * stride + col];
 	}
 }
 
@@ -378,49 +402,52 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 				uint32_t sy = y + sb_r * 4u;
 
 				uint8_t A8[9];
+				const uint8_t* A = NULL;
 				uint8_t L4[4];
-				if (sy == 0) A8[0] = 127;
-				else if (sx == 0) A8[0] = 129;
-				else A8[0] = pad->y[(sy - 1) * pad->stride_y + (sx - 1)];
+				if (sy != 0 && sx != 0 && sx + 7u < pad->width && (sb_c != 3 || sb_r == 0)) {
+					A = pad->y + (size_t)(sy - 1u) * pad->stride_y + sx;
+				} else {
+					if (sy == 0) A8[0] = 127;
+					else if (sx == 0) A8[0] = 129;
+					else A8[0] = pad->y[(sy - 1) * pad->stride_y + (sx - 1)];
 
-				for (uint32_t i = 0; i < 8; i++) {
-					if (sy == 0) {
-						A8[1 + i] = 127;
-						continue;
-					}
-					uint32_t row = sy - 1;
-					uint32_t col;
-					if (sb_c == 3 && i >= 4) {
-						if (y == 0) {
+					for (uint32_t i = 0; i < 8; i++) {
+						if (sy == 0) {
 							A8[1 + i] = 127;
 							continue;
 						}
-						row = y - 1;
-						col = x + 16u + (i - 4u);
-					} else {
-						col = sx + i;
+						uint32_t row = sy - 1;
+						uint32_t col;
+						if (sb_c == 3 && i >= 4) {
+							if (y == 0) {
+								A8[1 + i] = 127;
+								continue;
+							}
+							row = y - 1;
+							col = x + 16u + (i - 4u);
+						} else {
+							col = sx + i;
+						}
+						if (col >= pad->width) col = pad->width - 1;
+						A8[1 + i] = pad->y[row * pad->stride_y + col];
 					}
-					if (row >= pad->height) row = pad->height - 1;
-					if (col >= pad->width) col = pad->width - 1;
-					A8[1 + i] = pad->y[row * pad->stride_y + col];
+					A = &A8[1];
 				}
 
 				if (sx == 0) {
 					for (uint32_t i = 0; i < 4; i++) L4[i] = 129;
 				} else {
 					for (uint32_t i = 0; i < 4; i++) {
-						uint32_t row = sy + i;
-						if (row >= pad->height) row = pad->height - 1;
-						L4[i] = pad->y[row * pad->stride_y + (sx - 1)];
+						L4[i] = pad->y[(sy + i) * pad->stride_y + (sx - 1)];
 					}
 				}
 
 				uint8_t* dst = pad->y + (size_t)sy * pad->stride_y + sx;
 				if (!syntax->has_coeff) {
-					vp8_bpred4x4(dst, pad->stride_y, &A8[1], L4, mode);
+					vp8_bpred4x4(dst, pad->stride_y, A, L4, mode);
 				} else {
 					uint8_t B[4][4];
-					subblock_predict(B, &A8[1], L4, mode);
+					vp8_bpred4x4(&B[0][0], 4, A, L4, mode);
 
 					const int16_t* cq = coeffs->y + (size_t)sb * 16u;
 					reconstruct_block4(dst, pad->stride_y, &B[0][0], 4, cq, q->factor[TOKEN_BLOCK_Y1][0],
@@ -450,7 +477,7 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 			case 3: {
 				uint8_t Ap[17];
 				Ap[0] = have_above && have_left ? pad->y[(y - 1) * pad->stride_y + (x - 1)] : (have_above ? 129 : 127);
-				memcpy(&Ap[1], A16, 16);
+				for (uint32_t i = 0; i < 16; i++) Ap[1 + i] = A16[i];
 				pred_tm(pred_y_dst, pred_y_stride, &Ap[1], L16, 16, have_above, have_left, 127, 129);
 				break;
 			}
@@ -527,8 +554,10 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 			uint8_t Apv[9];
 			Apu[0] = have_above_c && have_left_c ? pad->u[(cy - 1) * pad->stride_uv + (cx - 1)] : (have_above_c ? 129 : 127);
 			Apv[0] = have_above_c && have_left_c ? pad->v[(cy - 1) * pad->stride_uv + (cx - 1)] : (have_above_c ? 129 : 127);
-			memcpy(&Apu[1], A8u, 8);
-			memcpy(&Apv[1], A8v, 8);
+			for (uint32_t i = 0; i < 8; i++) {
+				Apu[1 + i] = A8u[i];
+				Apv[1 + i] = A8v[i];
+			}
 			pred_tm(pred_u_dst, pred_uv_stride, &Apu[1], L8u, 8, have_above_c, have_left_c, 127, 129);
 			pred_tm(pred_v_dst, pred_uv_stride, &Apv[1], L8v, 8, have_above_c, have_left_c, 127, 129);
 			break;

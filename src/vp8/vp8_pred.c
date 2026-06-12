@@ -11,24 +11,16 @@ static inline uint8_t avg2(uint8_t x, uint8_t y) { return (uint8_t)((x + y + 1) 
 
 void vp8_bpred4x4(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8_t* L, uint8_t mode) {
 #define D(r, c) dst[(uint32_t)(r) * stride + (uint32_t)(c)]
-	uint8_t E[9];
-	E[0] = L[3];
-	E[1] = L[2];
-	E[2] = L[1];
-	E[3] = L[0];
-	E[4] = A[-1];
-	E[5] = A[0];
-	E[6] = A[1];
-	E[7] = A[2];
-	E[8] = A[3];
 
 	switch (mode) {
 		case 0: {
-			int v = 4;
-			for (int i = 0; i < 4; i++) v += (int)A[i] + (int)L[i];
-			v >>= 3;
-			for (int r = 0; r < 4; r++)
-				for (int c = 0; c < 4; c++) D(r, c) = (uint8_t)v;
+			uint8_t v = (uint8_t)(((int)A[0] + (int)A[1] + (int)A[2] + (int)A[3] +
+			                       (int)L[0] + (int)L[1] + (int)L[2] + (int)L[3] + 4) >>
+			                      3);
+			D(0, 0) = D(0, 1) = D(0, 2) = D(0, 3) = v;
+			D(1, 0) = D(1, 1) = D(1, 2) = D(1, 3) = v;
+			D(2, 0) = D(2, 1) = D(2, 2) = D(2, 3) = v;
+			D(3, 0) = D(3, 1) = D(3, 2) = D(3, 3) = v;
 			break;
 		}
 		case 1: {
@@ -65,26 +57,30 @@ void vp8_bpred4x4(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8_t
 			break;
 		}
 		case 5: {
-			D(3, 0) = avg3(E[0], E[1], E[2]);
-			D(3, 1) = D(2, 0) = avg3(E[1], E[2], E[3]);
-			D(3, 2) = D(2, 1) = D(1, 0) = avg3(E[2], E[3], E[4]);
-			D(3, 3) = D(2, 2) = D(1, 1) = D(0, 0) = avg3(E[3], E[4], E[5]);
-			D(2, 3) = D(1, 2) = D(0, 1) = avg3(E[4], E[5], E[6]);
-			D(1, 3) = D(0, 2) = avg3(E[5], E[6], E[7]);
-			D(0, 3) = avg3(E[6], E[7], E[8]);
+			uint8_t e0 = L[3], e1 = L[2], e2 = L[1], e3 = L[0], e4 = A[-1];
+			uint8_t e5 = A[0], e6 = A[1], e7 = A[2], e8 = A[3];
+			D(3, 0) = avg3(e0, e1, e2);
+			D(3, 1) = D(2, 0) = avg3(e1, e2, e3);
+			D(3, 2) = D(2, 1) = D(1, 0) = avg3(e2, e3, e4);
+			D(3, 3) = D(2, 2) = D(1, 1) = D(0, 0) = avg3(e3, e4, e5);
+			D(2, 3) = D(1, 2) = D(0, 1) = avg3(e4, e5, e6);
+			D(1, 3) = D(0, 2) = avg3(e5, e6, e7);
+			D(0, 3) = avg3(e6, e7, e8);
 			break;
 		}
 		case 6: {
-			uint8_t avg3p_2 = avg3(E[1], E[2], E[3]);
-			uint8_t avg3p_3 = avg3(E[2], E[3], E[4]);
-			uint8_t avg3p_4 = avg3(E[3], E[4], E[5]);
-			uint8_t avg3p_5 = avg3(E[4], E[5], E[6]);
-			uint8_t avg3p_6 = avg3(E[5], E[6], E[7]);
-			uint8_t avg3p_7 = avg3(E[6], E[7], E[8]);
-			uint8_t avg2p_4 = avg2(E[4], E[5]);
-			uint8_t avg2p_5 = avg2(E[5], E[6]);
-			uint8_t avg2p_6 = avg2(E[6], E[7]);
-			uint8_t avg2p_7 = avg2(E[7], E[8]);
+			uint8_t e1 = L[2], e2 = L[1], e3 = L[0], e4 = A[-1];
+			uint8_t e5 = A[0], e6 = A[1], e7 = A[2], e8 = A[3];
+			uint8_t avg3p_2 = avg3(e1, e2, e3);
+			uint8_t avg3p_3 = avg3(e2, e3, e4);
+			uint8_t avg3p_4 = avg3(e3, e4, e5);
+			uint8_t avg3p_5 = avg3(e4, e5, e6);
+			uint8_t avg3p_6 = avg3(e5, e6, e7);
+			uint8_t avg3p_7 = avg3(e6, e7, e8);
+			uint8_t avg2p_4 = avg2(e4, e5);
+			uint8_t avg2p_5 = avg2(e5, e6);
+			uint8_t avg2p_6 = avg2(e6, e7);
+			uint8_t avg2p_7 = avg2(e7, e8);
 
 			D(3, 0) = avg3p_2;
 			D(2, 0) = avg3p_3;
@@ -112,16 +108,18 @@ void vp8_bpred4x4(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8_t
 			break;
 		}
 		case 8: {
-			D(3, 0) = avg2(E[0], E[1]);
-			D(3, 1) = avg3(E[0], E[1], E[2]);
-			D(2, 0) = D(3, 2) = avg2(E[1], E[2]);
-			D(2, 1) = D(3, 3) = avg3(E[1], E[2], E[3]);
-			D(2, 2) = D(1, 0) = avg2(E[2], E[3]);
-			D(2, 3) = D(1, 1) = avg3(E[2], E[3], E[4]);
-			D(1, 2) = D(0, 0) = avg2(E[3], E[4]);
-			D(1, 3) = D(0, 1) = avg3(E[3], E[4], E[5]);
-			D(0, 2) = avg3(E[4], E[5], E[6]);
-			D(0, 3) = avg3(E[5], E[6], E[7]);
+			uint8_t e0 = L[3], e1 = L[2], e2 = L[1], e3 = L[0], e4 = A[-1];
+			uint8_t e5 = A[0], e6 = A[1], e7 = A[2];
+			D(3, 0) = avg2(e0, e1);
+			D(3, 1) = avg3(e0, e1, e2);
+			D(2, 0) = D(3, 2) = avg2(e1, e2);
+			D(2, 1) = D(3, 3) = avg3(e1, e2, e3);
+			D(2, 2) = D(1, 0) = avg2(e2, e3);
+			D(2, 3) = D(1, 1) = avg3(e2, e3, e4);
+			D(1, 2) = D(0, 0) = avg2(e3, e4);
+			D(1, 3) = D(0, 1) = avg3(e3, e4, e5);
+			D(0, 2) = avg3(e4, e5, e6);
+			D(0, 3) = avg3(e5, e6, e7);
 			break;
 		}
 		case 9: {

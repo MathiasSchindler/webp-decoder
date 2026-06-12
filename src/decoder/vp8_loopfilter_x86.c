@@ -73,6 +73,12 @@ static inline __m128i select_u8_sse2(__m128i on_mask, __m128i on_value, __m128i 
 	return _mm_or_si128(_mm_and_si128(on_mask, on_value), _mm_andnot_si128(on_mask, off_value));
 }
 
+static inline __m128i low_8bytes_mask_sse2(void) {
+	const __m128i zero = _mm_setzero_si128();
+	const __m128i all = _mm_cmpeq_epi8(zero, zero);
+	return _mm_unpacklo_epi64(all, zero);
+}
+
 static inline __m128i load_u8_width_sse2(const uint8_t* p, int width) {
 	return (width == 8) ? _mm_loadl_epi64((const __m128i*)p) : _mm_loadu_si128((const __m128i*)p);
 }
@@ -236,7 +242,11 @@ VP8_LF_ALWAYS_INLINE __m128i apply_delta_sse2(__m128i pix, __m128i delta_lo, __m
 	return clip_u8_from_epi16_sse2(lo, hi);
 }
 
-VP8_LF_ALWAYS_INLINE int filter_mb_cols_sse2(__m128i cols[8], int edge_limit, int interior_limit, int hev_threshold) {
+VP8_LF_ALWAYS_INLINE int filter_mb_cols_sse2(__m128i cols[8],
+                                             int edge_limit,
+                                             int interior_limit,
+                                             int hev_threshold,
+                                             int rows) {
 	const __m128i p3 = cols[0];
 	const __m128i p2 = cols[1];
 	const __m128i p1 = cols[2];
@@ -245,13 +255,22 @@ VP8_LF_ALWAYS_INLINE int filter_mb_cols_sse2(__m128i cols[8], int edge_limit, in
 	const __m128i q1 = cols[5];
 	const __m128i q2 = cols[6];
 	const __m128i q3 = cols[7];
-	const __m128i threshold = normal_threshold_mask_sse2(p3, p2, p1, p0, q0, q1, q2, q3, edge_limit, interior_limit);
-	if (_mm_movemask_epi8(threshold) == 0) return 0;
-	const __m128i hev = hev_mask_sse2(p1, p0, q0, q1, hev_threshold);
+	__m128i threshold = normal_threshold_mask_sse2(p3, p2, p1, p0, q0, q1, q2, q3, edge_limit, interior_limit);
+	if (rows == 8) threshold = _mm_and_si128(threshold, low_8bytes_mask_sse2());
+	const int threshold_bits = _mm_movemask_epi8(threshold);
+	if (threshold_bits == 0) return 0;
+	const __m128i hev = _mm_and_si128(hev_mask_sse2(p1, p0, q0, q1, hev_threshold), threshold);
+	const int hev_bits = _mm_movemask_epi8(hev);
 
-	__m128i outer_p0;
-	__m128i outer_q0;
-	filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
+	if (hev_bits == threshold_bits) {
+		__m128i outer_p0;
+		__m128i outer_q0;
+		filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
+		cols[3] = select_u8_sse2(threshold, outer_p0, p0);
+		cols[4] = select_u8_sse2(threshold, outer_q0, q0);
+		return 1;
+	}
+
 
 	__m128i w_lo;
 	__m128i w_hi;
@@ -270,6 +289,19 @@ VP8_LF_ALWAYS_INLINE int filter_mb_cols_sse2(__m128i cols[8], int edge_limit, in
 	const __m128i mb_p2 = apply_delta_sse2(p2, a9_lo, a9_hi, 0);
 	const __m128i mb_q2 = apply_delta_sse2(q2, a9_lo, a9_hi, 1);
 
+	if (hev_bits == 0) {
+		cols[1] = select_u8_sse2(threshold, mb_p2, p2);
+		cols[2] = select_u8_sse2(threshold, mb_p1, p1);
+		cols[3] = select_u8_sse2(threshold, mb_p0, p0);
+		cols[4] = select_u8_sse2(threshold, mb_q0, q0);
+		cols[5] = select_u8_sse2(threshold, mb_q1, q1);
+		cols[6] = select_u8_sse2(threshold, mb_q2, q2);
+		return 1;
+	}
+
+	__m128i outer_p0;
+	__m128i outer_q0;
+	filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
 	cols[1] = select_u8_sse2(threshold, select_u8_sse2(hev, p2, mb_p2), p2);
 	cols[2] = select_u8_sse2(threshold, select_u8_sse2(hev, p1, mb_p1), p1);
 	cols[3] = select_u8_sse2(threshold, select_u8_sse2(hev, outer_p0, mb_p0), p0);
@@ -279,7 +311,11 @@ VP8_LF_ALWAYS_INLINE int filter_mb_cols_sse2(__m128i cols[8], int edge_limit, in
 	return 1;
 }
 
-VP8_LF_ALWAYS_INLINE int filter_subblock_cols_sse2(__m128i cols[8], int edge_limit, int interior_limit, int hev_threshold) {
+VP8_LF_ALWAYS_INLINE int filter_subblock_cols_sse2(__m128i cols[8],
+                                                   int edge_limit,
+                                                   int interior_limit,
+                                                   int hev_threshold,
+                                                   int rows) {
 	const __m128i p3 = cols[0];
 	const __m128i p2 = cols[1];
 	const __m128i p1 = cols[2];
@@ -288,13 +324,22 @@ VP8_LF_ALWAYS_INLINE int filter_subblock_cols_sse2(__m128i cols[8], int edge_lim
 	const __m128i q1 = cols[5];
 	const __m128i q2 = cols[6];
 	const __m128i q3 = cols[7];
-	const __m128i threshold = normal_threshold_mask_sse2(p3, p2, p1, p0, q0, q1, q2, q3, edge_limit, interior_limit);
-	if (_mm_movemask_epi8(threshold) == 0) return 0;
-	const __m128i hev = hev_mask_sse2(p1, p0, q0, q1, hev_threshold);
+	__m128i threshold = normal_threshold_mask_sse2(p3, p2, p1, p0, q0, q1, q2, q3, edge_limit, interior_limit);
+	if (rows == 8) threshold = _mm_and_si128(threshold, low_8bytes_mask_sse2());
+	const int threshold_bits = _mm_movemask_epi8(threshold);
+	if (threshold_bits == 0) return 0;
+	const __m128i hev = _mm_and_si128(hev_mask_sse2(p1, p0, q0, q1, hev_threshold), threshold);
+	const int hev_bits = _mm_movemask_epi8(hev);
 
-	__m128i outer_p0;
-	__m128i outer_q0;
-	filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
+	if (hev_bits == threshold_bits) {
+		__m128i outer_p0;
+		__m128i outer_q0;
+		filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
+		cols[3] = select_u8_sse2(threshold, outer_p0, p0);
+		cols[4] = select_u8_sse2(threshold, outer_q0, q0);
+		return 1;
+	}
+
 
 	const __m128i zero = _mm_setzero_si128();
 	const __m128i c3 = _mm_set1_epi16(3);
@@ -316,6 +361,17 @@ VP8_LF_ALWAYS_INLINE int filter_subblock_cols_sse2(__m128i cols[8], int edge_lim
 	const __m128i no_p1 = apply_delta_sse2(p1, a2_lo, a2_hi, 0);
 	const __m128i no_q1 = apply_delta_sse2(q1, a2_lo, a2_hi, 1);
 
+	if (hev_bits == 0) {
+		cols[2] = select_u8_sse2(threshold, no_p1, p1);
+		cols[3] = select_u8_sse2(threshold, no_p0, p0);
+		cols[4] = select_u8_sse2(threshold, no_q0, q0);
+		cols[5] = select_u8_sse2(threshold, no_q1, q1);
+		return 1;
+	}
+
+	__m128i outer_p0;
+	__m128i outer_q0;
+	filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
 	cols[2] = select_u8_sse2(threshold, select_u8_sse2(hev, p1, no_p1), p1);
 	cols[3] = select_u8_sse2(threshold, select_u8_sse2(hev, outer_p0, no_p0), p0);
 	cols[4] = select_u8_sse2(threshold, select_u8_sse2(hev, outer_q0, no_q0), q0);
@@ -361,13 +417,22 @@ static void filter_mb_h_edge_width_sse2(uint8_t* src_q0,
 	const __m128i q1 = load_u8_width_sse2(q1_ptr, width);
 	const __m128i q2 = load_u8_width_sse2(q2_ptr, width);
 	const __m128i q3 = load_u8_width_sse2(src_q0 + 3 * stride, width);
-	const __m128i threshold = normal_threshold_mask_sse2(p3, p2, p1, p0, q0, q1, q2, q3, edge_limit, interior_limit);
-	if (width == 16 && _mm_movemask_epi8(threshold) == 0) return;
-	const __m128i hev = hev_mask_sse2(p1, p0, q0, q1, hev_threshold);
+	__m128i threshold = normal_threshold_mask_sse2(p3, p2, p1, p0, q0, q1, q2, q3, edge_limit, interior_limit);
+	if (width == 8) threshold = _mm_and_si128(threshold, low_8bytes_mask_sse2());
+	const int threshold_bits = _mm_movemask_epi8(threshold);
+	if (threshold_bits == 0) return;
+	const __m128i hev = _mm_and_si128(hev_mask_sse2(p1, p0, q0, q1, hev_threshold), threshold);
+	const int hev_bits = _mm_movemask_epi8(hev);
 
-	__m128i outer_p0;
-	__m128i outer_q0;
-	filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
+	if (hev_bits == threshold_bits) {
+		__m128i outer_p0;
+		__m128i outer_q0;
+		filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
+		store_u8_width_sse2(p0_ptr, select_u8_sse2(threshold, outer_p0, p0), width);
+		store_u8_width_sse2(q0_ptr, select_u8_sse2(threshold, outer_q0, q0), width);
+		return;
+	}
+
 
 	__m128i w_lo;
 	__m128i w_hi;
@@ -386,6 +451,19 @@ static void filter_mb_h_edge_width_sse2(uint8_t* src_q0,
 	const __m128i mb_p2 = apply_delta_sse2(p2, a9_lo, a9_hi, 0);
 	const __m128i mb_q2 = apply_delta_sse2(q2, a9_lo, a9_hi, 1);
 
+	if (hev_bits == 0) {
+		store_u8_width_sse2(p2_ptr, select_u8_sse2(threshold, mb_p2, p2), width);
+		store_u8_width_sse2(p1_ptr, select_u8_sse2(threshold, mb_p1, p1), width);
+		store_u8_width_sse2(p0_ptr, select_u8_sse2(threshold, mb_p0, p0), width);
+		store_u8_width_sse2(q0_ptr, select_u8_sse2(threshold, mb_q0, q0), width);
+		store_u8_width_sse2(q1_ptr, select_u8_sse2(threshold, mb_q1, q1), width);
+		store_u8_width_sse2(q2_ptr, select_u8_sse2(threshold, mb_q2, q2), width);
+		return;
+	}
+
+	__m128i outer_p0;
+	__m128i outer_q0;
+	filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
 	store_u8_width_sse2(p2_ptr, select_u8_sse2(threshold, select_u8_sse2(hev, p2, mb_p2), p2), width);
 	store_u8_width_sse2(p1_ptr, select_u8_sse2(threshold, select_u8_sse2(hev, p1, mb_p1), p1), width);
 	store_u8_width_sse2(p0_ptr, select_u8_sse2(threshold, select_u8_sse2(hev, outer_p0, mb_p0), p0), width);
@@ -421,13 +499,22 @@ static void filter_subblock_h_edge_width_sse2(uint8_t* src_q0,
 	const __m128i q1 = load_u8_width_sse2(q1_ptr, width);
 	const __m128i q2 = load_u8_width_sse2(src_q0 + 2 * stride, width);
 	const __m128i q3 = load_u8_width_sse2(src_q0 + 3 * stride, width);
-	const __m128i threshold = normal_threshold_mask_sse2(p3, p2, p1, p0, q0, q1, q2, q3, edge_limit, interior_limit);
-	if (width == 16 && _mm_movemask_epi8(threshold) == 0) return;
-	const __m128i hev = hev_mask_sse2(p1, p0, q0, q1, hev_threshold);
+	__m128i threshold = normal_threshold_mask_sse2(p3, p2, p1, p0, q0, q1, q2, q3, edge_limit, interior_limit);
+	if (width == 8) threshold = _mm_and_si128(threshold, low_8bytes_mask_sse2());
+	const int threshold_bits = _mm_movemask_epi8(threshold);
+	if (threshold_bits == 0) return;
+	const __m128i hev = _mm_and_si128(hev_mask_sse2(p1, p0, q0, q1, hev_threshold), threshold);
+	const int hev_bits = _mm_movemask_epi8(hev);
 
-	__m128i outer_p0;
-	__m128i outer_q0;
-	filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
+	if (hev_bits == threshold_bits) {
+		__m128i outer_p0;
+		__m128i outer_q0;
+		filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
+		store_u8_width_sse2(p0_ptr, select_u8_sse2(threshold, outer_p0, p0), width);
+		store_u8_width_sse2(q0_ptr, select_u8_sse2(threshold, outer_q0, q0), width);
+		return;
+	}
+
 
 	const __m128i zero = _mm_setzero_si128();
 	const __m128i c3 = _mm_set1_epi16(3);
@@ -449,6 +536,17 @@ static void filter_subblock_h_edge_width_sse2(uint8_t* src_q0,
 	const __m128i no_p1 = apply_delta_sse2(p1, a2_lo, a2_hi, 0);
 	const __m128i no_q1 = apply_delta_sse2(q1, a2_lo, a2_hi, 1);
 
+	if (hev_bits == 0) {
+		store_u8_width_sse2(p1_ptr, select_u8_sse2(threshold, no_p1, p1), width);
+		store_u8_width_sse2(p0_ptr, select_u8_sse2(threshold, no_p0, p0), width);
+		store_u8_width_sse2(q0_ptr, select_u8_sse2(threshold, no_q0, q0), width);
+		store_u8_width_sse2(q1_ptr, select_u8_sse2(threshold, no_q1, q1), width);
+		return;
+	}
+
+	__m128i outer_p0;
+	__m128i outer_q0;
+	filter_common_outer_sse2(p1, p0, q0, q1, &outer_p0, &outer_q0);
 	store_u8_width_sse2(p1_ptr, select_u8_sse2(threshold, select_u8_sse2(hev, p1, no_p1), p1), width);
 	store_u8_width_sse2(p0_ptr, select_u8_sse2(threshold, select_u8_sse2(hev, outer_p0, no_p0), p0), width);
 	store_u8_width_sse2(q0_ptr, select_u8_sse2(threshold, select_u8_sse2(hev, outer_q0, no_q0), q0), width);
@@ -474,13 +572,13 @@ void vp8_filter_subblock_h_edge8_sse2(uint8_t* src_q0,
 static void filter_mb_v_edge_8rows_sse2(uint8_t* src_q0, int stride, int edge_limit, int interior_limit, int hev_threshold) {
 	__m128i cols[8];
 	load_vertical_edge8_sse2(src_q0, stride, cols);
-	if (filter_mb_cols_sse2(cols, edge_limit, interior_limit, hev_threshold)) store_vertical_edge8_sse2(src_q0, stride, cols);
+	if (filter_mb_cols_sse2(cols, edge_limit, interior_limit, hev_threshold, 8)) store_vertical_edge8_sse2(src_q0, stride, cols);
 }
 
 static void filter_mb_v_edge_16rows_sse2(uint8_t* src_q0, int stride, int edge_limit, int interior_limit, int hev_threshold) {
 	__m128i cols[8];
 	load_vertical_edge16_sse2(src_q0, stride, cols);
-	if (filter_mb_cols_sse2(cols, edge_limit, interior_limit, hev_threshold)) store_vertical_edge16_sse2(src_q0, stride, cols);
+	if (filter_mb_cols_sse2(cols, edge_limit, interior_limit, hev_threshold, 16)) store_vertical_edge16_sse2(src_q0, stride, cols);
 }
 
 static void filter_subblock_v_edge_8rows_sse2(uint8_t* src_q0,
@@ -490,7 +588,7 @@ static void filter_subblock_v_edge_8rows_sse2(uint8_t* src_q0,
                                               int hev_threshold) {
 	__m128i cols[8];
 	load_vertical_edge8_sse2(src_q0, stride, cols);
-	if (filter_subblock_cols_sse2(cols, edge_limit, interior_limit, hev_threshold)) store_vertical_edge8_sse2(src_q0, stride, cols);
+	if (filter_subblock_cols_sse2(cols, edge_limit, interior_limit, hev_threshold, 8)) store_vertical_edge8_sse2(src_q0, stride, cols);
 }
 
 static void filter_subblock_v_edge_16rows_sse2(uint8_t* src_q0,
@@ -500,7 +598,7 @@ static void filter_subblock_v_edge_16rows_sse2(uint8_t* src_q0,
                                                int hev_threshold) {
 	__m128i cols[8];
 	load_vertical_edge16_sse2(src_q0, stride, cols);
-	if (filter_subblock_cols_sse2(cols, edge_limit, interior_limit, hev_threshold)) store_vertical_edge16_sse2(src_q0, stride, cols);
+	if (filter_subblock_cols_sse2(cols, edge_limit, interior_limit, hev_threshold, 16)) store_vertical_edge16_sse2(src_q0, stride, cols);
 }
 
 static void filter_v_edge_simple_16rows_sse2(uint8_t* src_q0, int stride, int filter_limit) {

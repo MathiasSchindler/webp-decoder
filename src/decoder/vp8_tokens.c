@@ -8,7 +8,6 @@
 
 #include "vp8_header.h"
 #include "bool_decoder.h"
-#include "vp8_tree.h"
 
 #define bool_decode_bool bool_decode_bool_inline
 #define bool_decode_bit bool_decode_bit_inline
@@ -244,21 +243,132 @@ static void* xmalloc_array(size_t nmemb, size_t size) {
 	return malloc(total);
 }
 
-static inline int read_coeff_token_fast(BoolDecoder* d, const uint8_t probs[num_dct_tokens - 1], int prev_token_was_zero) {
-	if (!prev_token_was_zero && !bool_decode_bool(d, probs[0])) return dct_eob;
-	if (!bool_decode_bool(d, probs[1])) return DCT_0;
-	if (!bool_decode_bool(d, probs[2])) return DCT_1;
-	if (!bool_decode_bool(d, probs[3])) {
-		if (!bool_decode_bool(d, probs[4])) return DCT_2;
-		return bool_decode_bool(d, probs[5]) ? DCT_4 : DCT_3;
+typedef struct {
+	const uint8_t* buf;
+	const uint8_t* end;
+	uint32_t value;
+	uint32_t range;
+	int count;
+	uint8_t overread;
+	uint32_t overread_bytes;
+} BoolDecoderFastState;
+
+static inline BoolDecoderFastState bool_decoder_fast_state_load(const BoolDecoder* d) {
+	BoolDecoderFastState s = {
+		.buf = d->buf,
+		.end = d->end,
+		.value = d->value,
+		.range = d->range,
+		.count = d->count,
+		.overread = d->overread,
+		.overread_bytes = d->overread_bytes,
+	};
+	return s;
+}
+
+static inline void bool_decoder_fast_state_store(BoolDecoder* d, const BoolDecoderFastState* s) {
+	d->buf = s->buf;
+	d->value = s->value;
+	d->range = (uint8_t)s->range;
+	d->count = s->count;
+	d->overread = s->overread;
+	d->overread_bytes = s->overread_bytes;
+}
+
+static inline void bool_fast_refill(BoolDecoderFastState* s) {
+	if (BOOL_DECODER_UNLIKELY(s->count >= 0)) {
+		if (BOOL_DECODER_LIKELY(s->buf < s->end)) {
+			s->value |= (uint32_t)(*s->buf++) << s->count;
+		} else {
+			s->overread = 1;
+			s->overread_bytes++;
+		}
+		s->count -= 8;
 	}
-	if (!bool_decode_bool(d, probs[6])) {
-		return bool_decode_bool(d, probs[7]) ? dct_cat2 : dct_cat1;
+}
+
+static inline int bool_fast_decode_bool(BoolDecoderFastState* s, uint8_t prob) {
+	uint32_t range = s->range;
+	uint32_t value = s->value;
+	uint32_t split = 1u + (((range - 1u) * (uint32_t)prob) >> 8);
+	uint32_t bigsplit = split << 8;
+
+	int bit;
+	if (value >= bigsplit) {
+		range -= split;
+		value -= bigsplit;
+		bit = 1;
+	} else {
+		range = split;
+		bit = 0;
 	}
-	if (!bool_decode_bool(d, probs[8])) {
-		return bool_decode_bool(d, probs[9]) ? dct_cat4 : dct_cat3;
+
+	uint8_t shift = bool_decoder_norm_shift((uint8_t)range);
+	s->range = range << shift;
+	s->value = value << shift;
+	s->count += shift;
+	bool_fast_refill(s);
+	return bit;
+}
+
+static inline int bool_fast_decode_bit(BoolDecoderFastState* s) {
+	uint32_t range = s->range;
+	uint32_t value = s->value;
+	uint32_t split = (range + 1u) >> 1;
+	uint32_t bigsplit = split << 8;
+
+	int bit;
+	if (value >= bigsplit) {
+		range -= split;
+		value -= bigsplit;
+		bit = 1;
+	} else {
+		range = split;
+		bit = 0;
 	}
-	return bool_decode_bool(d, probs[10]) ? dct_cat6 : dct_cat5;
+
+	uint8_t shift = bool_decoder_norm_shift((uint8_t)range);
+	s->range = range << shift;
+	s->value = value << shift;
+	s->count += shift;
+	bool_fast_refill(s);
+	return bit;
+}
+
+static inline uint32_t vp8_read_extra_cat_fast(BoolDecoderFastState* s, int cat) {
+	switch (cat) {
+		case 0: return (uint32_t)bool_fast_decode_bool(s, 159);
+		case 1:
+			return ((uint32_t)bool_fast_decode_bool(s, 165) << 1) |
+			       (uint32_t)bool_fast_decode_bool(s, 145);
+		case 2:
+			return ((uint32_t)bool_fast_decode_bool(s, 173) << 2) |
+			       ((uint32_t)bool_fast_decode_bool(s, 148) << 1) |
+			       (uint32_t)bool_fast_decode_bool(s, 140);
+		case 3:
+			return ((uint32_t)bool_fast_decode_bool(s, 176) << 3) |
+			       ((uint32_t)bool_fast_decode_bool(s, 155) << 2) |
+			       ((uint32_t)bool_fast_decode_bool(s, 140) << 1) |
+			       (uint32_t)bool_fast_decode_bool(s, 135);
+		case 4:
+			return ((uint32_t)bool_fast_decode_bool(s, 180) << 4) |
+			       ((uint32_t)bool_fast_decode_bool(s, 157) << 3) |
+			       ((uint32_t)bool_fast_decode_bool(s, 141) << 2) |
+			       ((uint32_t)bool_fast_decode_bool(s, 134) << 1) |
+			       (uint32_t)bool_fast_decode_bool(s, 130);
+		default:
+			return ((uint32_t)bool_fast_decode_bool(s, 254) << 10) |
+			       ((uint32_t)bool_fast_decode_bool(s, 254) << 9) |
+			       ((uint32_t)bool_fast_decode_bool(s, 243) << 8) |
+			       ((uint32_t)bool_fast_decode_bool(s, 230) << 7) |
+			       ((uint32_t)bool_fast_decode_bool(s, 196) << 6) |
+			       ((uint32_t)bool_fast_decode_bool(s, 177) << 5) |
+			       ((uint32_t)bool_fast_decode_bool(s, 153) << 4) |
+			       ((uint32_t)bool_fast_decode_bool(s, 140) << 3) |
+			       ((uint32_t)bool_fast_decode_bool(s, 133) << 2) |
+			       ((uint32_t)bool_fast_decode_bool(s, 130) << 1) |
+			       (uint32_t)bool_fast_decode_bool(s, 129);
+	}
 }
 
 static inline void record_coeff_token(Vp8CoeffStats* stats, int token, uint32_t path_bits) {
@@ -319,31 +429,38 @@ static inline uint32_t vp8_read_extra_cat_profiled(BoolDecoder* d, int cat, Vp8C
 	return vp8_read_extra_cat(d, cat);
 }
 
-static inline intra_mbmode read_kf_ymode(BoolDecoder* d) {
-	if (!bool_decode_bool(d, kf_ymode_prob[0])) return B_PRED;
-	if (!bool_decode_bool(d, kf_ymode_prob[1])) {
-		return bool_decode_bool(d, kf_ymode_prob[2]) ? V_PRED : DC_PRED;
+static inline intra_mbmode read_kf_ymode_fast(BoolDecoderFastState* d) {
+	if (!bool_fast_decode_bool(d, kf_ymode_prob[0])) return B_PRED;
+	if (!bool_fast_decode_bool(d, kf_ymode_prob[1])) {
+		return bool_fast_decode_bool(d, kf_ymode_prob[2]) ? V_PRED : DC_PRED;
 	}
-	return bool_decode_bool(d, kf_ymode_prob[3]) ? TM_PRED : H_PRED;
+	return bool_fast_decode_bool(d, kf_ymode_prob[3]) ? TM_PRED : H_PRED;
 }
 
-static inline unsigned read_kf_uv_mode(BoolDecoder* d) {
-	if (!bool_decode_bool(d, kf_uv_mode_prob[0])) return DC_PRED;
-	if (!bool_decode_bool(d, kf_uv_mode_prob[1])) return V_PRED;
-	return bool_decode_bool(d, kf_uv_mode_prob[2]) ? TM_PRED : H_PRED;
+static inline unsigned read_kf_uv_mode_fast(BoolDecoderFastState* d) {
+	if (!bool_fast_decode_bool(d, kf_uv_mode_prob[0])) return DC_PRED;
+	if (!bool_fast_decode_bool(d, kf_uv_mode_prob[1])) return V_PRED;
+	return bool_fast_decode_bool(d, kf_uv_mode_prob[2]) ? TM_PRED : H_PRED;
 }
 
-static inline intra_bmode read_kf_bmode(BoolDecoder* d, const uint8_t probs[num_intra_bmodes - 1]) {
-	if (!bool_decode_bool(d, probs[0])) return B_DC_PRED;
-	if (!bool_decode_bool(d, probs[1])) return B_TM_PRED;
-	if (!bool_decode_bool(d, probs[2])) return B_VE_PRED;
-	if (!bool_decode_bool(d, probs[3])) {
-		if (!bool_decode_bool(d, probs[4])) return B_HE_PRED;
-		return bool_decode_bool(d, probs[5]) ? B_VR_PRED : B_RD_PRED;
+static inline intra_bmode read_kf_bmode_fast(BoolDecoderFastState* d, const uint8_t probs[num_intra_bmodes - 1]) {
+	if (!bool_fast_decode_bool(d, probs[0])) return B_DC_PRED;
+	if (!bool_fast_decode_bool(d, probs[1])) return B_TM_PRED;
+	if (!bool_fast_decode_bool(d, probs[2])) return B_VE_PRED;
+	if (!bool_fast_decode_bool(d, probs[3])) {
+		if (!bool_fast_decode_bool(d, probs[4])) return B_HE_PRED;
+		return bool_fast_decode_bool(d, probs[5]) ? B_VR_PRED : B_RD_PRED;
 	}
-	if (!bool_decode_bool(d, probs[6])) return B_LD_PRED;
-	if (!bool_decode_bool(d, probs[7])) return B_VL_PRED;
-	return bool_decode_bool(d, probs[8]) ? B_HU_PRED : B_HD_PRED;
+	if (!bool_fast_decode_bool(d, probs[6])) return B_LD_PRED;
+	if (!bool_fast_decode_bool(d, probs[7])) return B_VL_PRED;
+	return bool_fast_decode_bool(d, probs[8]) ? B_HU_PRED : B_HD_PRED;
+}
+
+static inline uint8_t read_mb_segment_fast(BoolDecoderFastState* d, const uint8_t probs[3]) {
+	if (!bool_fast_decode_bool(d, probs[0])) {
+		return (uint8_t)(bool_fast_decode_bool(d, probs[1]) ? 1u : 0u);
+	}
+	return (uint8_t)(bool_fast_decode_bool(d, probs[2]) ? 3u : 2u);
 }
 
 static void record_token_overread_loc(Vp8CoeffStats* out,
@@ -362,12 +479,13 @@ static void record_token_overread_loc(Vp8CoeffStats* out,
 	out->token_overread_stage = stage;
 }
 
-static int decode_block_fast(BoolDecoder* d,
-                             uint8_t coeff_probs_plane[8][3][num_dct_tokens - 1],
-                             int first_coeff,
-                             uint8_t left_has,
-                             uint8_t above_has,
-                             int16_t out_block[16]) {
+static int decode_block_fast_state(BoolDecoderFastState* bd,
+                                   uint8_t coeff_probs_plane[8][3][num_dct_tokens - 1],
+                                   int first_coeff,
+                                   uint8_t left_has,
+                                   uint8_t above_has,
+                                   int16_t out_block[16]) {
+	static const int cat_base[6] = {5, 7, 11, 19, 35, 67};
 	int ctx3 = (int)left_has + (int)above_has;
 	int prev_token_was_zero = 0;
 	int current_has_coeffs = 0;
@@ -376,33 +494,43 @@ static int decode_block_fast(BoolDecoder* d,
 		int band = (int)coeff_bands[i];
 		const uint8_t* probs = coeff_probs_plane[band][ctx3];
 
-		int token = read_coeff_token_fast(d, probs, prev_token_was_zero);
-		if (token == dct_eob) break;
+		if (!prev_token_was_zero && !bool_fast_decode_bool(bd, probs[0])) break;
+		if (!bool_fast_decode_bool(bd, probs[1])) {
+			ctx3 = 0;
+			prev_token_was_zero = 1;
+			continue;
+		}
 
-		int abs_value = 0;
-		if (token == DCT_0) {
-			abs_value = 0;
-		} else if (token <= DCT_4) {
-			abs_value = token; // 1..4
+		int abs_value;
+		if (!bool_fast_decode_bool(bd, probs[2])) {
+			abs_value = 1;
+			ctx3 = 1;
 		} else {
-			static const int cat_base[6] = {5, 7, 11, 19, 35, 67};
-			int cat = token - dct_cat1;
-			uint32_t extra = vp8_read_extra_cat(d, cat);
-			abs_value = cat_base[cat] + (int)extra;
+			if (!bool_fast_decode_bool(bd, probs[3])) {
+				if (!bool_fast_decode_bool(bd, probs[4])) {
+					abs_value = 2;
+				} else {
+					abs_value = bool_fast_decode_bool(bd, probs[5]) ? 4 : 3;
+				}
+			} else {
+				int cat;
+				if (!bool_fast_decode_bool(bd, probs[6])) {
+					cat = bool_fast_decode_bool(bd, probs[7]) ? 1 : 0;
+				} else if (!bool_fast_decode_bool(bd, probs[8])) {
+					cat = bool_fast_decode_bool(bd, probs[9]) ? 3 : 2;
+				} else {
+					cat = bool_fast_decode_bool(bd, probs[10]) ? 5 : 4;
+				}
+				abs_value = cat_base[cat] + (int)vp8_read_extra_cat_fast(bd, cat);
+			}
+			ctx3 = 2;
 		}
 
-		if (abs_value != 0) {
-			int sign = bool_decode_bit(d);
-			int v = sign ? -abs_value : abs_value;
-			out_block[zigzag[i]] = (int16_t)v;
-			current_has_coeffs = 1;
-		}
-
-		if (abs_value == 0) ctx3 = 0;
-		else if (abs_value == 1) ctx3 = 1;
-		else ctx3 = 2;
-
-		prev_token_was_zero = (token == DCT_0);
+		int sign = bool_fast_decode_bit(bd);
+		int v = sign ? -abs_value : abs_value;
+		out_block[zigzag[i]] = (int16_t)v;
+		current_has_coeffs = 1;
+		prev_token_was_zero = 0;
 	}
 
 	return current_has_coeffs;
@@ -527,6 +655,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 		errno = ENOMEM;
 		return -1;
 	}
+	BoolDecoderFastState token_bd = bool_decoder_fast_state_load(&d);
 
 	for (uint32_t mb_r = 0; mb_r < mb_rows; mb_r++) {
 		left_y[0] = left_y[1] = left_y[2] = left_y[3] = 0;
@@ -562,7 +691,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 						has = decode_block_profiled(&d, g_coeff_probs[1], 0, left_has, above_has, coeff_out, out,
 						                           mb_index, /*plane=*/1, /*block_index=*/0);
 					} else {
-						has = decode_block_fast(&d, g_coeff_probs[1], 0, left_has, above_has, coeff_out);
+						has = decode_block_fast_state(&token_bd, g_coeff_probs[1], 0, left_has, above_has, coeff_out);
 					}
 					if (io_hash || (dst && coeff_out != dst)) {
 						for (int i = 0; i < 16; i++) {
@@ -609,7 +738,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 							                           coeff_out, out, mb_index, /*plane=*/0,
 							                           /*block_index=*/(uint32_t)(rr * 4 + cc));
 						} else {
-							has = decode_block_fast(&d, g_coeff_probs[y_plane], first_coeff, left_has, above_has, coeff_out);
+							has = decode_block_fast_state(&token_bd, g_coeff_probs[y_plane], first_coeff, left_has, above_has, coeff_out);
 						}
 						if (io_hash || (dst && coeff_out != dst)) {
 							for (int i = 0; i < 16; i++) {
@@ -657,7 +786,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 							                           mb_index, /*plane=*/2,
 							                           /*block_index=*/(uint32_t)(rr * 2 + cc));
 						} else {
-							has = decode_block_fast(&d, g_coeff_probs[2], 0, left_has, above_has, coeff_out);
+							has = decode_block_fast_state(&token_bd, g_coeff_probs[2], 0, left_has, above_has, coeff_out);
 						}
 						if (io_hash || (dst && coeff_out != dst)) {
 							for (int i = 0; i < 16; i++) {
@@ -703,7 +832,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 							                           mb_index, /*plane=*/3,
 							                           /*block_index=*/(uint32_t)(rr * 2 + cc));
 						} else {
-							has = decode_block_fast(&d, g_coeff_probs[2], 0, left_has, above_has, coeff_out);
+							has = decode_block_fast_state(&token_bd, g_coeff_probs[2], 0, left_has, above_has, coeff_out);
 						}
 						if (io_hash || (dst && coeff_out != dst)) {
 							for (int i = 0; i < 16; i++) {
@@ -761,6 +890,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 		}
 	}
 
+	if (!collect_stats) bool_decoder_fast_state_store(&d, &token_bd);
 	out->token_part_bytes_used = (uint32_t)bool_decoder_bytes_used(&d);
 	if (out->token_part_bytes_used > out->token_part_size_bytes) {
 		free(above_y);
@@ -1038,6 +1168,7 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 	}
 	for (uint32_t i = 0; i < mb_cols * 4; i++) above_bmodes[i] = B_DC_PRED;
 	BPredModeStore bpred_store = {0};
+	BoolDecoderFastState mb_bd = bool_decoder_fast_state_load(&d);
 
 	for (uint32_t mb_r = 0; mb_r < mb_rows; mb_r++) {
 		intra_bmode left_bmodes[4] = {B_DC_PRED, B_DC_PRED, B_DC_PRED, B_DC_PRED};
@@ -1045,23 +1176,21 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 			uint32_t mb_index = mb_r * mb_cols + mb_c;
 			uint8_t seg_id = 0;
 			mbs[mb_index].bmode_offset = MBINFO_NO_BMODE_OFFSET;
-
 			if (segmentation_enabled && update_mb_segmentation_map) {
-				static const int8_t mb_segment_tree[2 * (4 - 1)] = {2, 4, 0, -1, -2, -3};
-				seg_id = (uint8_t)vp8_treed_read(&d, mb_segment_tree, mb_segment_tree_probs, 0);
+				seg_id = read_mb_segment_fast(&mb_bd, mb_segment_tree_probs);
 			}
 			mbs[mb_index].segment_id = seg_id;
 			if (out->segment_id) out->segment_id[mb_index] = seg_id;
 
 			uint8_t skip_coeff = 0;
 			if (mb_no_skip_coeff) {
-				skip_coeff = (uint8_t)bool_decode_bool(&d, prob_skip_false);
+				skip_coeff = (uint8_t)bool_fast_decode_bool(&mb_bd, prob_skip_false);
 			}
 			if (skip_coeff) mbs[mb_index].flags |= MBINFO_SKIP_COEFF;
 			if (out->skip_coeff) out->skip_coeff[mb_index] = skip_coeff;
 			if (collect_stats && skip_coeff) out->stats.mb_skip_coeff++;
 
-			intra_mbmode ymode = read_kf_ymode(&d);
+			intra_mbmode ymode = read_kf_ymode_fast(&mb_bd);
 			mbs[mb_index].ymode = (uint8_t)ymode;
 			if (out->ymode) out->ymode[mb_index] = (uint8_t)ymode;
 			if (collect_stats && (unsigned)ymode < 5u) out->stats.ymode_counts[(unsigned)ymode]++;
@@ -1075,7 +1204,7 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 						intra_bmode A = (rr == 0) ? above_bmodes[mb_c * 4 + cc] : local[rr - 1][cc];
 						intra_bmode L = (cc == 0) ? left_bmodes[rr] : local[rr][cc - 1];
 						const uint8_t* probs = kf_bmode_prob[A][L];
-						local[rr][cc] = read_kf_bmode(&d, probs);
+						local[rr][cc] = read_kf_bmode_fast(&mb_bd, probs);
 						if (out->bmode) out->bmode[(size_t)mb_index * 16u + (size_t)(rr * 4 + cc)] = (uint8_t)local[rr][cc];
 						if (collect_stats && (unsigned)local[rr][cc] < 10u) out->stats.bmode_counts[(unsigned)local[rr][cc]]++;
 					}
@@ -1099,13 +1228,14 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
 						if (out->bmode) out->bmode[(size_t)mb_index * 16u + (size_t)(rr * 4 + cc)] = (uint8_t)derived;
 			}
 
-			unsigned uv_mode = read_kf_uv_mode(&d);
+			unsigned uv_mode = read_kf_uv_mode_fast(&mb_bd);
 			mbs[mb_index].uv_mode = (uint8_t)uv_mode;
 			if (out->uv_mode) out->uv_mode[mb_index] = (uint8_t)uv_mode;
 			if (collect_stats && uv_mode < 4u) out->stats.uv_mode_counts[uv_mode]++;
 		}
 	}
 
+	bool_decoder_fast_state_store(&d, &mb_bd);
 	out->stats.part0_bytes_used = (uint32_t)bool_decoder_bytes_used(&d);
 	if (out->stats.part0_bytes_used > out->stats.part0_size_bytes) {
 		errno = EINVAL;

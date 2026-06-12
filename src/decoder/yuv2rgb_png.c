@@ -89,8 +89,8 @@ static const uint32_t crc32_table[256] = {
 	0xB40BBE37u, 0xC30C8EA1u, 0x5A05DF1Bu, 0x2D02EF8Du,
 };
 
-// IDAT CRC covers every stored byte, so use slicing-by-8 for the large scanline payloads.
-static uint32_t crc32_slicing_table[8][256];
+// IDAT CRC covers every stored byte, so use slicing-by-16 for the large scanline payloads.
+static uint32_t crc32_slicing_table[16][256];
 static int crc32_slicing_ready;
 
 static void crc32_slicing_init(void) {
@@ -98,7 +98,7 @@ static void crc32_slicing_init(void) {
 	for (uint32_t i = 0; i < 256u; i++) {
 		crc32_slicing_table[0][i] = crc32_table[i];
 	}
-	for (uint32_t slice = 1; slice < 8u; slice++) {
+	for (uint32_t slice = 1; slice < 16u; slice++) {
 		for (uint32_t i = 0; i < 256u; i++) {
 			const uint32_t prev = crc32_slicing_table[slice - 1u][i];
 			crc32_slicing_table[slice][i] = crc32_table[prev & 0xFFu] ^ (prev >> 8);
@@ -111,23 +111,37 @@ static inline uint32_t load32le(const uint8_t* p) {
 	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+static inline uint32_t crc32_update_16(uint32_t crc, const uint8_t* buf) {
+	crc ^= load32le(buf);
+	const uint32_t b4 = load32le(buf + 4);
+	const uint32_t b8 = load32le(buf + 8);
+	const uint32_t b12 = load32le(buf + 12);
+	return crc32_slicing_table[15][crc & 0xFFu] ^
+	       crc32_slicing_table[14][(crc >> 8) & 0xFFu] ^
+	       crc32_slicing_table[13][(crc >> 16) & 0xFFu] ^
+	       crc32_slicing_table[12][crc >> 24] ^
+	       crc32_slicing_table[11][b4 & 0xFFu] ^
+	       crc32_slicing_table[10][(b4 >> 8) & 0xFFu] ^
+	       crc32_slicing_table[9][(b4 >> 16) & 0xFFu] ^
+	       crc32_slicing_table[8][b4 >> 24] ^
+	       crc32_slicing_table[7][b8 & 0xFFu] ^
+	       crc32_slicing_table[6][(b8 >> 8) & 0xFFu] ^
+	       crc32_slicing_table[5][(b8 >> 16) & 0xFFu] ^
+	       crc32_slicing_table[4][b8 >> 24] ^
+	       crc32_slicing_table[3][b12 & 0xFFu] ^
+	       crc32_slicing_table[2][(b12 >> 8) & 0xFFu] ^
+	       crc32_slicing_table[1][(b12 >> 16) & 0xFFu] ^
+	       crc32_slicing_table[0][b12 >> 24];
+}
+
 static uint32_t crc32_update(uint32_t crc, const uint8_t* buf, size_t len) {
 	crc ^= 0xFFFFFFFFu;
 	if (len >= 16u) {
 		crc32_slicing_init();
-		while (len >= 8u) {
-			crc ^= load32le(buf);
-			const uint32_t high = load32le(buf + 4);
-			crc = crc32_slicing_table[7][crc & 0xFFu] ^
-			      crc32_slicing_table[6][(crc >> 8) & 0xFFu] ^
-			      crc32_slicing_table[5][(crc >> 16) & 0xFFu] ^
-			      crc32_slicing_table[4][crc >> 24] ^
-			      crc32_slicing_table[3][high & 0xFFu] ^
-			      crc32_slicing_table[2][(high >> 8) & 0xFFu] ^
-			      crc32_slicing_table[1][(high >> 16) & 0xFFu] ^
-			      crc32_slicing_table[0][high >> 24];
-			buf += 8;
-			len -= 8u;
+		while (len >= 16u) {
+			crc = crc32_update_16(crc, buf);
+			buf += 16;
+			len -= 16u;
 		}
 	}
 	for (size_t i = 0; i < len; i++) {
@@ -151,15 +165,18 @@ static int write_chunk(int fd, const char type[4], const uint8_t* data, uint32_t
 	return 0;
 }
 
-static inline void adler32_update(uint32_t* a, uint32_t* b, const uint8_t* buf, size_t len) {
+static void crc32_adler32_update(uint32_t* crc_io, uint32_t* a, uint32_t* b, const uint8_t* buf, size_t len) {
 	const uint32_t MOD = 65521u;
 	const size_t NMAX = 5552u;
+	uint32_t crc = *crc_io ^ 0xFFFFFFFFu;
 	uint32_t aa = *a;
 	uint32_t bb = *b;
+	if (len >= 16u) crc32_slicing_init();
 	while (len > 0) {
 		size_t n = (len < NMAX) ? len : NMAX;
 		len -= n;
 		while (n >= 16u) {
+			crc = crc32_update_16(crc, buf);
 			aa += buf[0];
 			bb += aa;
 			aa += buf[1];
@@ -196,12 +213,14 @@ static inline void adler32_update(uint32_t* a, uint32_t* b, const uint8_t* buf, 
 			n -= 16u;
 		}
 		while (n-- > 0) {
+			crc = crc32_table[(crc ^ *buf) & 0xFFu] ^ (crc >> 8);
 			aa += *buf++;
 			bb += aa;
 		}
 		aa %= MOD;
 		bb %= MOD;
 	}
+	*crc_io = crc ^ 0xFFFFFFFFu;
 	*a = aa;
 	*b = bb;
 }
@@ -246,6 +265,32 @@ static int png_idat_write(PngIdatWriter* w, const void* data, size_t len) {
 	return 0;
 }
 
+static int png_idat_write_raw_payload(PngIdatWriter* w,
+                                      uint32_t* ad_a,
+                                      uint32_t* ad_b,
+                                      const uint8_t* data,
+                                      size_t len) {
+	const uint8_t* p = data;
+	if (len == 0) return 0;
+	crc32_adler32_update(&w->crc, ad_a, ad_b, p, len);
+	while (len > 0) {
+		if (w->used == 0 && len >= PNG_IDAT_BUF_SIZE) {
+			if (os_write_all(w->fd, p, PNG_IDAT_BUF_SIZE) != 0) return -1;
+			p += PNG_IDAT_BUF_SIZE;
+			len -= PNG_IDAT_BUF_SIZE;
+			continue;
+		}
+		const size_t space = PNG_IDAT_BUF_SIZE - w->used;
+		const size_t n = (len < space) ? len : space;
+		memcpy(w->buf + w->used, p, n);
+		w->used += n;
+		p += n;
+		len -= n;
+		if (w->used == PNG_IDAT_BUF_SIZE && png_idat_flush(w) != 0) return -1;
+	}
+	return 0;
+}
+
 static int png_write_stored_header(PngIdatWriter* w, uint32_t len, uint8_t bfinal) {
 	uint8_t hdr[5];
 	hdr[0] = bfinal;
@@ -255,6 +300,14 @@ static int png_write_stored_header(PngIdatWriter* w, uint32_t len, uint8_t bfina
 	hdr[3] = (uint8_t)(nlen & 0xFFu);
 	hdr[4] = (uint8_t)((nlen >> 8) & 0xFFu);
 	return png_idat_write(w, hdr, sizeof(hdr));
+}
+
+static int png_start_stored_block(PngIdatWriter* w) {
+	const uint32_t block_len = (w->raw_left > 65535u) ? 65535u : (uint32_t)w->raw_left;
+	const uint8_t bfinal = (w->raw_left == (uint64_t)block_len) ? 1u : 0u;
+	if (png_write_stored_header(w, block_len, bfinal) != 0) return -1;
+	w->block_left = block_len;
+	return 0;
 }
 
 // Stored DEFLATE blocks may span PNG scanlines; packing the raw scanline stream into
@@ -270,19 +323,38 @@ static int png_write_raw_bytes(PngIdatWriter* w,
 	}
 	while (len > 0) {
 		if (w->block_left == 0) {
-			const uint32_t block_len = (w->raw_left > 65535u) ? 65535u : (uint32_t)w->raw_left;
-			const uint8_t bfinal = (w->raw_left == (uint64_t)block_len) ? 1u : 0u;
-			if (png_write_stored_header(w, block_len, bfinal) != 0) return -1;
-			w->block_left = block_len;
+			if (png_start_stored_block(w) != 0) return -1;
 		}
 		const size_t n = (len < (size_t)w->block_left) ? len : (size_t)w->block_left;
-		if (png_idat_write(w, data, n) != 0) return -1;
-		adler32_update(ad_a, ad_b, data, n);
+		if (png_idat_write_raw_payload(w, ad_a, ad_b, data, n) != 0) return -1;
 		data += n;
 		len -= n;
 		w->block_left -= (uint32_t)n;
 		w->raw_left -= (uint64_t)n;
 	}
+	return 0;
+}
+
+static int png_reserve_contiguous_raw(PngIdatWriter* w, size_t len, uint8_t** out) {
+	*out = NULL;
+	if ((uint64_t)len > w->raw_left) {
+		PNG_SET_ERRNO(EINVAL);
+		return -1;
+	}
+	if (len == 0) return 0;
+	if (w->block_left == 0 && png_start_stored_block(w) != 0) return -1;
+	if (len > (size_t)w->block_left || len > PNG_IDAT_BUF_SIZE) return 0;
+	if (PNG_IDAT_BUF_SIZE - w->used < len && png_idat_flush(w) != 0) return -1;
+	*out = w->buf + w->used;
+	return 0;
+}
+
+static int png_commit_contiguous_raw(PngIdatWriter* w, uint32_t* ad_a, uint32_t* ad_b, size_t len) {
+	crc32_adler32_update(&w->crc, ad_a, ad_b, w->buf + w->used, len);
+	w->used += len;
+	w->block_left -= (uint32_t)len;
+	w->raw_left -= (uint64_t)len;
+	if (w->used == PNG_IDAT_BUF_SIZE && png_idat_flush(w) != 0) return -1;
 	return 0;
 }
 
@@ -375,8 +447,16 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 		const uint8_t* y0 = img->y;
 		const uint8_t* u0 = img->u;
 		const uint8_t* v0 = img->v;
-		upsample_rgb_line_pair(y0, NULL, u0, v0, u0, v0, top_row, NULL, img->width);
-		if (png_write_raw_bytes(&idat, &ad_a, &ad_b, top_scanline, scanline_bytes) != 0) goto idat_error;
+		uint8_t* scanline = NULL;
+		if (png_reserve_contiguous_raw(&idat, scanline_bytes, &scanline) != 0) goto idat_error;
+		if (scanline != NULL) {
+			scanline[0] = 0;
+			upsample_rgb_line_pair(y0, NULL, u0, v0, u0, v0, scanline + 1u, NULL, img->width);
+			if (png_commit_contiguous_raw(&idat, &ad_a, &ad_b, scanline_bytes) != 0) goto idat_error;
+		} else {
+			upsample_rgb_line_pair(y0, NULL, u0, v0, u0, v0, top_row, NULL, img->width);
+			if (png_write_raw_bytes(&idat, &ad_a, &ad_b, top_scanline, scanline_bytes) != 0) goto idat_error;
+		}
 	}
 
 	const uint32_t ch = (img->height + 1u) >> 1;
@@ -391,11 +471,20 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 		const uint8_t* cur_u = img->u + (size_t)cur_cy * img->stride_uv;
 		const uint8_t* cur_v = img->v + (size_t)cur_cy * img->stride_uv;
 
-		upsample_rgb_line_pair(top_y, bottom_y, top_u, top_v, cur_u, cur_v, top_row, bottom_row, img->width);
-		if (bottom_y != NULL) {
-			if (png_write_raw_bytes(&idat, &ad_a, &ad_b, top_scanline, (size_t)scanline_bytes * 2u) != 0) goto idat_error;
+		const size_t out_bytes = bottom_y != NULL ? (size_t)scanline_bytes * 2u : (size_t)scanline_bytes;
+		uint8_t* scanlines = NULL;
+		if (png_reserve_contiguous_raw(&idat, out_bytes, &scanlines) != 0) goto idat_error;
+		if (scanlines != NULL) {
+			scanlines[0] = 0;
+			if (bottom_y != NULL) scanlines[scanline_bytes] = 0;
+			upsample_rgb_line_pair(top_y, bottom_y, top_u, top_v, cur_u, cur_v,
+			                       scanlines + 1u,
+			                       bottom_y != NULL ? scanlines + scanline_bytes + 1u : NULL,
+			                       img->width);
+			if (png_commit_contiguous_raw(&idat, &ad_a, &ad_b, out_bytes) != 0) goto idat_error;
 		} else {
-			if (png_write_raw_bytes(&idat, &ad_a, &ad_b, top_scanline, scanline_bytes) != 0) goto idat_error;
+			upsample_rgb_line_pair(top_y, bottom_y, top_u, top_v, cur_u, cur_v, top_row, bottom_row, img->width);
+			if (png_write_raw_bytes(&idat, &ad_a, &ad_b, top_scanline, out_bytes) != 0) goto idat_error;
 		}
 	}
 	if (idat.raw_left != 0 || idat.block_left != 0) {

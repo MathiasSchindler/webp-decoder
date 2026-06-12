@@ -99,16 +99,16 @@ Local snapshot after broadening the decoder gates:
 
 Latest local Commons stage/core profile:
 
-- Command: `python3 scripts/profile_decode_stages.py --webp-glob 'images/commons/generated-webp/*.webp' --runs 5 --warmups 1 --out-dir build/profile/hotspot-integration-comparison-20260612T1357`
+- Command: `python3 scripts/profile_decode_stages.py --webp-glob 'images/commons/generated-webp/*.webp' --runs 5 --warmups 1 --out-dir build/profile/opt2-integrated-comparison-20260612T1420`
 - Corpus: 28 generated Commons WebPs, 378.031 MP per run.
-- Our cumulative throughput: `-yuv` 199.21 MP/s, `-yuvf` 166.97 MP/s,
-  `-ppm` 133.41 MP/s, `-png` 113.35 MP/s.
-- System libwebp core throughput: YUV no-filter 326.59 MP/s, YUV filtered
-  278.35 MP/s, RGB buffer 214.31 MP/s, RGB+PPM 213.83 MP/s.
-- Comparative PPM throughput: ffmpeg 76.83 MP/s, ImageMagick 102.10 MP/s.
-- Remaining largest local costs: token decode (~1.340 s), reconstruction
-  (~0.890 s), RGB formatting (~0.536 s), loopfilter (~0.328 s), and PNG
-  output delta from filtered YUV (~1.071 s) over the 378 MP corpus. PPM pixel writes
+- Our cumulative throughput: `-yuv` 225.09 MP/s, `-yuvf` 186.26 MP/s,
+  `-ppm` 167.50 MP/s, `-png` 146.15 MP/s.
+- System libwebp core throughput: YUV no-filter 325.13 MP/s, YUV filtered
+  282.71 MP/s, RGB buffer 214.57 MP/s, RGB+PPM 215.64 MP/s.
+- Comparative PPM throughput: ffmpeg 76.55 MP/s, ImageMagick 101.16 MP/s.
+- Remaining largest local costs: token decode (~1.273 s), reconstruction
+  (~0.754 s), loopfilter (~0.311 s), RGB formatting (~0.235 s), and PNG
+  output delta from filtered YUV (~0.557 s) over the 378 MP corpus. PPM pixel writes
   remain negligible at ~0.025 s.
 
 Treat these as local-machine guideposts, not portable absolute performance
