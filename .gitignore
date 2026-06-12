@@ -5,6 +5,8 @@
 # /images/
 /images/commons-hq/
 /images/imagenet-local/
+/images/commons/
+/images/examples/
 # Common C/C++ artifacts
 *.o
 *.a
