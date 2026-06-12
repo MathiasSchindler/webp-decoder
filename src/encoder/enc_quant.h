@@ -2,19 +2,13 @@
 
 #include <stdint.h>
 
+#include "../vp8/vp8_quant.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct {
-	int qindex;  // [0..127]
-	int y1_dc;
-	int y1_ac;
-	int y2_dc;
-	int y2_ac;
-	int uv_dc;
-	int uv_ac;
-} EncVp8QuantFactors;
+typedef Vp8QuantFactors EncVp8QuantFactors;
 
 // Mirrors libwebp's base quantizer selection for a single segment.
 // Input: quality in [0..100]. Output: qindex in [0..127].

@@ -44,10 +44,22 @@ NOLIBC_ULTRA_BIN := decoder_nolibc_ultra
 ENC_NOLIBC_ULTRA_BUILD_DIR := build/nolibc_ultra_enc
 ENC_NOLIBC_ULTRA_BIN := encoder_nolibc_ultra
 
+VP8_DECODER_SHARED_SRC := \
+	src/vp8/vp8_quant.c \
+	src/vp8/vp8_transform.c \
+	src/vp8/vp8_pred.c \
+	src/vp8/vp8_yuv_rgb.c
+
+VP8_ENCODER_SHARED_SRC := \
+	src/vp8/vp8_quant.c \
+	src/vp8/vp8_transform.c \
+	src/vp8/vp8_pred.c
+
 SRC := \
 	src/main.c \
 	src/common/os.c \
 	src/common/fmt.c \
+	$(VP8_DECODER_SHARED_SRC) \
 	src/decoder/webp_container.c \
 	src/decoder/vp8_header.c \
 	src/decoder/bool_decoder.c \
@@ -149,6 +161,7 @@ $(BIN): $(OBJ)
 
 ENCODER_SRC := \
 	src/encoder_main.c \
+	$(VP8_ENCODER_SHARED_SRC) \
 	src/encoder/enc_png.c \
 	src/encoder/enc_rgb_to_yuv.c \
 	src/encoder/enc_gamma_tables.c \
@@ -279,6 +292,7 @@ $(ENC_M06_INTRADUMP_BIN): $(ENC_M06_INTRADUMP_SRC) \
 
 ENC_M07_QUANTDUMP_SRC := \
 	tools/enc_m07_quantdump.c \
+	$(VP8_ENCODER_SHARED_SRC) \
 	src/encoder/enc_png.c \
 	src/encoder/enc_rgb_to_yuv.c \
 	src/encoder/enc_gamma_tables.c \
@@ -299,6 +313,7 @@ $(ENC_M07_QUANTDUMP_BIN): $(ENC_M07_QUANTDUMP_SRC) \
 ENC_M08_TOKENTEST_SRC := \
 	tools/enc_m08_tokentest.c \
 	src/common/os.c \
+	$(VP8_ENCODER_SHARED_SRC) \
 	src/decoder/vp8_header.c \
 	src/decoder/bool_decoder.c \
 	src/decoder/vp8_tree.c \
@@ -326,6 +341,7 @@ $(ENC_M08_TOKENTEST_BIN): $(ENC_M08_TOKENTEST_SRC) \
 
 ENC_M09_DCENC_SRC := \
 	tools/enc_m09_dcenc.c \
+	$(VP8_ENCODER_SHARED_SRC) \
 	src/encoder/enc_png.c \
 	src/encoder/enc_rgb_to_yuv.c \
 	src/encoder/enc_gamma_tables.c \
@@ -351,6 +367,7 @@ $(ENC_M09_DCENC_BIN): $(ENC_M09_DCENC_SRC) \
 
 ENC_M09_MODEENC_SRC := \
 	tools/enc_m09_modeenc.c \
+	$(VP8_ENCODER_SHARED_SRC) \
 	src/encoder/enc_png.c \
 	src/encoder/enc_rgb_to_yuv.c \
 	src/encoder/enc_gamma_tables.c \
@@ -376,6 +393,7 @@ $(ENC_M09_MODEENC_BIN): $(ENC_M09_MODEENC_SRC) \
 
 ENC_M09_BPREDENC_SRC := \
 	tools/enc_m09_bpredenc.c \
+	$(VP8_ENCODER_SHARED_SRC) \
 	src/encoder/enc_png.c \
 	src/encoder/enc_rgb_to_yuv.c \
 	src/encoder/enc_gamma_tables.c \
@@ -443,6 +461,7 @@ $(NOLIBC_TINY_BIN): $(NOLIBC_TINY_OBJ)
 NOLIBC_ULTRA_SRC := \
 	src/main_ultra.c \
 	src/common/os_readall.c \
+	$(VP8_DECODER_SHARED_SRC) \
 	src/decoder/webp_container.c \
 	src/decoder/vp8_header.c \
 	src/decoder/bool_decoder.c \
@@ -504,6 +523,7 @@ clean:
 
 ENC_NOLIBC_ULTRA_SRC := \
 	src/encoder_main_ultra.c \
+	$(VP8_ENCODER_SHARED_SRC) \
 	src/encoder/enc_png.c \
 	src/encoder/enc_rgb_to_yuv.c \
 	src/encoder/enc_gamma_tables.c \

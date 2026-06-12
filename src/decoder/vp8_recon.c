@@ -5,6 +5,9 @@
 #include <string.h>
 
 #include "vp8_loopfilter.h"
+#include "../vp8/vp8_pred.h"
+#include "../vp8/vp8_quant.h"
+#include "../vp8/vp8_transform.h"
 
 // --- Helpers ---
 
@@ -14,34 +17,8 @@ static inline uint8_t clamp255_i32(int32_t v) {
 	return (uint8_t)v;
 }
 
-static inline int clamp_q(int q) {
-	if (q < 0) return 0;
-	if (q > 127) return 127;
-	return q;
-}
-
-// Dequant lookup tables from RFC 6386 (dequant_data.h).
-#define QINDEX_RANGE 128
-static const int dc_qlookup[QINDEX_RANGE] = {
-	4, 5, 6, 7, 8, 9, 10, 10, 11, 12, 13, 14, 15, 16, 17, 17, 18, 19, 20, 20, 21, 21, 22, 22, 23, 23,
-	24, 25, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 37, 38, 39, 40, 41, 42, 43, 44, 45,
-	46, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68,
-	69, 70, 71, 72, 73, 74, 75, 76, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 93,
-	95, 96, 98, 100, 101, 102, 104, 106, 108, 110, 112, 114, 116, 118, 122, 124, 126, 128, 130, 132, 134,
-	136, 138, 140, 143, 145, 148, 151, 154, 157,
-};
-
-static const int ac_qlookup[QINDEX_RANGE] = {
-	4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
-	30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
-	54, 55, 56, 57, 58, 60, 62, 64, 66, 68, 70, 72, 74, 76, 78, 80, 82, 84, 86, 88, 90, 92, 94, 96,
-	98, 100, 102, 104, 106, 108, 110, 112, 114, 116, 119, 122, 125, 128, 131, 134, 137, 140, 143, 146, 149,
-	152, 155, 158, 161, 164, 167, 170, 173, 177, 181, 185, 189, 193, 197, 201, 205, 209, 213, 217, 221, 225,
-	229, 234, 239, 245, 249, 254, 259, 264, 269, 274, 279, 284,
-};
-
-static inline int dc_q(int q) { return dc_qlookup[clamp_q(q)]; }
-static inline int ac_q(int q) { return ac_qlookup[clamp_q(q)]; }
+static inline int dc_q(int q) { return vp8_dc_q(q); }
+static inline int ac_q(int q) { return vp8_ac_q(q); }
 
 typedef enum {
 	TOKEN_BLOCK_Y1 = 0,
@@ -77,75 +54,9 @@ static void dequant_init(DequantFactors* dqf, const Vp8DecodedFrame* decoded) {
 
 // --- Inverse transforms from RFC 6386 ---
 
-static void inv_wht4x4(const int16_t* in, int16_t* out) {
-	// vp8_short_inv_walsh4x4_c (RFC 6386 14.3)
-	int16_t tmp[16];
-	for (int i = 0; i < 4; i++) {
-		int a1 = in[0 + i] + in[12 + i];
-		int b1 = in[4 + i] + in[8 + i];
-		int c1 = in[4 + i] - in[8 + i];
-		int d1 = in[0 + i] - in[12 + i];
+static void inv_wht4x4(const int16_t* in, int16_t* out) { vp8_inv_wht4x4(in, out); }
 
-		tmp[0 + i] = (int16_t)(a1 + b1);
-		tmp[4 + i] = (int16_t)(c1 + d1);
-		tmp[8 + i] = (int16_t)(a1 - b1);
-		tmp[12 + i] = (int16_t)(d1 - c1);
-	}
-	for (int i = 0; i < 4; i++) {
-		int a1 = tmp[4 * i + 0] + tmp[4 * i + 3];
-		int b1 = tmp[4 * i + 1] + tmp[4 * i + 2];
-		int c1 = tmp[4 * i + 1] - tmp[4 * i + 2];
-		int d1 = tmp[4 * i + 0] - tmp[4 * i + 3];
-
-		out[4 * i + 0] = (int16_t)((a1 + b1 + 3) >> 3);
-		out[4 * i + 1] = (int16_t)((c1 + d1 + 3) >> 3);
-		out[4 * i + 2] = (int16_t)((a1 - b1 + 3) >> 3);
-		out[4 * i + 3] = (int16_t)((d1 - c1 + 3) >> 3);
-	}
-}
-
-static void inv_dct4x4(const int16_t* input, int16_t* output) {
-	// short_idct4x4llm_c (RFC 6386 14.4), but for flat 4x4 arrays.
-	static const int cospi8sqrt2minus1 = 20091;
-	static const int sinpi8sqrt2 = 35468;
-
-	int16_t tmp[16];
-	for (int i = 0; i < 4; i++) {
-		int32_t a1 = (int32_t)input[i + 0] + (int32_t)input[i + 8];
-		int32_t b1 = (int32_t)input[i + 0] - (int32_t)input[i + 8];
-
-		int32_t temp1 = ((int32_t)input[i + 4] * sinpi8sqrt2) >> 16;
-		int32_t temp2 = (int32_t)input[i + 12] + (((int32_t)input[i + 12] * cospi8sqrt2minus1) >> 16);
-		int32_t c1 = temp1 - temp2;
-
-		temp1 = (int32_t)input[i + 4] + (((int32_t)input[i + 4] * cospi8sqrt2minus1) >> 16);
-		temp2 = ((int32_t)input[i + 12] * sinpi8sqrt2) >> 16;
-		int32_t d1 = temp1 + temp2;
-
-		tmp[0 * 4 + i] = (int16_t)(a1 + d1);
-		tmp[3 * 4 + i] = (int16_t)(a1 - d1);
-		tmp[1 * 4 + i] = (int16_t)(b1 + c1);
-		tmp[2 * 4 + i] = (int16_t)(b1 - c1);
-	}
-
-	for (int i = 0; i < 4; i++) {
-		int32_t a1 = (int32_t)tmp[i * 4 + 0] + (int32_t)tmp[i * 4 + 2];
-		int32_t b1 = (int32_t)tmp[i * 4 + 0] - (int32_t)tmp[i * 4 + 2];
-
-		int32_t temp1 = ((int32_t)tmp[i * 4 + 1] * sinpi8sqrt2) >> 16;
-		int32_t temp2 = (int32_t)tmp[i * 4 + 3] + (((int32_t)tmp[i * 4 + 3] * cospi8sqrt2minus1) >> 16);
-		int32_t c1 = temp1 - temp2;
-
-		temp1 = (int32_t)tmp[i * 4 + 1] + (((int32_t)tmp[i * 4 + 1] * cospi8sqrt2minus1) >> 16);
-		temp2 = ((int32_t)tmp[i * 4 + 3] * sinpi8sqrt2) >> 16;
-		int32_t d1 = temp1 + temp2;
-
-		output[i * 4 + 0] = (int16_t)((a1 + d1 + 4) >> 3);
-		output[i * 4 + 3] = (int16_t)((a1 - d1 + 4) >> 3);
-		output[i * 4 + 1] = (int16_t)((b1 + c1 + 4) >> 3);
-		output[i * 4 + 2] = (int16_t)((b1 - c1 + 4) >> 3);
-	}
-}
+static void inv_dct4x4(const int16_t* input, int16_t* output) { vp8_inv_dct4x4(input, output); }
 
 // --- Prediction ---
 
@@ -211,150 +122,8 @@ static void pred_tm(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8
 	}
 }
 
-// Subblock intra prediction modes for B_PRED, matching RFC code.
-static inline uint8_t avg3(uint8_t x, uint8_t y, uint8_t z) { return (uint8_t)((x + y + y + z + 2) >> 2); }
-static inline uint8_t avg2(uint8_t x, uint8_t y) { return (uint8_t)((x + y + 1) >> 1); }
-
 static void subblock_predict(uint8_t B[4][4], const uint8_t* A, const uint8_t* L, uint8_t mode) {
-	uint8_t E[9];
-	E[0] = L[3];
-	E[1] = L[2];
-	E[2] = L[1];
-	E[3] = L[0];
-	E[4] = A[-1];
-	E[5] = A[0];
-	E[6] = A[1];
-	E[7] = A[2];
-	E[8] = A[3];
-
-	switch (mode) {
-		case 0: { // B_DC_PRED
-			int v = 4;
-			for (int i = 0; i < 4; i++) v += (int)A[i] + (int)L[i];
-			v >>= 3;
-			for (int r = 0; r < 4; r++)
-				for (int c = 0; c < 4; c++) B[r][c] = (uint8_t)v;
-			break;
-		}
-		case 1: { // B_TM_PRED
-			for (int r = 0; r < 4; r++)
-				for (int c = 0; c < 4; c++) B[r][c] = clamp255_i32((int32_t)L[r] + (int32_t)A[c] - (int32_t)A[-1]);
-			break;
-		}
-		case 2: { // B_VE_PRED
-			for (int c = 0; c < 4; c++) {
-				uint8_t v = avg3(A[c - 1], A[c], A[c + 1]);
-				B[0][c] = B[1][c] = B[2][c] = B[3][c] = v;
-			}
-			break;
-		}
-		case 3: { // B_HE_PRED
-			// Bottom row is exceptional because L[4] does not exist.
-			uint8_t v = avg3(L[2], L[3], L[3]);
-			B[3][0] = B[3][1] = B[3][2] = B[3][3] = v;
-
-			// Upper 3 rows use avg3p(L + r), where L[-1] == P (== A[-1]).
-			v = avg3(L[1], L[2], L[3]);
-			B[2][0] = B[2][1] = B[2][2] = B[2][3] = v;
-			v = avg3(L[0], L[1], L[2]);
-			B[1][0] = B[1][1] = B[1][2] = B[1][3] = v;
-			v = avg3(A[-1], L[0], L[1]);
-			B[0][0] = B[0][1] = B[0][2] = B[0][3] = v;
-			break;
-		}
-		case 4: { // B_LD_PRED
-			B[0][0] = avg3(A[0], A[1], A[2]);
-			B[0][1] = B[1][0] = avg3(A[1], A[2], A[3]);
-			B[0][2] = B[1][1] = B[2][0] = avg3(A[2], A[3], A[4]);
-			B[0][3] = B[1][2] = B[2][1] = B[3][0] = avg3(A[3], A[4], A[5]);
-			B[1][3] = B[2][2] = B[3][1] = avg3(A[4], A[5], A[6]);
-			B[2][3] = B[3][2] = avg3(A[5], A[6], A[7]);
-			B[3][3] = avg3(A[6], A[7], A[7]);
-			break;
-		}
-		case 5: { // B_RD_PRED
-			B[3][0] = avg3(E[0], E[1], E[2]);
-			B[3][1] = B[2][0] = avg3(E[1], E[2], E[3]);
-			B[3][2] = B[2][1] = B[1][0] = avg3(E[2], E[3], E[4]);
-			B[3][3] = B[2][2] = B[1][1] = B[0][0] = avg3(E[3], E[4], E[5]);
-			B[2][3] = B[1][2] = B[0][1] = avg3(E[4], E[5], E[6]);
-			B[1][3] = B[0][2] = avg3(E[5], E[6], E[7]);
-			B[0][3] = avg3(E[6], E[7], E[8]);
-			break;
-		}
-		case 6: { // B_VR_PRED
-			// RFC 6386 reference code.
-			uint8_t avg3p_2 = avg3(E[1], E[2], E[3]);
-			uint8_t avg3p_3 = avg3(E[2], E[3], E[4]);
-			uint8_t avg3p_4 = avg3(E[3], E[4], E[5]);
-			uint8_t avg3p_5 = avg3(E[4], E[5], E[6]);
-			uint8_t avg3p_6 = avg3(E[5], E[6], E[7]);
-			uint8_t avg3p_7 = avg3(E[6], E[7], E[8]);
-			uint8_t avg2p_4 = avg2(E[4], E[5]);
-			uint8_t avg2p_5 = avg2(E[5], E[6]);
-			uint8_t avg2p_6 = avg2(E[6], E[7]);
-			uint8_t avg2p_7 = avg2(E[7], E[8]);
-
-			B[3][0] = avg3p_2;
-			B[2][0] = avg3p_3;
-			B[3][1] = B[1][0] = avg3p_4;
-			B[2][1] = B[0][0] = avg2p_4;
-			B[3][2] = B[1][1] = avg3p_5;
-			B[2][2] = B[0][1] = avg2p_5;
-			B[3][3] = B[1][2] = avg3p_6;
-			B[2][3] = B[0][2] = avg2p_6;
-			B[1][3] = avg3p_7;
-			B[0][3] = avg2p_7;
-			break;
-		}
-		case 7: { // B_VL_PRED
-			// RFC 6386 reference code.
-			B[0][0] = avg2(A[0], A[1]);
-			B[1][0] = avg3(A[0], A[1], A[2]);
-			B[2][0] = B[0][1] = avg2(A[1], A[2]);
-			B[1][1] = B[3][0] = avg3(A[1], A[2], A[3]);
-			B[2][1] = B[0][2] = avg2(A[2], A[3]);
-			B[3][1] = B[1][2] = avg3(A[2], A[3], A[4]);
-			B[2][2] = B[0][3] = avg2(A[3], A[4]);
-			B[3][2] = B[1][3] = avg3(A[3], A[4], A[5]);
-			B[2][3] = avg3(A[4], A[5], A[6]);
-			B[3][3] = avg3(A[5], A[6], A[7]);
-			break;
-		}
-		case 8: { // B_HD_PRED
-			// RFC 6386 reference code.
-			B[3][0] = avg2(E[0], E[1]);
-			B[3][1] = avg3(E[0], E[1], E[2]);
-			B[2][0] = B[3][2] = avg2(E[1], E[2]);
-			B[2][1] = B[3][3] = avg3(E[1], E[2], E[3]);
-			B[2][2] = B[1][0] = avg2(E[2], E[3]);
-			B[2][3] = B[1][1] = avg3(E[2], E[3], E[4]);
-			B[1][2] = B[0][0] = avg2(E[3], E[4]);
-			B[1][3] = B[0][1] = avg3(E[3], E[4], E[5]);
-			B[0][2] = avg3(E[4], E[5], E[6]);
-			B[0][3] = avg3(E[5], E[6], E[7]);
-			break;
-		}
-		case 9: { // B_HU_PRED
-			B[0][0] = avg2(L[0], L[1]);
-			B[0][1] = avg3(L[0], L[1], L[2]);
-			B[0][2] = B[1][0] = avg2(L[1], L[2]);
-			B[0][3] = B[1][1] = avg3(L[1], L[2], L[3]);
-			B[1][2] = B[2][0] = avg2(L[2], L[3]);
-			B[1][3] = B[2][1] = avg3(L[2], L[3], L[3]);
-			for (int r = 2; r < 4; r++) {
-				for (int c = 2; c < 4; c++) B[r][c] = L[3];
-			}
-			B[3][0] = L[3];
-			B[3][1] = L[3];
-			break;
-		}
-		default: {
-			for (int r = 0; r < 4; r++)
-				for (int c = 0; c < 4; c++) B[r][c] = 128;
-			break;
-		}
-	}
+	vp8_bpred4x4(&B[0][0], 4, A, L, mode);
 }
 
 int yuv420_alloc(Yuv420Image* img, uint32_t width, uint32_t height) {

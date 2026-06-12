@@ -3,6 +3,8 @@
 #include "enc_transform.h"
 #include "enc_quant.h"
 #include "enc_vp8_tokens.h"
+#include "../vp8/vp8_pred.h"
+#include "../vp8/vp8_transform.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -44,9 +46,6 @@ typedef enum {
 	B_HD_PRED = 8,
 	B_HU_PRED = 9,
 } Vp8BMode;
-
-static inline uint8_t avg3_u8(uint8_t x, uint8_t y, uint8_t z) { return (uint8_t)((x + y + y + z + 2u) >> 2); }
-static inline uint8_t avg2_u8(uint8_t x, uint8_t y) { return (uint8_t)((x + y + 1u) >> 1); }
 
 static inline int16_t rdo_quant_one(int16_t c, int step) {
 	// Match enc_vp8_quantize4x4_inplace() rounding.
@@ -195,144 +194,7 @@ static inline uint32_t rdo_rate_weight_y2(uint32_t rate) {
 // 4x4 subblock predictor for B_PRED (keyframe), matching RFC 6386 reference code.
 // A points to the above row with A[-1] valid (top-left), and A[0..7] valid.
 static void bpred4x4(uint8_t out[16], const uint8_t* A, const uint8_t* L, Vp8BMode mode) {
-	uint8_t E[9];
-	E[0] = L[3];
-	E[1] = L[2];
-	E[2] = L[1];
-	E[3] = L[0];
-	E[4] = A[-1];
-	E[5] = A[0];
-	E[6] = A[1];
-	E[7] = A[2];
-	E[8] = A[3];
-
-	uint8_t B[4][4];
-	switch (mode) {
-		case B_DC_PRED: {
-			int v = 4;
-			for (int i = 0; i < 4; i++) v += (int)A[i] + (int)L[i];
-			v >>= 3;
-			for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) B[r][c] = (uint8_t)v;
-			break;
-		}
-		case B_TM_PRED: {
-			for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) B[r][c] = clamp255_i32((int32_t)L[r] + (int32_t)A[c] - (int32_t)A[-1]);
-			break;
-		}
-		case B_VE_PRED: {
-			for (int c = 0; c < 4; c++) {
-				uint8_t v = avg3_u8(A[c - 1], A[c], A[c + 1]);
-				B[0][c] = B[1][c] = B[2][c] = B[3][c] = v;
-			}
-			break;
-		}
-		case B_HE_PRED: {
-			uint8_t v = avg3_u8(L[2], L[3], L[3]);
-			B[3][0] = B[3][1] = B[3][2] = B[3][3] = v;
-			v = avg3_u8(L[1], L[2], L[3]);
-			B[2][0] = B[2][1] = B[2][2] = B[2][3] = v;
-			v = avg3_u8(L[0], L[1], L[2]);
-			B[1][0] = B[1][1] = B[1][2] = B[1][3] = v;
-			v = avg3_u8(A[-1], L[0], L[1]);
-			B[0][0] = B[0][1] = B[0][2] = B[0][3] = v;
-			break;
-		}
-		case B_LD_PRED: {
-			B[0][0] = avg3_u8(A[0], A[1], A[2]);
-			B[0][1] = B[1][0] = avg3_u8(A[1], A[2], A[3]);
-			B[0][2] = B[1][1] = B[2][0] = avg3_u8(A[2], A[3], A[4]);
-			B[0][3] = B[1][2] = B[2][1] = B[3][0] = avg3_u8(A[3], A[4], A[5]);
-			B[1][3] = B[2][2] = B[3][1] = avg3_u8(A[4], A[5], A[6]);
-			B[2][3] = B[3][2] = avg3_u8(A[5], A[6], A[7]);
-			B[3][3] = avg3_u8(A[6], A[7], A[7]);
-			break;
-		}
-		case B_RD_PRED: {
-			B[3][0] = avg3_u8(E[0], E[1], E[2]);
-			B[3][1] = B[2][0] = avg3_u8(E[1], E[2], E[3]);
-			B[3][2] = B[2][1] = B[1][0] = avg3_u8(E[2], E[3], E[4]);
-			B[3][3] = B[2][2] = B[1][1] = B[0][0] = avg3_u8(E[3], E[4], E[5]);
-			B[2][3] = B[1][2] = B[0][1] = avg3_u8(E[4], E[5], E[6]);
-			B[1][3] = B[0][2] = avg3_u8(E[5], E[6], E[7]);
-			B[0][3] = avg3_u8(E[6], E[7], E[8]);
-			break;
-		}
-		case B_VR_PRED: {
-			uint8_t avg3p_2 = avg3_u8(E[1], E[2], E[3]);
-			uint8_t avg3p_3 = avg3_u8(E[2], E[3], E[4]);
-			uint8_t avg3p_4 = avg3_u8(E[3], E[4], E[5]);
-			uint8_t avg3p_5 = avg3_u8(E[4], E[5], E[6]);
-			uint8_t avg3p_6 = avg3_u8(E[5], E[6], E[7]);
-			uint8_t avg3p_7 = avg3_u8(E[6], E[7], E[8]);
-			uint8_t avg2p_4 = avg2_u8(E[4], E[5]);
-			uint8_t avg2p_5 = avg2_u8(E[5], E[6]);
-			uint8_t avg2p_6 = avg2_u8(E[6], E[7]);
-			uint8_t avg2p_7 = avg2_u8(E[7], E[8]);
-
-			B[3][0] = avg3p_2;
-			B[2][0] = avg3p_3;
-			B[3][1] = B[1][0] = avg3p_4;
-			B[2][1] = B[0][0] = avg2p_4;
-			B[3][2] = B[1][1] = avg3p_5;
-			B[2][2] = B[0][1] = avg2p_5;
-			B[3][3] = B[1][2] = avg3p_6;
-			B[2][3] = B[0][2] = avg2p_6;
-			B[1][3] = avg3p_7;
-			B[0][3] = avg2p_7;
-			break;
-		}
-		case B_VL_PRED: {
-			B[0][0] = avg2_u8(A[0], A[1]);
-			B[1][0] = avg3_u8(A[0], A[1], A[2]);
-			B[2][0] = B[0][1] = avg2_u8(A[1], A[2]);
-			B[1][1] = B[3][0] = avg3_u8(A[1], A[2], A[3]);
-			B[2][1] = B[0][2] = avg2_u8(A[2], A[3]);
-			B[3][1] = B[1][2] = avg3_u8(A[2], A[3], A[4]);
-			B[2][2] = B[0][3] = avg2_u8(A[3], A[4]);
-			B[3][2] = B[1][3] = avg3_u8(A[3], A[4], A[5]);
-			B[2][3] = avg3_u8(A[4], A[5], A[6]);
-			B[3][3] = avg3_u8(A[5], A[6], A[7]);
-			break;
-		}
-		case B_HD_PRED: {
-			B[3][0] = avg2_u8(E[0], E[1]);
-			B[3][1] = avg3_u8(E[0], E[1], E[2]);
-			B[2][0] = B[3][2] = avg2_u8(E[1], E[2]);
-			B[2][1] = B[3][3] = avg3_u8(E[1], E[2], E[3]);
-			B[2][2] = B[1][0] = avg2_u8(E[2], E[3]);
-			B[2][3] = B[1][1] = avg3_u8(E[2], E[3], E[4]);
-			B[1][2] = B[0][0] = avg2_u8(E[3], E[4]);
-			B[1][3] = B[0][1] = avg3_u8(E[3], E[4], E[5]);
-			B[0][2] = avg3_u8(E[4], E[5], E[6]);
-			B[0][3] = avg3_u8(E[5], E[6], E[7]);
-			break;
-		}
-		case B_HU_PRED: {
-			// Match RFC 6386 reference (and our decoder's subblock_predict).
-			B[0][0] = avg2_u8(L[0], L[1]);
-			B[0][1] = avg3_u8(L[0], L[1], L[2]);
-			B[0][2] = B[1][0] = avg2_u8(L[1], L[2]);
-			B[0][3] = B[1][1] = avg3_u8(L[1], L[2], L[3]);
-			B[1][2] = B[2][0] = avg2_u8(L[2], L[3]);
-			B[1][3] = B[2][1] = avg3_u8(L[2], L[3], L[3]);
-			for (int r = 2; r < 4; r++) {
-				for (int c = 2; c < 4; c++) B[r][c] = L[3];
-			}
-			B[3][0] = L[3];
-			B[3][1] = L[3];
-			break;
-		}
-		default: {
-			for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) B[r][c] = 0x80;
-			break;
-		}
-	}
-
-	for (int r = 0; r < 4; r++) {
-		for (int c = 0; c < 4; c++) {
-			out[r * 4 + c] = B[r][c];
-		}
-	}
+	vp8_bpred4x4(out, 4, A, L, (uint8_t)mode);
 }
 
 static void pred16x16_dc(uint8_t dst[16 * 16], const uint8_t* A16, const uint8_t* L16, int have_above, int have_left) {
@@ -721,70 +583,11 @@ static uint32_t sad8x8_plane_src_vs_pred(const uint8_t* src,
 }
 
 static void inv_wht4x4(const int16_t* input, int16_t* output) {
-	int16_t tmp[16];
-	for (int i = 0; i < 4; i++) {
-		int a1 = input[0 + i] + input[12 + i];
-		int b1 = input[4 + i] + input[8 + i];
-		int c1 = input[4 + i] - input[8 + i];
-		int d1 = input[0 + i] - input[12 + i];
-
-		tmp[0 + i] = (int16_t)(a1 + b1);
-		tmp[4 + i] = (int16_t)(c1 + d1);
-		tmp[8 + i] = (int16_t)(a1 - b1);
-		tmp[12 + i] = (int16_t)(d1 - c1);
-	}
-	for (int i = 0; i < 4; i++) {
-		int a1 = tmp[4 * i + 0] + tmp[4 * i + 3];
-		int b1 = tmp[4 * i + 1] + tmp[4 * i + 2];
-		int c1 = tmp[4 * i + 1] - tmp[4 * i + 2];
-		int d1 = tmp[4 * i + 0] - tmp[4 * i + 3];
-
-		output[4 * i + 0] = (int16_t)((a1 + b1 + 3) >> 3);
-		output[4 * i + 1] = (int16_t)((c1 + d1 + 3) >> 3);
-		output[4 * i + 2] = (int16_t)((a1 - b1 + 3) >> 3);
-		output[4 * i + 3] = (int16_t)((d1 - c1 + 3) >> 3);
-	}
+	vp8_inv_wht4x4(input, output);
 }
 
 static void inv_dct4x4(const int16_t* input, int16_t* output) {
-	static const int cospi8sqrt2minus1 = 20091;
-	static const int sinpi8sqrt2 = 35468;
-
-	int16_t tmp[16];
-	for (int i = 0; i < 4; i++) {
-		int32_t a1 = (int32_t)input[i + 0] + (int32_t)input[i + 8];
-		int32_t b1 = (int32_t)input[i + 0] - (int32_t)input[i + 8];
-
-		int32_t temp1 = ((int32_t)input[i + 4] * sinpi8sqrt2) >> 16;
-		int32_t temp2 = (int32_t)input[i + 12] + (((int32_t)input[i + 12] * cospi8sqrt2minus1) >> 16);
-		int32_t c1 = temp1 - temp2;
-
-		temp1 = (int32_t)input[i + 4] + (((int32_t)input[i + 4] * cospi8sqrt2minus1) >> 16);
-		temp2 = ((int32_t)input[i + 12] * sinpi8sqrt2) >> 16;
-		int32_t d1 = temp1 + temp2;
-
-		tmp[0 + i] = (int16_t)(a1 + d1);
-		tmp[12 + i] = (int16_t)(a1 - d1);
-		tmp[4 + i] = (int16_t)(b1 + c1);
-		tmp[8 + i] = (int16_t)(b1 - c1);
-	}
-	for (int i = 0; i < 4; i++) {
-		int32_t a1 = (int32_t)tmp[4 * i + 0] + (int32_t)tmp[4 * i + 2];
-		int32_t b1 = (int32_t)tmp[4 * i + 0] - (int32_t)tmp[4 * i + 2];
-
-		int32_t temp1 = ((int32_t)tmp[4 * i + 1] * sinpi8sqrt2) >> 16;
-		int32_t temp2 = (int32_t)tmp[4 * i + 3] + (((int32_t)tmp[4 * i + 3] * cospi8sqrt2minus1) >> 16);
-		int32_t c1 = temp1 - temp2;
-
-		temp1 = (int32_t)tmp[4 * i + 1] + (((int32_t)tmp[4 * i + 1] * cospi8sqrt2minus1) >> 16);
-		temp2 = ((int32_t)tmp[4 * i + 3] * sinpi8sqrt2) >> 16;
-		int32_t d1 = temp1 + temp2;
-
-		output[4 * i + 0] = (int16_t)((a1 + d1 + 4) >> 3);
-		output[4 * i + 3] = (int16_t)((a1 - d1 + 4) >> 3);
-		output[4 * i + 1] = (int16_t)((b1 + c1 + 4) >> 3);
-		output[4 * i + 2] = (int16_t)((b1 - c1 + 4) >> 3);
-	}
+	vp8_inv_dct4x4(input, output);
 }
 
 int enc_vp8_recon_alloc(uint32_t width, uint32_t height, EncVp8ReconPlanes* out) {
