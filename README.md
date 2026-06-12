@@ -47,20 +47,23 @@ This produces two binaries:
 The default build is syscall-only/nolibc. No root-level `decoder` or `encoder`
 binary is produced.
 
-The default decoder and encoder builds are size-oriented and portable across
-x86_64 machines: `-Os -march=x86-64`.
+The default build uses all decoder speed optimizations enabled in this
+Makefile: `build/decoder` is built with `-O3 -march=native`. The encoder
+remains size-oriented and portable across x86_64 machines: `-Os -march=x86-64`.
 
-For benchmarking decoder throughput, use the opt-in speed build:
+To force a portable decoder speed build, disable CPU-specific code generation:
 
 ```sh
-make clean && make SPEED=1
-
-# Also allow CPU-specific code generation on the local machine:
-make clean && make SPEED=1 NATIVE=1
+make clean && make NATIVE=0
 ```
 
-`SPEED=1` switches only `build/decoder` to `-O3 -march=x86-64`.
-`SPEED=1 NATIVE=1` switches only `build/decoder` to `-O3 -march=native`.
+To force the older size-oriented portable decoder build:
+
+```sh
+make clean && make SPEED=0 NATIVE=0
+```
+
+`SPEED=0` switches only `build/decoder` back to `-Os -march=x86-64`.
 The encoder remains built with `-Os -march=x86-64` in all cases.
 
 ## Benchmarking decoder speed
@@ -98,9 +101,9 @@ PNG-path timings for the optimized tree:
 
 | Build | `-png` median |
 | --- | ---: |
-| default (`-Os -march=x86-64`) | 1.550991 s / 23.20 MP/s |
-| `SPEED=1` (`-O3 -march=x86-64`) | 1.271192 s / 28.31 MP/s |
-| `SPEED=1 NATIVE=1` (`-O3 -march=native`) | 1.245413 s / 28.90 MP/s |
+| `SPEED=0 NATIVE=0` (`-Os -march=x86-64`) | 1.550991 s / 23.20 MP/s |
+| `NATIVE=0` (`-O3 -march=x86-64`) | 1.271192 s / 28.31 MP/s |
+| default (`-O3 -march=native`) | 1.245413 s / 28.90 MP/s |
 
 ## Usage
 
@@ -174,10 +177,10 @@ make clean && mkdir -p build/test-artifacts/_tmp
 TMPDIR=$PWD/build/test-artifacts/_tmp make test
 
 make clean && mkdir -p build/test-artifacts/_tmp
-TMPDIR=$PWD/build/test-artifacts/_tmp make SPEED=1 test
+TMPDIR=$PWD/build/test-artifacts/_tmp make NATIVE=0 test
 
 make clean && mkdir -p build/test-artifacts/_tmp
-TMPDIR=$PWD/build/test-artifacts/_tmp make SPEED=1 NATIVE=1 test
+TMPDIR=$PWD/build/test-artifacts/_tmp make test
 ```
 
 These gates are byte-exact against libwebp for the supported decoder scope:

@@ -36,8 +36,8 @@ ENC_M09_DCENC_BIN := build/enc_m09_dcenc
 ENC_M09_MODEENC_BIN := build/enc_m09_modeenc
 ENC_M09_BPREDENC_BIN := build/enc_m09_bpredenc
 
-SPEED ?= 0
-NATIVE ?= 0
+SPEED ?= 1
+NATIVE ?= 1
 
 VP8_DECODER_SHARED_SRC := \
 	src/vp8/vp8_quant.c \
