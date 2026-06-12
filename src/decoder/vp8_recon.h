@@ -26,3 +26,9 @@ int vp8_reconstruct_keyframe_yuv(const Vp8KeyFrameHeader* kf, const Vp8DecodedFr
 
 // Reconstructs an intra (key) frame and applies the in-loop deblocking filter.
 int vp8_reconstruct_keyframe_yuv_filtered(const Vp8KeyFrameHeader* kf, const Vp8DecodedFrame* decoded, Yuv420Image* out);
+
+// Decode + reconstruct keyframes while streaming coefficients by macroblock.
+// These avoid frame-sized coefficient arrays; syntax arrays are still retained
+// long enough for loopfilter skip/segment decisions.
+int vp8_decode_reconstruct_keyframe_yuv(ByteSpan vp8_payload, Yuv420Image* out);
+int vp8_decode_reconstruct_keyframe_yuv_filtered(ByteSpan vp8_payload, Yuv420Image* out);

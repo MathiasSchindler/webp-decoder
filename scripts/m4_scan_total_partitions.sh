@@ -32,9 +32,13 @@ scan_glob() {
 
 scan_glob "images/webp/*.webp"
 scan_glob "images/testimages/webp/*.webp"
+scan_glob "images/generated/webp/*.webp"
+scan_glob "images/commons/*.webp"
+scan_glob "images/commons/generated-webp/*.webp"
+scan_glob "images/examples/*.webp"
 
 if [ "$count" -eq 0 ]; then
-  echo "error: no .webp files found under images/webp or images/testimages/webp" >&2
+  echo "error: no decoder corpus .webp files found" >&2
   exit 2
 fi
 

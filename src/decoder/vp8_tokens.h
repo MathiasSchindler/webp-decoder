@@ -98,6 +98,15 @@ typedef struct {
 	Vp8CoeffStats stats;
 } Vp8DecodedFrame;
 
+typedef struct {
+	int16_t y2[16];
+	int16_t y[16][16];
+	int16_t u[4][16];
+	int16_t v[4][16];
+} Vp8MacroblockCoeffs;
+
+typedef int (*Vp8MacroblockCoeffVisitor)(void* user, uint32_t mb_index, const Vp8MacroblockCoeffs* coeffs);
+
 // Parses macroblock prediction data + coefficient partitions (key frames only)
 // and computes a deterministic hash over decoded coefficient values.
 //
@@ -107,5 +116,12 @@ int vp8_decode_coeff_stats(ByteSpan vp8_payload, Vp8CoeffStats* out);
 // Decodes keyframe macroblock syntax + coefficient tokens and stores the results
 // in heap-allocated arrays in `out`. Call vp8_decoded_frame_free() when done.
 int vp8_decode_decoded_frame(ByteSpan vp8_payload, Vp8DecodedFrame* out);
+
+// Decodes keyframe macroblock syntax, but streams coefficients one macroblock at
+// a time to `visitor` instead of storing frame-sized coefficient arrays.
+// Syntax arrays in `out` are allocated and must be released with
+// vp8_decoded_frame_free(). The callback is invoked in raster macroblock order.
+int vp8_decode_decoded_frame_visit_coeffs(ByteSpan vp8_payload, Vp8DecodedFrame* out,
+                                          Vp8MacroblockCoeffVisitor visitor, void* user);
 
 void vp8_decoded_frame_free(Vp8DecodedFrame* f);

@@ -129,6 +129,20 @@ RUNS=5 scripts/benchmark_decoder_modes.py build/profile/final-speed-validation-d
 `perf` was present, but `perf_event_paranoid=4` prevented useful hardware or
 software event profiling; the artifact keeps the attempted `perf stat` output.
 
+Current Commons stage profile after the fused decode/reconstruct integration
+(`build/profile/commons-decoder-stage-profile/`, 2026-06-12):
+
+- Corpus: 28 generated Commons WebPs, 378.031 MP per run; median of 3 runs.
+- Our cumulative modes: `-info` 141.18 MP/s, `-yuv` 169.63 MP/s, `-yuvf`
+  99.84 MP/s, `-ppm` 82.28 MP/s, `-png` 57.76 MP/s.
+- Comparative PPM: libwebp API 214.88 MP/s, ffmpeg 76.53 MP/s,
+  ImageMagick 102.52 MP/s.
+- Derived deltas: loopfilter 1.558 s, RGB/PPM output 0.808 s, PNG output
+  2.758 s.
+
+Caveats: these are local machine timings over the generated Commons artifact
+set; `-info` includes coefficient stats and is not a pure header-only decode.
+
 ## Usage
 
 ```sh
@@ -206,6 +220,17 @@ These gates are byte-exact against libwebp for the supported decoder scope:
 simple lossy VP8 key frames in the local corpus. They do not claim support for
 the intentionally unsupported features listed above (`VP8X`, alpha, animation,
 lossless `VP8L`, inter frames, or multi-token-partition VP8 streams).
+
+To audit the current libwebp parity gap and local corpus coverage, run:
+
+```sh
+scripts/decoder_quality_parity_report.py
+```
+
+The decoder gates include all simple lossy WebPs under the local corpora,
+including generated Commons files when `images/commons/generated-webp/` is
+present. The parity report separates current format/quality gaps from later
+speed work.
 
 Encoder regression gates live alongside the decoder ones under [scripts/](scripts/) and
 are named `enc_mXX_*.sh`. See [planenc.md](planenc.md) for the encoder milestone plan.

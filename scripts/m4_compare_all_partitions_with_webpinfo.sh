@@ -40,9 +40,13 @@ check_glob() {
 
 check_glob "images/webp/*.webp"
 check_glob "images/testimages/webp/*.webp"
+check_glob "images/generated/webp/*.webp"
+check_glob "images/commons/*.webp"
+check_glob "images/commons/generated-webp/*.webp"
+check_glob "images/examples/*.webp"
 
 if [ "$count" -eq 0 ]; then
-  echo "error: no files matched images/webp/*.webp or images/testimages/webp/*.webp" >&2
+  echo "error: no decoder corpus .webp files found" >&2
   exit 2
 fi
 

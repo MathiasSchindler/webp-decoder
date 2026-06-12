@@ -562,24 +562,9 @@ static int cmd_yuv(const char* in_path, const char* out_path) {
 		.size = c.vp8_chunk_size,
 	};
 
-	Vp8KeyFrameHeader kf;
-	if (vp8_parse_keyframe_header(vp8_payload, &kf) != 0 || !kf.is_key_frame) {
-		fmt_write_str(2, "error: VP8 key-frame header parse failed\n");
-		os_unmap_file(file);
-		return 1;
-	}
-
-	Vp8DecodedFrame decoded;
-	if (vp8_decode_decoded_frame(vp8_payload, &decoded) != 0) {
-		fmt_write_str(2, "error: VP8 macroblock/token decode failed\n");
-		os_unmap_file(file);
-		return 1;
-	}
-
 	Yuv420Image img;
-	if (vp8_reconstruct_keyframe_yuv(&kf, &decoded, &img) != 0) {
-		fmt_write_str(2, "error: VP8 reconstruction failed\n");
-		vp8_decoded_frame_free(&decoded);
+	if (vp8_decode_reconstruct_keyframe_yuv(vp8_payload, &img) != 0) {
+		fmt_write_str(2, "error: VP8 decode/reconstruction failed\n");
 		os_unmap_file(file);
 		return 1;
 	}
@@ -588,7 +573,6 @@ static int cmd_yuv(const char* in_path, const char* out_path) {
 	if (fd < 0) {
 		fmt_write_str(2, "error: cannot open output file\n");
 		yuv420_free(&img);
-		vp8_decoded_frame_free(&decoded);
 		os_unmap_file(file);
 		return 1;
 	}
@@ -605,13 +589,11 @@ static int cmd_yuv(const char* in_path, const char* out_path) {
 	if (wrc != 0) {
 		fmt_write_str(2, "error: write failed\n");
 		yuv420_free(&img);
-		vp8_decoded_frame_free(&decoded);
 		os_unmap_file(file);
 		return 1;
 	}
 
 	yuv420_free(&img);
-	vp8_decoded_frame_free(&decoded);
 	os_unmap_file(file);
 	return 0;
 }
@@ -636,24 +618,9 @@ static int cmd_yuvf(const char* in_path, const char* out_path) {
 		.size = c.vp8_chunk_size,
 	};
 
-	Vp8KeyFrameHeader kf;
-	if (vp8_parse_keyframe_header(vp8_payload, &kf) != 0 || !kf.is_key_frame) {
-		fmt_write_str(2, "error: VP8 key-frame header parse failed\n");
-		os_unmap_file(file);
-		return 1;
-	}
-
-	Vp8DecodedFrame decoded;
-	if (vp8_decode_decoded_frame(vp8_payload, &decoded) != 0) {
-		fmt_write_str(2, "error: VP8 macroblock/token decode failed\n");
-		os_unmap_file(file);
-		return 1;
-	}
-
 	Yuv420Image img;
-	if (vp8_reconstruct_keyframe_yuv_filtered(&kf, &decoded, &img) != 0) {
-		fmt_write_str(2, "error: VP8 reconstruction/loopfilter failed\n");
-		vp8_decoded_frame_free(&decoded);
+	if (vp8_decode_reconstruct_keyframe_yuv_filtered(vp8_payload, &img) != 0) {
+		fmt_write_str(2, "error: VP8 decode/reconstruction/loopfilter failed\n");
 		os_unmap_file(file);
 		return 1;
 	}
@@ -662,7 +629,6 @@ static int cmd_yuvf(const char* in_path, const char* out_path) {
 	if (fd < 0) {
 		fmt_write_str(2, "error: cannot open output file\n");
 		yuv420_free(&img);
-		vp8_decoded_frame_free(&decoded);
 		os_unmap_file(file);
 		return 1;
 	}
@@ -679,13 +645,11 @@ static int cmd_yuvf(const char* in_path, const char* out_path) {
 	if (wrc != 0) {
 		fmt_write_str(2, "error: write failed\n");
 		yuv420_free(&img);
-		vp8_decoded_frame_free(&decoded);
 		os_unmap_file(file);
 		return 1;
 	}
 
 	yuv420_free(&img);
-	vp8_decoded_frame_free(&decoded);
 	os_unmap_file(file);
 	return 0;
 }
@@ -710,25 +674,10 @@ static int cmd_ppm(const char* in_path, const char* out_path) {
 		.size = c.vp8_chunk_size,
 	};
 
-	Vp8KeyFrameHeader kf;
-	if (vp8_parse_keyframe_header(vp8_payload, &kf) != 0 || !kf.is_key_frame) {
-		fmt_write_str(2, "error: VP8 key-frame header parse failed\n");
-		os_unmap_file(file);
-		return 1;
-	}
-
-	Vp8DecodedFrame decoded;
-	if (vp8_decode_decoded_frame(vp8_payload, &decoded) != 0) {
-		fmt_write_str(2, "error: VP8 macroblock/token decode failed\n");
-		os_unmap_file(file);
-		return 1;
-	}
-
 	Yuv420Image img;
 	// Match dwebp default output: filtered reconstruction.
-	if (vp8_reconstruct_keyframe_yuv_filtered(&kf, &decoded, &img) != 0) {
-		fmt_write_str(2, "error: VP8 reconstruction/loopfilter failed\n");
-		vp8_decoded_frame_free(&decoded);
+	if (vp8_decode_reconstruct_keyframe_yuv_filtered(vp8_payload, &img) != 0) {
+		fmt_write_str(2, "error: VP8 decode/reconstruction/loopfilter failed\n");
 		os_unmap_file(file);
 		return 1;
 	}
@@ -737,7 +686,6 @@ static int cmd_ppm(const char* in_path, const char* out_path) {
 	if (fd < 0) {
 		fmt_write_str(2, "error: cannot open output file\n");
 		yuv420_free(&img);
-		vp8_decoded_frame_free(&decoded);
 		os_unmap_file(file);
 		return 1;
 	}
@@ -748,13 +696,11 @@ static int cmd_ppm(const char* in_path, const char* out_path) {
 	if (wrc != 0) {
 		fmt_write_str(2, "error: PPM write failed\n");
 		yuv420_free(&img);
-		vp8_decoded_frame_free(&decoded);
 		os_unmap_file(file);
 		return 1;
 	}
 
 	yuv420_free(&img);
-	vp8_decoded_frame_free(&decoded);
 	os_unmap_file(file);
 	return 0;
 }
@@ -779,25 +725,10 @@ static int cmd_png(const char* in_path, const char* out_path) {
 		.size = c.vp8_chunk_size,
 	};
 
-	Vp8KeyFrameHeader kf;
-	if (vp8_parse_keyframe_header(vp8_payload, &kf) != 0 || !kf.is_key_frame) {
-		fmt_write_str(2, "error: VP8 key-frame header parse failed\n");
-		os_unmap_file(file);
-		return 1;
-	}
-
-	Vp8DecodedFrame decoded;
-	if (vp8_decode_decoded_frame(vp8_payload, &decoded) != 0) {
-		fmt_write_str(2, "error: VP8 macroblock/token decode failed\n");
-		os_unmap_file(file);
-		return 1;
-	}
-
 	Yuv420Image img;
 	// Match dwebp default output: filtered reconstruction.
-	if (vp8_reconstruct_keyframe_yuv_filtered(&kf, &decoded, &img) != 0) {
-		fmt_write_str(2, "error: VP8 reconstruction/loopfilter failed\n");
-		vp8_decoded_frame_free(&decoded);
+	if (vp8_decode_reconstruct_keyframe_yuv_filtered(vp8_payload, &img) != 0) {
+		fmt_write_str(2, "error: VP8 decode/reconstruction/loopfilter failed\n");
 		os_unmap_file(file);
 		return 1;
 	}
@@ -806,7 +737,6 @@ static int cmd_png(const char* in_path, const char* out_path) {
 	if (fd < 0) {
 		fmt_write_str(2, "error: cannot open output file\n");
 		yuv420_free(&img);
-		vp8_decoded_frame_free(&decoded);
 		os_unmap_file(file);
 		return 1;
 	}
@@ -817,13 +747,11 @@ static int cmd_png(const char* in_path, const char* out_path) {
 	if (wrc != 0) {
 		fmt_write_str(2, "error: PNG write failed\n");
 		yuv420_free(&img);
-		vp8_decoded_frame_free(&decoded);
 		os_unmap_file(file);
 		return 1;
 	}
 
 	yuv420_free(&img);
-	vp8_decoded_frame_free(&decoded);
 	os_unmap_file(file);
 	return 0;
 }

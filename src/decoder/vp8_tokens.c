@@ -308,7 +308,8 @@ static int decode_block(BoolDecoder* d,
 
 static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHeader* kf, uint8_t total_partitions,
 					  const MbInfo* mbs, uint32_t mb_cols, uint32_t mb_rows, Vp8CoeffStats* out,
-					  Vp8DecodedFrame* frame, uint64_t* io_hash, int collect_stats) {
+					  Vp8DecodedFrame* frame, uint64_t* io_hash, int collect_stats,
+					  Vp8MacroblockCoeffVisitor visitor, void* visitor_user) {
 	if (total_partitions != 1) {
 		errno = ENOTSUP;
 		return -1;
@@ -368,6 +369,9 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 			uint32_t mb_index = mb_r * mb_cols + mb_c;
 			MbInfo info = mbs[mb_index];
 			int mb_has_coeff = 0;
+			Vp8MacroblockCoeffs mb_coeffs;
+			Vp8MacroblockCoeffs* cb_coeffs = visitor ? &mb_coeffs : NULL;
+			if (cb_coeffs) memset(cb_coeffs, 0, sizeof(*cb_coeffs));
 
 			int16_t block[16];
 			int16_t* dst = NULL;
@@ -379,8 +383,9 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 				uint8_t above_has = above_y2[mb_c];
 				int has = 0;
 				if (!info.skip_coeff) {
-					dst = frame ? (frame->coeff_y2 + (size_t)mb_index * 16u) : NULL;
-					int16_t* coeff_out = (io_hash || !dst) ? block : dst;
+					dst = (frame && frame->coeff_y2) ? (frame->coeff_y2 + (size_t)mb_index * 16u) : NULL;
+					int16_t* visitor_dst = cb_coeffs ? cb_coeffs->y2 : NULL;
+					int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
 					has = decode_block(&d,
 					                 g_coeff_probs[1],
 					                 0,
@@ -431,8 +436,9 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					int has = 0;
 					if (!info.skip_coeff) {
 						size_t blk = (size_t)mb_index * 16u + (size_t)(rr * 4 + cc);
-						dst = frame ? (frame->coeff_y + blk * 16u) : NULL;
-						int16_t* coeff_out = (io_hash || !dst) ? block : dst;
+						dst = (frame && frame->coeff_y) ? (frame->coeff_y + blk * 16u) : NULL;
+						int16_t* visitor_dst = cb_coeffs ? cb_coeffs->y[rr * 4 + cc] : NULL;
+						int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
 						has = decode_block(&d,
 					                 g_coeff_probs[y_plane],
 					                 first_coeff,
@@ -482,8 +488,9 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					int has = 0;
 					if (!info.skip_coeff) {
 						size_t blk = (size_t)mb_index * 4u + (size_t)(rr * 2 + cc);
-						dst = frame ? (frame->coeff_u + blk * 16u) : NULL;
-						int16_t* coeff_out = (io_hash || !dst) ? block : dst;
+						dst = (frame && frame->coeff_u) ? (frame->coeff_u + blk * 16u) : NULL;
+						int16_t* visitor_dst = cb_coeffs ? cb_coeffs->u[rr * 2 + cc] : NULL;
+						int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
 						has = decode_block(&d,
 					                 g_coeff_probs[2],
 					                 0,
@@ -529,8 +536,9 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					int has = 0;
 					if (!info.skip_coeff) {
 						size_t blk = (size_t)mb_index * 4u + (size_t)(rr * 2 + cc);
-						dst = frame ? (frame->coeff_v + blk * 16u) : NULL;
-						int16_t* coeff_out = (io_hash || !dst) ? block : dst;
+						dst = (frame && frame->coeff_v) ? (frame->coeff_v + blk * 16u) : NULL;
+						int16_t* visitor_dst = cb_coeffs ? cb_coeffs->v[rr * 2 + cc] : NULL;
+						int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
 						has = decode_block(&d,
 					                 g_coeff_probs[2],
 					                 0,
@@ -567,11 +575,23 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 			for (int rr = 0; rr < 2; rr++) left_v[rr] = v_has[rr][1];
 
 			if (frame && frame->has_coeff) frame->has_coeff[mb_index] = (uint8_t)(mb_has_coeff != 0);
+			if (visitor && visitor(visitor_user, mb_index, cb_coeffs) != 0) {
+				free(above_y);
+				free(above_u);
+				free(above_v);
+				free(above_y2);
+				if (errno == 0) errno = EINVAL;
+				return -1;
+			}
 		}
 	}
 
 	out->token_part_bytes_used = (uint32_t)bool_decoder_bytes_used(&d);
 	if (out->token_part_bytes_used > out->token_part_size_bytes) {
+		free(above_y);
+		free(above_u);
+		free(above_v);
+		free(above_y2);
 		errno = EINVAL;
 		return -1;
 	}
@@ -635,7 +655,13 @@ void vp8_decoded_frame_free(Vp8DecodedFrame* f) {
 	*f = (Vp8DecodedFrame){0};
 }
 
-static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload, Vp8DecodedFrame* out, int collect_stats, int store_frame) {
+static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload,
+                                             Vp8DecodedFrame* out,
+                                             int collect_stats,
+                                             int store_syntax,
+                                             int store_coeffs,
+                                             Vp8MacroblockCoeffVisitor visitor,
+                                             void* visitor_user) {
 	if (!out) return -1;
 	*out = (Vp8DecodedFrame){0};
 
@@ -678,19 +704,25 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload, Vp8DecodedFra
 		return -1;
 	}
 
-	if (store_frame) {
+	if (store_syntax) {
 		out->segment_id = (uint8_t*)xcalloc_array(mb_total, sizeof(uint8_t));
 		out->skip_coeff = (uint8_t*)xcalloc_array(mb_total, sizeof(uint8_t));
 		out->has_coeff = (uint8_t*)xcalloc_array(mb_total, sizeof(uint8_t));
 		out->ymode = (uint8_t*)xcalloc_array(mb_total, sizeof(uint8_t));
 		out->uv_mode = (uint8_t*)xcalloc_array(mb_total, sizeof(uint8_t));
 		out->bmode = (uint8_t*)xcalloc_array((size_t)mb_total * 16u, sizeof(uint8_t));
+		if (!out->segment_id || !out->skip_coeff || !out->has_coeff || !out->ymode || !out->uv_mode || !out->bmode) {
+			vp8_decoded_frame_free(out);
+			errno = ENOMEM;
+			return -1;
+		}
+	}
+	if (store_coeffs) {
 		out->coeff_y2 = (int16_t*)xcalloc_array((size_t)mb_total * 16u, sizeof(int16_t));
 		out->coeff_y = (int16_t*)xcalloc_array((size_t)mb_total * 16u * 16u, sizeof(int16_t));
 		out->coeff_u = (int16_t*)xcalloc_array((size_t)mb_total * 4u * 16u, sizeof(int16_t));
 		out->coeff_v = (int16_t*)xcalloc_array((size_t)mb_total * 4u * 16u, sizeof(int16_t));
-		if (!out->segment_id || !out->skip_coeff || !out->has_coeff || !out->ymode || !out->uv_mode || !out->bmode ||
-		    !out->coeff_y2 || !out->coeff_y || !out->coeff_u || !out->coeff_v) {
+		if (!out->coeff_y2 || !out->coeff_y || !out->coeff_u || !out->coeff_v) {
 			vp8_decoded_frame_free(out);
 			errno = ENOMEM;
 			return -1;
@@ -933,7 +965,8 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload, Vp8DecodedFra
 
 	uint64_t h = collect_stats ? fnv1a64_init() : 0;
 	if (decode_all_coeffs_keyframe(vp8_payload, &kf, total_partitions, mbs, mb_cols, mb_rows, &out->stats,
-	                               store_frame ? out : NULL, collect_stats ? &h : NULL, collect_stats) != 0) {
+	                               (store_syntax || store_coeffs) ? out : NULL, collect_stats ? &h : NULL, collect_stats,
+	                               visitor, visitor_user) != 0) {
 		free(above_bmodes);
 		free(mbs);
 		vp8_decoded_frame_free(out);
@@ -968,13 +1001,26 @@ static int vp8_decode_decoded_frame_internal(ByteSpan vp8_payload, Vp8DecodedFra
 }
 
 int vp8_decode_decoded_frame(ByteSpan vp8_payload, Vp8DecodedFrame* out) {
-	return vp8_decode_decoded_frame_internal(vp8_payload, out, /*collect_stats=*/0, /*store_frame=*/1);
+	return vp8_decode_decoded_frame_internal(vp8_payload, out, /*collect_stats=*/0, /*store_syntax=*/1, /*store_coeffs=*/1,
+	                                         NULL, NULL);
+}
+
+int vp8_decode_decoded_frame_visit_coeffs(ByteSpan vp8_payload, Vp8DecodedFrame* out,
+                                          Vp8MacroblockCoeffVisitor visitor, void* user) {
+	if (!visitor) {
+		errno = EINVAL;
+		return -1;
+	}
+	return vp8_decode_decoded_frame_internal(vp8_payload, out, /*collect_stats=*/0, /*store_syntax=*/1, /*store_coeffs=*/0,
+	                                         visitor, user);
 }
 
 int vp8_decode_coeff_stats(ByteSpan vp8_payload, Vp8CoeffStats* out) {
 	if (!out) return -1;
 	Vp8DecodedFrame f;
-	if (vp8_decode_decoded_frame_internal(vp8_payload, &f, /*collect_stats=*/1, /*store_frame=*/0) != 0) return -1;
+	if (vp8_decode_decoded_frame_internal(vp8_payload, &f, /*collect_stats=*/1, /*store_syntax=*/0, /*store_coeffs=*/0,
+	                                      NULL, NULL) != 0)
+		return -1;
 	*out = f.stats;
 	vp8_decoded_frame_free(&f);
 	return 0;

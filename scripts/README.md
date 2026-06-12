@@ -25,6 +25,28 @@ make test
 
 This invokes `scripts/run_all.sh`.
 
+The current decoder WebP corpus used by the later byte-exact gates is:
+`images/webp/*.webp`, `images/testimages/webp/*.webp`,
+`images/generated/webp/*.webp`, `images/commons/*.webp`,
+`images/commons/generated-webp/*.webp`, and `images/examples/*.webp`.
+
+For an auditable snapshot of decoder feature/quality parity against libwebp,
+including the local corpus inventory and unsupported-feature matrix, run:
+
+```sh
+scripts/decoder_quality_parity_report.py
+```
+
+## Profiling
+
+- `profile_decode_stages.py`
+  - Profiles our decoder modes over the generated Commons WebP corpus when present, otherwise `images/**/*.webp`.
+  - Records cumulative stages (`-info`, `-yuv`, `-yuvf`, `-ppm`, `-png`), derived loopfilter/RGB/output deltas, tool versions, command templates, corpus metadata, and CSV timings.
+  - Also benchmarks whole-pipeline PPM output against a small system `libwebp` API helper, `ffmpeg`, and ImageMagick when available.
+  - Copies the decoder under test into the artifact directory by default so a concurrent rebuild cannot change the profiled binary mid-run.
+  - Run via `make profile-decode-stages` or directly with `python3 scripts/profile_decode_stages.py --runs 5`.
+  - Current local Commons profile artifact: `build/profile/commons-decoder-stage-profile/` (28 generated Commons WebPs, 3 runs). Use its CSVs for stage deltas; do not treat local MP/s as portable.
+
 ## Milestone 1 (container parsing)
 
 - `m1_compare_info_with_webpinfo.sh`
@@ -56,20 +78,20 @@ This invokes `scripts/run_all.sh`.
   - This becomes meaningful once we have files with `Total partitions > 1`.
 
 - `m4_scan_total_partitions.sh`
-  - Scans both `images/webp/*.webp` and `images/testimages/webp/*.webp` and reports whether any files have `Total partitions > 1`.
+  - Scans the decoder WebP corpus and reports whether any files have `Total partitions > 1`.
 
 ## Milestone 5 (macroblock syntax + coefficient tokens)
 
 - `m5_coeff_hash_smoke.sh`
-  - Runs `./build/decoder -info` over both corpora and asserts we print a numeric `Coeff hash` line for every file.
+  - Runs `./build/decoder -info` over the decoder WebP corpus and asserts we print a numeric `Coeff hash` line for every file.
   - This is a smoke test to ensure macroblock parsing + token decoding stays bounded and deterministic.
 
 - `m5_compare_decode_ok_with_dwebp.sh`
-  - Ensures both our decoder (`./build/decoder -info`) and the oracle (`dwebp`) successfully decode every file in both corpora.
+  - Ensures both our decoder (`./build/decoder -info`) and the oracle (`dwebp`) successfully decode every file in the decoder WebP corpus.
   - This is a basic behavioral match against `dwebp` for “does it decode?” at the Milestone 5 (non-pixel) stage.
 
 - `m5_scan_outliers.sh`
-  - Scans both corpora and prints potentially interesting outliers:
+  - Scans the decoder WebP corpus and prints potentially interesting outliers:
     - very tight partition padding (slack <= 2 bytes)
     - top files by `Coeff abs max` and `Coeff nonzero`
 
@@ -83,8 +105,21 @@ This invokes `scripts/run_all.sh`.
 ## Milestone 6 (inverse transforms + intra prediction → YUV)
 
 - `m6_compare_yuv_with_dwebp.sh`
-  - Runs `./build/decoder -yuv` over the corpora and compares the raw I420 output against `dwebp -yuv -nofilter`.
+  - Runs `./build/decoder -yuv` over the decoder WebP corpus and compares the raw I420 output against `dwebp -yuv -nofilter`.
   - Uses `-nofilter` so the oracle output is pre-loopfilter (we implement the in-loop filter in Milestone 7).
+
+## Milestone 7 (in-loop filter)
+
+- `m7_compare_yuv_filtered_with_oracle.sh`
+  - Runs `./build/decoder -yuvf` over the decoder WebP corpus and compares raw I420 output against `dwebp -yuv`.
+
+## Milestone 8 (RGB/PNG output)
+
+- `m8_compare_ppm_with_dwebp.sh`
+  - Runs `./build/decoder -ppm` over the decoder WebP corpus and compares PPM bytes against `dwebp -ppm`.
+
+- `m8_compare_png_with_ppm.sh`
+  - Runs `./build/decoder -png` over the decoder WebP corpus and validates RGB bytes against the already-validated PPM path.
 
 ---
 

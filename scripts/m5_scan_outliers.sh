@@ -15,17 +15,22 @@ if [[ ! -x "$DECODER" ]]; then
 fi
 
 shopt -s nullglob
-files=(images/webp/*.webp images/testimages/webp/*.webp)
-if compgen -G "images/generated/webp/*.webp" > /dev/null; then
-  files+=(images/generated/webp/*.webp)
-fi
+files=(
+  images/webp/*.webp
+  images/testimages/webp/*.webp
+  images/generated/webp/*.webp
+  images/commons/*.webp
+  images/commons/generated-webp/*.webp
+  images/examples/*.webp
+)
 
 if (( ${#files[@]} == 0 )); then
-  echo "error: no .webp files found under images/webp or images/testimages/webp" >&2
+  echo "error: no decoder corpus .webp files found" >&2
   exit 2
 fi
 
-tmp=$(mktemp "$ARTIFACT_DIR/tmp.XXXXXX")
+tmp="$ARTIFACT_DIR/outliers.tsv"
+: > "$tmp"
 trap 'rm -f "$tmp"' EXIT
 
 # Emit: file<TAB>p0_used<TAB>p0_size<TAB>tok_used<TAB>tok_size<TAB>p0_over<TAB>tok_over<TAB>p0_over_b<TAB>tok_over_b<TAB>absmax<TAB>nonzero

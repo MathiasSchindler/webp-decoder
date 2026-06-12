@@ -38,12 +38,15 @@ ENC_M09_BPREDENC_BIN := build/enc_m09_bpredenc
 
 SPEED ?= 1
 NATIVE ?= 1
+PROFILE_RUNS ?= 5
+PROFILE_OUT ?= build/profile/commons-decoder-stage-profile
 
 VP8_DECODER_SHARED_SRC := \
 	src/vp8/vp8_quant.c \
 	src/vp8/vp8_transform.c \
 	src/vp8/vp8_pred.c \
-	src/vp8/vp8_yuv_rgb.c
+	src/vp8/vp8_yuv_rgb.c \
+	src/vp8/vp8_yuv_rgb_x86.c
 
 VP8_ENCODER_SHARED_SRC := \
 	src/vp8/vp8_quant.c \
@@ -72,7 +75,7 @@ CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Werror \
 
 LDFLAGS_COMMON := -flto
 
-.PHONY: all clean nolibc test
+.PHONY: all clean nolibc test profile-decode-stages
 .PHONY: enc_pngdump
 .PHONY: enc_png2ppm
 .PHONY: enc_quality_metrics
@@ -104,6 +107,9 @@ test: all \
 	# Run gates without inheriting MAKEFLAGS/MAKELEVEL to avoid jobserver warnings
 	# from scripts that invoke `make` internally.
 	env -u MAKEFLAGS -u MAKELEVEL TEST_JOBS=$(JOBS) ./scripts/run_all.sh
+
+profile-decode-stages: all
+	python3 scripts/profile_decode_stages.py --runs $(PROFILE_RUNS) --out-dir $(PROFILE_OUT)
 
 # Encoder Milestone 0 helper: tiny PNG reader driver
 enc_pngdump: $(ENC_PNGDUMP_BIN)

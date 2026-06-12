@@ -26,10 +26,17 @@ else
 fi
 
 shopt -s nullglob
-files=(images/webp/*.webp images/testimages/webp/*.webp images/generated/webp/*.webp)
+files=(
+  images/webp/*.webp
+  images/testimages/webp/*.webp
+  images/generated/webp/*.webp
+  images/commons/*.webp
+  images/commons/generated-webp/*.webp
+  images/examples/*.webp
+)
 
 if (( ${#files[@]} == 0 )); then
-  echo "error: no .webp files found under images/webp, images/testimages/webp, or images/generated/webp" >&2
+  echo "error: no decoder corpus .webp files found" >&2
   exit 2
 fi
 

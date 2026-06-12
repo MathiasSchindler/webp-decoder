@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+ROOT_DIR=$(pwd)
+. "$ROOT_DIR/scripts/common.sh"
+
 DECODER=./build/decoder
 
 if [[ ! -x "$DECODER" ]]; then
@@ -11,14 +14,23 @@ if [[ ! -x "$DECODER" ]]; then
 fi
 
 shopt -s nullglob
-files=(images/webp/*.webp images/testimages/webp/*.webp images/generated/webp/*.webp)
+files=(
+  images/webp/*.webp
+  images/testimages/webp/*.webp
+  images/generated/webp/*.webp
+  images/commons/*.webp
+  images/commons/generated-webp/*.webp
+  images/examples/*.webp
+)
 
 if (( ${#files[@]} == 0 )); then
-  echo "error: no .webp files found under images/webp, images/testimages/webp, or images/generated/webp" >&2
+  echo "error: no decoder corpus .webp files found" >&2
   exit 2
 fi
 
-FILES="$(printf '%s\n' "${files[@]}")" DECODER="$DECODER" python3 - <<'PY'
+artifact_dir="$(artifact_base_dir)"
+
+FILES="$(printf '%s\n' "${files[@]}")" DECODER="$DECODER" ARTIFACT_DIR="$artifact_dir" python3 - <<'PY'
 import os
 import struct
 import subprocess
@@ -140,7 +152,7 @@ files = os.environ.get("FILES", "").splitlines()
 if not files:
   raise SystemExit("no files provided")
 
-with tempfile.TemporaryDirectory() as td:
+with tempfile.TemporaryDirectory(dir=os.environ["ARTIFACT_DIR"]) as td:
   td = Path(td)
   for i, f in enumerate(files, 1):
     ppm = td / "out.ppm"
