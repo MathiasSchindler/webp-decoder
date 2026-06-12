@@ -26,9 +26,9 @@ Core VP8/WebP decoding (lossy still images):
   - Built-in PNG output (`-png`) using a minimal PNG writer (RGB8, filter=0, zlib stored blocks)
 - Pixel-output commands now use a fused decode+reconstruct path that streams
   macroblock coefficients and avoids frame-sized coefficient arrays.
-- x86_64 builds include guarded SSE2 helpers for horizontal loopfilter edges
-  and the YUV-to-RGB hot path; `NATIVE=0` builds still compile with the
-  baseline x86-64 ISA.
+- x86_64 builds include guarded SIMD helpers for loopfilter edges,
+  reconstruction block add/clamp, and YUV-to-RGB formatting; `NATIVE=0` builds
+  still compile with the baseline x86-64 ISA.
 
 Verification (oracle-based):
 
@@ -99,18 +99,17 @@ Local snapshot after broadening the decoder gates:
 
 Latest local Commons stage/core profile:
 
-- Command: `python3 scripts/profile_decode_stages.py --runs 3 --out-dir build/profile/final-215mp-integration-20260612T1217`
+- Command: `python3 scripts/profile_decode_stages.py --corpus commons --runs 3 --warmups 1 --out-dir build/profile/final-next-speed-pass`
 - Corpus: 28 generated Commons WebPs, 378.031 MP per run.
-- Our cumulative throughput: `-yuv` 173.37 MP/s, `-yuvf` 113.80 MP/s,
-  `-ppm` 93.22 MP/s, `-png` 62.69 MP/s.
-- System libwebp core throughput: YUV no-filter 326.12 MP/s, YUV filtered
-  279.65 MP/s, RGB buffer 216.25 MP/s, RGB+PPM 214.95 MP/s.
-- Comparative PPM throughput: ffmpeg 76.78 MP/s, ImageMagick 101.59 MP/s.
-- Remaining largest local deltas: PNG output (~2.709 s), loopfilter (~1.141 s),
-  RGB/PPM output (~0.734 s), token decode (~1.555 s), and reconstruction
-  (~1.029 s) over the 378 MP corpus. Internal `-profile_stages` reports
-  YUV-to-RGB formatting at ~0.730 s and PPM pixel writes at ~0.025 s, so PPM
-  writes are not masking the core decode/formatting gap.
+- Our cumulative throughput: `-yuv` 200.37 MP/s, `-yuvf` 163.72 MP/s,
+  `-ppm` 132.60 MP/s, `-png` 110.37 MP/s.
+- System libwebp core throughput: YUV no-filter 326.84 MP/s, YUV filtered
+  280.10 MP/s, RGB buffer 215.80 MP/s, RGB+PPM 214.58 MP/s.
+- Comparative PPM throughput: ffmpeg 76.60 MP/s, ImageMagick 102.00 MP/s.
+- Remaining largest local costs: token decode (~1.349 s), reconstruction
+  (~0.879 s), RGB formatting (~0.534 s), loopfilter (~0.383 s), and PNG
+  output delta from PPM (~0.574 s) over the 378 MP corpus. PPM pixel writes
+  remain negligible at ~0.025 s.
 
 Treat these as local-machine guideposts, not portable absolute performance
 claims.

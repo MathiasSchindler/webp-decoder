@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86))
+#include <emmintrin.h>
+#define VP8_RECON_SSE2 1
+#endif
+
 #include "vp8_loopfilter.h"
 #include "../vp8/vp8_pred.h"
 #include "../vp8/vp8_quant.h"
@@ -16,6 +21,19 @@ static inline uint8_t clamp255_i32(int32_t v) {
 	if (v > 255) return 255;
 	return (uint8_t)v;
 }
+
+#if VP8_RECON_SSE2
+static inline uint32_t load_u32le(const uint8_t* p) {
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static inline void store_u32le(uint8_t* p, uint32_t v) {
+	p[0] = (uint8_t)v;
+	p[1] = (uint8_t)(v >> 8);
+	p[2] = (uint8_t)(v >> 16);
+	p[3] = (uint8_t)(v >> 24);
+}
+#endif
 
 static inline int dc_q(int q) { return vp8_dc_q(q); }
 static inline int ac_q(int q) { return vp8_ac_q(q); }
@@ -62,11 +80,17 @@ static void inv_wht4x4_dc_only(int16_t dc, int16_t* out) { vp8_inv_wht4x4_dc_onl
 
 static int inv_dct4x4_dc_value(int16_t dc) { return ((int)dc + 4) >> 3; }
 
-static int coeffs_zero_from(const int16_t* coeffs, int first) {
+typedef enum {
+	COEFFS_ZERO = 0,
+	COEFFS_DC_ONLY = 1,
+	COEFFS_HAS_AC = 2,
+} CoeffClass;
+
+static CoeffClass coeffs_classify(const int16_t* coeffs, int first) {
 	for (int i = first; i < 16; i++) {
-		if (coeffs[i] != 0) return 0;
+		if (coeffs[i] != 0) return COEFFS_HAS_AC;
 	}
-	return 1;
+	return (first == 0 || coeffs[0] == 0) ? COEFFS_ZERO : COEFFS_DC_ONLY;
 }
 
 static void copy_block4(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride) {
@@ -77,6 +101,18 @@ static void copy_block4(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, 
 
 static void add_block4_constant(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
                                 int delta) {
+#if VP8_RECON_SSE2
+	const __m128i zero = _mm_setzero_si128();
+	const __m128i d = _mm_set1_epi16((int16_t)delta);
+	for (uint32_t rr = 0; rr < 4; rr++) {
+		__m128i p = _mm_cvtsi32_si128((int)load_u32le(pred + (size_t)rr * pred_stride));
+		p = _mm_unpacklo_epi8(p, zero);
+		p = _mm_adds_epi16(p, d);
+		p = _mm_packus_epi16(p, zero);
+		store_u32le(dst + (size_t)rr * dst_stride, (uint32_t)_mm_cvtsi128_si32(p));
+	}
+	return;
+#endif
 	for (uint32_t rr = 0; rr < 4; rr++) {
 		for (uint32_t cc = 0; cc < 4; cc++) {
 			dst[(size_t)rr * dst_stride + cc] = clamp255_i32((int32_t)pred[(size_t)rr * pred_stride + cc] + delta);
@@ -86,6 +122,18 @@ static void add_block4_constant(uint8_t* dst, uint32_t dst_stride, const uint8_t
 
 static void add_block4_residue(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
                                const int16_t res[16]) {
+#if VP8_RECON_SSE2
+	const __m128i zero = _mm_setzero_si128();
+	for (uint32_t rr = 0; rr < 4; rr++) {
+		__m128i p = _mm_cvtsi32_si128((int)load_u32le(pred + (size_t)rr * pred_stride));
+		__m128i r = _mm_loadl_epi64((const __m128i*)(const void*)(res + (size_t)rr * 4u));
+		p = _mm_unpacklo_epi8(p, zero);
+		p = _mm_adds_epi16(p, r);
+		p = _mm_packus_epi16(p, zero);
+		store_u32le(dst + (size_t)rr * dst_stride, (uint32_t)_mm_cvtsi128_si32(p));
+	}
+	return;
+#endif
 	for (uint32_t rr = 0; rr < 4; rr++) {
 		for (uint32_t cc = 0; cc < 4; cc++) {
 			dst[(size_t)rr * dst_stride + cc] =
@@ -96,12 +144,13 @@ static void add_block4_residue(uint8_t* dst, uint32_t dst_stride, const uint8_t*
 
 static void reconstruct_block4(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
                                const int16_t* coeffs, int dc_factor, int ac_factor) {
-	if (coeffs_zero_from(coeffs, 0)) {
+	CoeffClass cc = coeffs_classify(coeffs, 1);
+	if (cc == COEFFS_ZERO && coeffs[0] == 0) {
 		copy_block4(dst, dst_stride, pred, pred_stride);
 		return;
 	}
 
-	if (coeffs_zero_from(coeffs, 1)) {
+	if (cc != COEFFS_HAS_AC) {
 		int16_t dc = (int16_t)(coeffs[0] * dc_factor);
 		add_block4_constant(dst, dst_stride, pred, pred_stride, inv_dct4x4_dc_value(dc));
 		return;
@@ -119,7 +168,7 @@ static void reconstruct_block4(uint8_t* dst, uint32_t dst_stride, const uint8_t*
 
 static void reconstruct_block4_with_dc(uint8_t* dst, uint32_t dst_stride, const uint8_t* pred, uint32_t pred_stride,
                                        int16_t dc, const int16_t* coeffs, int ac_factor) {
-	if (coeffs_zero_from(coeffs, 1)) {
+	if (coeffs_classify(coeffs, 1) != COEFFS_HAS_AC) {
 		if (dc == 0) {
 			copy_block4(dst, dst_stride, pred, pred_stride);
 		} else {
@@ -141,8 +190,7 @@ static void reconstruct_block4_with_dc(uint8_t* dst, uint32_t dst_stride, const 
 static void pred_dc(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8_t* L, uint32_t n, int have_above,
                     int have_left, uint8_t above_oob, uint8_t left_oob) {
 	if (!have_above && !have_left) {
-		for (uint32_t r = 0; r < n; r++)
-			for (uint32_t c = 0; c < n; c++) dst[r * stride + c] = 128;
+		for (uint32_t r = 0; r < n; r++) memset(dst + (size_t)r * stride, 128, n);
 		return;
 	}
 	int sum = 0;
@@ -160,20 +208,23 @@ static void pred_dc(uint8_t* dst, uint32_t stride, const uint8_t* A, const uint8
 	uint8_t v = (uint8_t)((sum + (1 << (shf - 1))) >> shf);
 	(void)above_oob;
 	(void)left_oob;
-	for (uint32_t r = 0; r < n; r++)
-		for (uint32_t c = 0; c < n; c++) dst[r * stride + c] = v;
+	for (uint32_t r = 0; r < n; r++) memset(dst + (size_t)r * stride, v, n);
 }
 
 static void pred_v(uint8_t* dst, uint32_t stride, const uint8_t* A, uint32_t n, int have_above, uint8_t above_oob) {
 	for (uint32_t r = 0; r < n; r++) {
-		for (uint32_t c = 0; c < n; c++) dst[r * stride + c] = have_above ? A[c] : above_oob;
+		if (have_above) {
+			memcpy(dst + (size_t)r * stride, A, n);
+		} else {
+			memset(dst + (size_t)r * stride, above_oob, n);
+		}
 	}
 }
 
 static void pred_h(uint8_t* dst, uint32_t stride, const uint8_t* L, uint32_t n, int have_left, uint8_t left_oob) {
 	for (uint32_t r = 0; r < n; r++) {
 		uint8_t v = have_left ? L[r] : left_oob;
-		for (uint32_t c = 0; c < n; c++) dst[r * stride + c] = v;
+		memset(dst + (size_t)r * stride, v, n);
 	}
 }
 
@@ -364,16 +415,23 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 					}
 				}
 
-				uint8_t B[4][4];
-				subblock_predict(B, &A8[1], L4, mode);
+				uint8_t* dst = pad->y + (size_t)sy * pad->stride_y + sx;
+				if (!syntax->has_coeff) {
+					vp8_bpred4x4(dst, pad->stride_y, &A8[1], L4, mode);
+				} else {
+					uint8_t B[4][4];
+					subblock_predict(B, &A8[1], L4, mode);
 
-				const int16_t* cq = coeffs->y + (size_t)sb * 16u;
-				reconstruct_block4(pad->y + (size_t)sy * pad->stride_y + sx, pad->stride_y, &B[0][0], 4, cq,
-				                   q->factor[TOKEN_BLOCK_Y1][0], q->factor[TOKEN_BLOCK_Y1][1]);
+					const int16_t* cq = coeffs->y + (size_t)sb * 16u;
+					reconstruct_block4(dst, pad->stride_y, &B[0][0], 4, cq, q->factor[TOKEN_BLOCK_Y1][0],
+					                   q->factor[TOKEN_BLOCK_Y1][1]);
+				}
 			}
 		}
 	} else {
 		uint8_t pred_y[16 * 16];
+		uint8_t* pred_y_dst = syntax->has_coeff ? pred_y : (pad->y + (size_t)y * pad->stride_y + x);
+		uint32_t pred_y_stride = syntax->has_coeff ? 16u : pad->stride_y;
 		uint8_t A16[20];
 		uint8_t L16[16];
 		get_above_row(pad->y, pad->stride_y, pad->width, x, y, 16, 127, A16);
@@ -386,44 +444,47 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 		int have_left = (x != 0);
 
 		switch (ymode) {
-			case 0: pred_dc(pred_y, 16, A16, L16, 16, have_above, have_left, 127, 129); break;
-			case 1: pred_v(pred_y, 16, A16, 16, have_above, 127); break;
-			case 2: pred_h(pred_y, 16, L16, 16, have_left, 129); break;
+			case 0: pred_dc(pred_y_dst, pred_y_stride, A16, L16, 16, have_above, have_left, 127, 129); break;
+			case 1: pred_v(pred_y_dst, pred_y_stride, A16, 16, have_above, 127); break;
+			case 2: pred_h(pred_y_dst, pred_y_stride, L16, 16, have_left, 129); break;
 			case 3: {
 				uint8_t Ap[17];
 				Ap[0] = have_above && have_left ? pad->y[(y - 1) * pad->stride_y + (x - 1)] : (have_above ? 129 : 127);
 				memcpy(&Ap[1], A16, 16);
-				pred_tm(pred_y, 16, &Ap[1], L16, 16, have_above, have_left, 127, 129);
+				pred_tm(pred_y_dst, pred_y_stride, &Ap[1], L16, 16, have_above, have_left, 127, 129);
 				break;
 			}
-			default: pred_dc(pred_y, 16, A16, L16, 16, have_above, have_left, 127, 129); break;
+			default: pred_dc(pred_y_dst, pred_y_stride, A16, L16, 16, have_above, have_left, 127, 129); break;
 		}
 
-		int16_t y2_dc[16];
-		const int16_t* y2q = coeffs->y2;
-		if (coeffs_zero_from(y2q, 0)) {
-			memset(y2_dc, 0, sizeof(y2_dc));
-		} else if (coeffs_zero_from(y2q, 1)) {
-			int16_t dc = (int16_t)(y2q[0] * q->factor[TOKEN_BLOCK_Y2][0]);
-			inv_wht4x4_dc_only(dc, y2_dc);
-		} else {
-			int16_t y2_deq[16];
-			for (int i = 0; i < 16; i++) {
-				int fct = (i == 0) ? q->factor[TOKEN_BLOCK_Y2][0] : q->factor[TOKEN_BLOCK_Y2][1];
-				y2_deq[i] = (int16_t)(y2q[i] * fct);
+		if (syntax->has_coeff) {
+			int16_t y2_dc[16];
+			const int16_t* y2q = coeffs->y2;
+			CoeffClass y2_class = coeffs_classify(y2q, 1);
+			if (y2_class == COEFFS_ZERO && y2q[0] == 0) {
+				memset(y2_dc, 0, sizeof(y2_dc));
+			} else if (y2_class != COEFFS_HAS_AC) {
+				int16_t dc = (int16_t)(y2q[0] * q->factor[TOKEN_BLOCK_Y2][0]);
+				inv_wht4x4_dc_only(dc, y2_dc);
+			} else {
+				int16_t y2_deq[16];
+				for (int i = 0; i < 16; i++) {
+					int fct = (i == 0) ? q->factor[TOKEN_BLOCK_Y2][0] : q->factor[TOKEN_BLOCK_Y2][1];
+					y2_deq[i] = (int16_t)(y2q[i] * fct);
+				}
+				inv_wht4x4(y2_deq, y2_dc);
 			}
-			inv_wht4x4(y2_deq, y2_dc);
-		}
 
-		for (uint32_t sb_r = 0; sb_r < 4; sb_r++) {
-			for (uint32_t sb_c = 0; sb_c < 4; sb_c++) {
-				uint32_t sb = sb_r * 4u + sb_c;
-				const int16_t* cq = coeffs->y + (size_t)sb * 16u;
-				uint32_t bx = sb_c * 4u;
-				uint32_t by = sb_r * 4u;
-				reconstruct_block4_with_dc(pad->y + (size_t)(y + by) * pad->stride_y + x + bx, pad->stride_y,
-				                           pred_y + (size_t)by * 16u + bx, 16, y2_dc[(int)sb_r * 4 + (int)sb_c], cq,
-				                           q->factor[TOKEN_BLOCK_Y1][1]);
+			for (uint32_t sb_r = 0; sb_r < 4; sb_r++) {
+				for (uint32_t sb_c = 0; sb_c < 4; sb_c++) {
+					uint32_t sb = sb_r * 4u + sb_c;
+					const int16_t* cq = coeffs->y + (size_t)sb * 16u;
+					uint32_t bx = sb_c * 4u;
+					uint32_t by = sb_r * 4u;
+					reconstruct_block4_with_dc(pad->y + (size_t)(y + by) * pad->stride_y + x + bx, pad->stride_y,
+					                           pred_y + (size_t)by * 16u + bx, 16, y2_dc[(int)sb_r * 4 + (int)sb_c], cq,
+					                           q->factor[TOKEN_BLOCK_Y1][1]);
+				}
 			}
 		}
 	}
@@ -435,6 +496,9 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 
 	uint8_t pred_u[8 * 8];
 	uint8_t pred_vp[8 * 8];
+	uint8_t* pred_u_dst = syntax->has_coeff ? pred_u : (pad->u + (size_t)cy * pad->stride_uv + cx);
+	uint8_t* pred_v_dst = syntax->has_coeff ? pred_vp : (pad->v + (size_t)cy * pad->stride_uv + cx);
+	uint32_t pred_uv_stride = syntax->has_coeff ? 8u : pad->stride_uv;
 	uint8_t A8u[8];
 	uint8_t L8u[8];
 	uint8_t A8v[8];
@@ -447,16 +511,16 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 	int have_left_c = (cx != 0);
 	switch (syntax->uv_mode) {
 		case 0:
-			pred_dc(pred_u, 8, A8u, L8u, 8, have_above_c, have_left_c, 127, 129);
-			pred_dc(pred_vp, 8, A8v, L8v, 8, have_above_c, have_left_c, 127, 129);
+			pred_dc(pred_u_dst, pred_uv_stride, A8u, L8u, 8, have_above_c, have_left_c, 127, 129);
+			pred_dc(pred_v_dst, pred_uv_stride, A8v, L8v, 8, have_above_c, have_left_c, 127, 129);
 			break;
 		case 1:
-			pred_v(pred_u, 8, A8u, 8, have_above_c, 127);
-			pred_v(pred_vp, 8, A8v, 8, have_above_c, 127);
+			pred_v(pred_u_dst, pred_uv_stride, A8u, 8, have_above_c, 127);
+			pred_v(pred_v_dst, pred_uv_stride, A8v, 8, have_above_c, 127);
 			break;
 		case 2:
-			pred_h(pred_u, 8, L8u, 8, have_left_c, 129);
-			pred_h(pred_vp, 8, L8v, 8, have_left_c, 129);
+			pred_h(pred_u_dst, pred_uv_stride, L8u, 8, have_left_c, 129);
+			pred_h(pred_v_dst, pred_uv_stride, L8v, 8, have_left_c, 129);
 			break;
 		case 3: {
 			uint8_t Apu[9];
@@ -465,15 +529,17 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 			Apv[0] = have_above_c && have_left_c ? pad->v[(cy - 1) * pad->stride_uv + (cx - 1)] : (have_above_c ? 129 : 127);
 			memcpy(&Apu[1], A8u, 8);
 			memcpy(&Apv[1], A8v, 8);
-			pred_tm(pred_u, 8, &Apu[1], L8u, 8, have_above_c, have_left_c, 127, 129);
-			pred_tm(pred_vp, 8, &Apv[1], L8v, 8, have_above_c, have_left_c, 127, 129);
+			pred_tm(pred_u_dst, pred_uv_stride, &Apu[1], L8u, 8, have_above_c, have_left_c, 127, 129);
+			pred_tm(pred_v_dst, pred_uv_stride, &Apv[1], L8v, 8, have_above_c, have_left_c, 127, 129);
 			break;
 		}
 		default:
-			pred_dc(pred_u, 8, A8u, L8u, 8, have_above_c, have_left_c, 127, 129);
-			pred_dc(pred_vp, 8, A8v, L8v, 8, have_above_c, have_left_c, 127, 129);
+			pred_dc(pred_u_dst, pred_uv_stride, A8u, L8u, 8, have_above_c, have_left_c, 127, 129);
+			pred_dc(pred_v_dst, pred_uv_stride, A8v, L8v, 8, have_above_c, have_left_c, 127, 129);
 			break;
 	}
+
+	if (!syntax->has_coeff) return;
 
 	for (uint32_t b = 0; b < 4; b++) {
 		uint32_t br = b / 2u;
@@ -563,7 +629,7 @@ static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, co
 			};
 			Vp8MacroblockSyntax syntax = {
 				.segment_id = decoded->segment_id ? decoded->segment_id[mb] : 0,
-				.has_coeff = decoded->has_coeff ? decoded->has_coeff[mb] : 0,
+				.has_coeff = decoded->has_coeff ? decoded->has_coeff[mb] : 1,
 				.has_y2 = (uint8_t)(decoded->ymode[mb] != 4),
 				.ymode = decoded->ymode[mb],
 				.uv_mode = decoded->uv_mode[mb],

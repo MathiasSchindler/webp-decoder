@@ -82,6 +82,42 @@ static void print_coeff_stats(const Vp8CoeffStats* cs) {
 	}
 }
 
+static void print_token_entropy_profile(const Vp8CoeffStats* cs) {
+	fmt_write_str(1, "  Coeff bool calls: ");
+	fmt_write_u64(1, cs->coeff_bool_calls);
+	fmt_write_nl(1);
+	fmt_write_str(1, "  Coeff token bools:");
+	fmt_write_u64(1, cs->coeff_token_bool_calls);
+	fmt_write_nl(1);
+	fmt_write_str(1, "  Coeff token reads:");
+	fmt_write_u64(1, cs->coeff_token_reads);
+	fmt_write_nl(1);
+	fmt_write_str(1, "  Coeff path bits:  ");
+	fmt_write_u64(1, cs->coeff_token_path_bits);
+	fmt_write_nl(1);
+	fmt_write_str(1, "  Coeff zero tokens:");
+	fmt_write_u32(1, cs->coeff_zero_tokens);
+	fmt_write_nl(1);
+	fmt_write_str(1, "  Coeff one tokens: ");
+	fmt_write_u32(1, cs->coeff_one_tokens);
+	fmt_write_nl(1);
+	fmt_write_str(1, "  Coeff sign bits:  ");
+	fmt_write_u32(1, cs->coeff_sign_bits);
+	fmt_write_nl(1);
+	fmt_write_str(1, "  Coeff ctx updates:");
+	fmt_write_u32(1, cs->coeff_context_updates);
+	fmt_write_nl(1);
+	fmt_write_str(1, "  Coeff extra bits: ");
+	fmt_write_u64(1, cs->coeff_extra_bits);
+	fmt_write_nl(1);
+	fmt_write_str(1, "  Extra CAT1..6:    ");
+	for (int i = 0; i < 6; i++) {
+		if (i) fmt_write_str(1, "/");
+		fmt_write_u32(1, cs->coeff_extra_category_counts[i]);
+	}
+	fmt_write_nl(1);
+}
+
 static int cmd_probe(const char* path) {
 	ByteSpan file;
 	if (os_map_file_readonly(path, &file) != 0) {
@@ -516,6 +552,7 @@ static int cmd_info(const char* path) {
 			fmt_write_str(1, "  Coeff abs max:    ");
 			fmt_write_u32(1, cs.coeff_abs_max);
 			fmt_write_nl(1);
+			print_token_entropy_profile(&cs);
 			fmt_write_str(1, "  Blocks nonzero Y2:");
 			fmt_write_u32(1, cs.blocks_nonzero_y2);
 			fmt_write_str(1, " /");

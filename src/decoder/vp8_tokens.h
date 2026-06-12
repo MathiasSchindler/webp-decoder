@@ -45,7 +45,18 @@ typedef struct {
 	uint32_t blocks_nonzero_v;
 	uint32_t coeff_nonzero_total;
 	uint32_t coeff_eob_tokens;
+	uint32_t coeff_zero_tokens;
+	uint32_t coeff_one_tokens;
 	uint32_t coeff_abs_max;
+	uint32_t coeff_token_counts[12]; // DCT_0..DCT_4, CAT1..CAT6, EOB
+	uint32_t coeff_extra_category_counts[6];
+	uint32_t coeff_sign_bits;
+	uint32_t coeff_context_updates;
+	uint64_t coeff_bool_calls;
+	uint64_t coeff_token_bool_calls;
+	uint64_t coeff_token_reads;
+	uint64_t coeff_token_path_bits;
+	uint64_t coeff_extra_bits;
 	uint64_t coeff_hash_fnv1a64;
 } Vp8CoeffStats;
 

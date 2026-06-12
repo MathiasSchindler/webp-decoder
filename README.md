@@ -129,22 +129,22 @@ RUNS=5 scripts/benchmark_decoder_modes.py build/profile/final-speed-validation-d
 `perf` was present, but `perf_event_paranoid=4` prevented useful hardware or
 software event profiling; the artifact keeps the attempted `perf stat` output.
 
-Current Commons stage/core profile after the fused decode/reconstruct,
-SSE2 loopfilter, and wider YUV/RGB SIMD integration
-(`build/profile/final-215mp-integration-20260612T1217/`, 2026-06-12):
+Current Commons stage/core profile after the entropy, reconstruction,
+loopfilter, RGB-formatting, and PNG-output speed pass
+(`build/profile/final-next-speed-pass/`, 2026-06-12):
 
 - Corpus: 28 generated Commons WebPs, 378.031 MP per run; median of 3 runs.
-- Our cumulative modes: `-info` 144.00 MP/s, `-yuv` 173.37 MP/s, `-yuvf`
-  113.80 MP/s, `-ppm` 93.22 MP/s, `-png` 62.69 MP/s.
-- System libwebp core helpers: YUV no-filter 326.12 MP/s, YUV filtered
-  279.65 MP/s, RGB buffer 216.25 MP/s, RGB+PPM 214.95 MP/s.
-- Comparative PPM: ffmpeg 76.78 MP/s, ImageMagick 101.59 MP/s.
-- Derived deltas: our loopfilter 1.141 s, our RGB/PPM output 0.734 s,
-  our PNG output 2.709 s; internal `-profile_stages` reports token decode at
-  1.555 s, reconstruction at 1.029 s, derived loopfilter at 1.042 s,
-  YUV-to-RGB formatting at 0.730 s, and PPM pixel writes at 0.025 s. Remaining
-  distance to libwebp is mostly core VP8 decode/filter work plus RGB formatting;
-  PPM writes are negligible on this run.
+- Our cumulative modes: `-info` 146.77 MP/s, `-yuv` 200.37 MP/s, `-yuvf`
+  163.72 MP/s, `-ppm` 132.60 MP/s, `-png` 110.37 MP/s.
+- System libwebp core helpers: YUV no-filter 326.84 MP/s, YUV filtered
+  280.10 MP/s, RGB buffer 215.80 MP/s, RGB+PPM 214.58 MP/s.
+- Comparative PPM: ffmpeg 76.60 MP/s, ImageMagick 102.00 MP/s.
+- Derived cumulative deltas: our loopfilter adds 0.422 s, RGB/PPM output adds
+  0.542 s, and PNG output adds 0.574 s. Internal `-profile_stages` reports
+  token decode at 1.349 s, reconstruction at 0.879 s, derived loopfilter at
+  0.383 s, YUV-to-RGB formatting at 0.534 s, and PPM pixel writes at 0.025 s.
+  The remaining gap to libwebp is now mostly entropy/reconstruction throughput
+  plus RGB formatting; PNG output is no longer the largest local delta.
 
 Caveats: these are local machine timings over the generated Commons artifact
 set and include process startup, file reads, allocation, and decode work. The

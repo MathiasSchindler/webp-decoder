@@ -11,6 +11,7 @@
 #include "vp8_tree.h"
 
 #define bool_decode_bool bool_decode_bool_inline
+#define bool_decode_bit bool_decode_bit_inline
 #define bool_decode_literal bool_decode_literal_inline
 #define bool_decode_sint bool_decode_sint_inline
 
@@ -52,20 +53,40 @@ static const uint8_t coeff_bands[16] = {0, 1, 2, 3, 6, 4, 5, 6, 6, 6, 6, 6, 6, 6
 
 static const uint8_t zigzag[16] = {0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15};
 
-static const uint8_t Pcat1[] = {159, 0};
-static const uint8_t Pcat2[] = {165, 145, 0};
-static const uint8_t Pcat3[] = {173, 148, 140, 0};
-static const uint8_t Pcat4[] = {176, 155, 140, 135, 0};
-static const uint8_t Pcat5[] = {180, 157, 141, 134, 130, 0};
-static const uint8_t Pcat6[] = {254, 254, 243, 230, 196, 177, 153, 140, 133, 130, 129, 0};
-
-static uint32_t vp8_read_extra(BoolDecoder* d, const uint8_t* p) {
-	uint32_t v = 0;
-	while (*p) {
-		v = (v << 1) | (uint32_t)bool_decode_bool(d, *p);
-		p++;
+static inline uint32_t vp8_read_extra_cat(BoolDecoder* d, int cat) {
+	switch (cat) {
+		case 0: return (uint32_t)bool_decode_bool(d, 159);
+		case 1:
+			return ((uint32_t)bool_decode_bool(d, 165) << 1) |
+			       (uint32_t)bool_decode_bool(d, 145);
+		case 2:
+			return ((uint32_t)bool_decode_bool(d, 173) << 2) |
+			       ((uint32_t)bool_decode_bool(d, 148) << 1) |
+			       (uint32_t)bool_decode_bool(d, 140);
+		case 3:
+			return ((uint32_t)bool_decode_bool(d, 176) << 3) |
+			       ((uint32_t)bool_decode_bool(d, 155) << 2) |
+			       ((uint32_t)bool_decode_bool(d, 140) << 1) |
+			       (uint32_t)bool_decode_bool(d, 135);
+		case 4:
+			return ((uint32_t)bool_decode_bool(d, 180) << 4) |
+			       ((uint32_t)bool_decode_bool(d, 157) << 3) |
+			       ((uint32_t)bool_decode_bool(d, 141) << 2) |
+			       ((uint32_t)bool_decode_bool(d, 134) << 1) |
+			       (uint32_t)bool_decode_bool(d, 130);
+		default:
+			return ((uint32_t)bool_decode_bool(d, 254) << 10) |
+			       ((uint32_t)bool_decode_bool(d, 254) << 9) |
+			       ((uint32_t)bool_decode_bool(d, 243) << 8) |
+			       ((uint32_t)bool_decode_bool(d, 230) << 7) |
+			       ((uint32_t)bool_decode_bool(d, 196) << 6) |
+			       ((uint32_t)bool_decode_bool(d, 177) << 5) |
+			       ((uint32_t)bool_decode_bool(d, 153) << 4) |
+			       ((uint32_t)bool_decode_bool(d, 140) << 3) |
+			       ((uint32_t)bool_decode_bool(d, 133) << 2) |
+			       ((uint32_t)bool_decode_bool(d, 130) << 1) |
+			       (uint32_t)bool_decode_bool(d, 129);
 	}
-	return v;
 }
 
 // Note: these tables are included as raw initializers from .inc files.
@@ -223,7 +244,7 @@ static void* xmalloc_array(size_t nmemb, size_t size) {
 	return malloc(total);
 }
 
-static inline int read_coeff_token(BoolDecoder* d, const uint8_t probs[num_dct_tokens - 1], int prev_token_was_zero) {
+static inline int read_coeff_token_fast(BoolDecoder* d, const uint8_t probs[num_dct_tokens - 1], int prev_token_was_zero) {
 	if (!prev_token_was_zero && !bool_decode_bool(d, probs[0])) return dct_eob;
 	if (!bool_decode_bool(d, probs[1])) return DCT_0;
 	if (!bool_decode_bool(d, probs[2])) return DCT_1;
@@ -238,6 +259,64 @@ static inline int read_coeff_token(BoolDecoder* d, const uint8_t probs[num_dct_t
 		return bool_decode_bool(d, probs[9]) ? dct_cat4 : dct_cat3;
 	}
 	return bool_decode_bool(d, probs[10]) ? dct_cat6 : dct_cat5;
+}
+
+static inline void record_coeff_token(Vp8CoeffStats* stats, int token, uint32_t path_bits) {
+	stats->coeff_token_counts[token]++;
+	stats->coeff_token_reads++;
+	stats->coeff_token_path_bits += path_bits;
+	if (token == dct_eob) stats->coeff_eob_tokens++;
+	else if (token == DCT_0) stats->coeff_zero_tokens++;
+	else if (token == DCT_1) stats->coeff_one_tokens++;
+}
+
+static inline int read_coeff_token_profiled(BoolDecoder* d,
+                                            const uint8_t probs[num_dct_tokens - 1],
+                                            int prev_token_was_zero,
+                                            Vp8CoeffStats* stats) {
+	uint32_t path_bits = 0;
+#define READ_TOKEN_BIT(p_) (stats->coeff_bool_calls++, stats->coeff_token_bool_calls++, path_bits++, bool_decode_bool(d, (p_)))
+	if (!prev_token_was_zero && !READ_TOKEN_BIT(probs[0])) {
+		record_coeff_token(stats, dct_eob, path_bits);
+		return dct_eob;
+	}
+	if (!READ_TOKEN_BIT(probs[1])) {
+		record_coeff_token(stats, DCT_0, path_bits);
+		return DCT_0;
+	}
+	if (!READ_TOKEN_BIT(probs[2])) {
+		record_coeff_token(stats, DCT_1, path_bits);
+		return DCT_1;
+	}
+	if (!READ_TOKEN_BIT(probs[3])) {
+		int token;
+		if (!READ_TOKEN_BIT(probs[4])) token = DCT_2;
+		else token = READ_TOKEN_BIT(probs[5]) ? DCT_4 : DCT_3;
+		record_coeff_token(stats, token, path_bits);
+		return token;
+	}
+	if (!READ_TOKEN_BIT(probs[6])) {
+		int token = READ_TOKEN_BIT(probs[7]) ? dct_cat2 : dct_cat1;
+		record_coeff_token(stats, token, path_bits);
+		return token;
+	}
+	if (!READ_TOKEN_BIT(probs[8])) {
+		int token = READ_TOKEN_BIT(probs[9]) ? dct_cat4 : dct_cat3;
+		record_coeff_token(stats, token, path_bits);
+		return token;
+	}
+	int token = READ_TOKEN_BIT(probs[10]) ? dct_cat6 : dct_cat5;
+	record_coeff_token(stats, token, path_bits);
+	return token;
+#undef READ_TOKEN_BIT
+}
+
+static inline uint32_t vp8_read_extra_cat_profiled(BoolDecoder* d, int cat, Vp8CoeffStats* stats) {
+	static const uint8_t cat_bits[6] = {1, 2, 3, 4, 5, 11};
+	stats->coeff_extra_category_counts[cat]++;
+	stats->coeff_extra_bits += cat_bits[cat];
+	stats->coeff_bool_calls += cat_bits[cat];
+	return vp8_read_extra_cat(d, cat);
 }
 
 static inline intra_mbmode read_kf_ymode(BoolDecoder* d) {
@@ -283,22 +362,12 @@ static void record_token_overread_loc(Vp8CoeffStats* out,
 	out->token_overread_stage = stage;
 }
 
-static int decode_block(BoolDecoder* d,
-					uint8_t coeff_probs_plane[8][3][num_dct_tokens - 1],
-					int first_coeff,
-					uint8_t left_has,
-					uint8_t above_has,
-					uint32_t* io_nonzero_coeffs,
-					uint32_t* io_eob_tokens,
-					uint32_t* io_abs_max,
-					int16_t out_block[16],
-					Vp8CoeffStats* out_stats,
-					int collect_stats,
-					uint32_t mb_index,
-					uint32_t plane,
-					uint32_t block_index) {
-	for (int i = 0; i < 16; i++) out_block[i] = 0;
-
+static int decode_block_fast(BoolDecoder* d,
+                             uint8_t coeff_probs_plane[8][3][num_dct_tokens - 1],
+                             int first_coeff,
+                             uint8_t left_has,
+                             uint8_t above_has,
+                             int16_t out_block[16]) {
 	int ctx3 = (int)left_has + (int)above_has;
 	int prev_token_was_zero = 0;
 	int current_has_coeffs = 0;
@@ -307,14 +376,8 @@ static int decode_block(BoolDecoder* d,
 		int band = (int)coeff_bands[i];
 		const uint8_t* probs = coeff_probs_plane[band][ctx3];
 
-		int token = read_coeff_token(d, probs, prev_token_was_zero);
-		if (collect_stats && bool_decoder_overread(d)) {
-			record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/0);
-		}
-		if (token == dct_eob) {
-			if (collect_stats && io_eob_tokens) (*io_eob_tokens)++;
-			break;
-		}
+		int token = read_coeff_token_fast(d, probs, prev_token_was_zero);
+		if (token == dct_eob) break;
 
 		int abs_value = 0;
 		if (token == DCT_0) {
@@ -324,39 +387,86 @@ static int decode_block(BoolDecoder* d,
 		} else {
 			static const int cat_base[6] = {5, 7, 11, 19, 35, 67};
 			int cat = token - dct_cat1;
-			uint32_t extra = 0;
-			switch (token) {
-				case dct_cat1: extra = vp8_read_extra(d, Pcat1); break;
-				case dct_cat2: extra = vp8_read_extra(d, Pcat2); break;
-				case dct_cat3: extra = vp8_read_extra(d, Pcat3); break;
-				case dct_cat4: extra = vp8_read_extra(d, Pcat4); break;
-				case dct_cat5: extra = vp8_read_extra(d, Pcat5); break;
-				case dct_cat6: extra = vp8_read_extra(d, Pcat6); break;
-				default: extra = 0; break;
-			}
-			if (collect_stats && bool_decoder_overread(d)) {
-				record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/1);
-			}
+			uint32_t extra = vp8_read_extra_cat(d, cat);
 			abs_value = cat_base[cat] + (int)extra;
 		}
 
 		if (abs_value != 0) {
-			int sign = bool_decode_bool(d, 128);
-			if (collect_stats && bool_decoder_overread(d)) {
-				record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/2);
-			}
+			int sign = bool_decode_bit(d);
 			int v = sign ? -abs_value : abs_value;
 			out_block[zigzag[i]] = (int16_t)v;
 			current_has_coeffs = 1;
-			if (collect_stats && io_nonzero_coeffs) (*io_nonzero_coeffs)++;
-			uint32_t absu = (uint32_t)abs_value;
-			if (collect_stats && io_abs_max && absu > *io_abs_max) *io_abs_max = absu;
 		}
 
 		if (abs_value == 0) ctx3 = 0;
 		else if (abs_value == 1) ctx3 = 1;
 		else ctx3 = 2;
 
+		prev_token_was_zero = (token == DCT_0);
+	}
+
+	return current_has_coeffs;
+}
+
+static int decode_block_profiled(BoolDecoder* d,
+                                 uint8_t coeff_probs_plane[8][3][num_dct_tokens - 1],
+                                 int first_coeff,
+                                 uint8_t left_has,
+                                 uint8_t above_has,
+                                 int16_t out_block[16],
+                                 Vp8CoeffStats* out_stats,
+                                 uint32_t mb_index,
+                                 uint32_t plane,
+                                 uint32_t block_index) {
+	int ctx3 = (int)left_has + (int)above_has;
+	int prev_token_was_zero = 0;
+	int current_has_coeffs = 0;
+
+	for (int i = first_coeff; i < 16; i++) {
+		int band = (int)coeff_bands[i];
+		const uint8_t* probs = coeff_probs_plane[band][ctx3];
+
+		int token = read_coeff_token_profiled(d, probs, prev_token_was_zero, out_stats);
+		if (bool_decoder_overread(d)) {
+			record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/0);
+		}
+		if (token == dct_eob) break;
+
+		int abs_value = 0;
+		if (token == DCT_0) {
+			abs_value = 0;
+		} else if (token <= DCT_4) {
+			abs_value = token;
+		} else {
+			static const int cat_base[6] = {5, 7, 11, 19, 35, 67};
+			int cat = token - dct_cat1;
+			uint32_t extra = vp8_read_extra_cat_profiled(d, cat, out_stats);
+			if (bool_decoder_overread(d)) {
+				record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/1);
+			}
+			abs_value = cat_base[cat] + (int)extra;
+		}
+
+		if (abs_value != 0) {
+			out_stats->coeff_bool_calls++;
+			out_stats->coeff_sign_bits++;
+			int sign = bool_decode_bit(d);
+			if (bool_decoder_overread(d)) {
+				record_token_overread_loc(out_stats, mb_index, plane, block_index, (uint32_t)i, /*stage=*/2);
+			}
+			int v = sign ? -abs_value : abs_value;
+			out_block[zigzag[i]] = (int16_t)v;
+			current_has_coeffs = 1;
+			out_stats->coeff_nonzero_total++;
+			uint32_t absu = (uint32_t)abs_value;
+			if (absu > out_stats->coeff_abs_max) out_stats->coeff_abs_max = absu;
+		}
+
+		if (abs_value == 0) ctx3 = 0;
+		else if (abs_value == 1) ctx3 = 1;
+		else ctx3 = 2;
+
+		out_stats->coeff_context_updates++;
 		prev_token_was_zero = (token == DCT_0);
 	}
 
@@ -447,20 +557,13 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					dst = (frame && frame->coeff_y2) ? (frame->coeff_y2 + (size_t)mb_index * 16u) : NULL;
 					int16_t* visitor_dst = cb_coeffs ? cb_coeffs->y2 : NULL;
 					int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
-					has = decode_block(&d,
-					                 g_coeff_probs[1],
-					                 0,
-					                 left_has,
-					                 above_has,
-					                 &out->coeff_nonzero_total,
-					                 &out->coeff_eob_tokens,
-					                 &out->coeff_abs_max,
-					                 coeff_out,
-					                 out,
-					                 collect_stats,
-					                 mb_index,
-					                 /*plane=*/1,
-					                 /*block_index=*/0);
+					if (coeff_out == block) memset(block, 0, sizeof(block));
+					if (collect_stats) {
+						has = decode_block_profiled(&d, g_coeff_probs[1], 0, left_has, above_has, coeff_out, out,
+						                           mb_index, /*plane=*/1, /*block_index=*/0);
+					} else {
+						has = decode_block_fast(&d, g_coeff_probs[1], 0, left_has, above_has, coeff_out);
+					}
 					if (io_hash || (dst && coeff_out != dst)) {
 						for (int i = 0; i < 16; i++) {
 							if (io_hash) *io_hash = fnv1a64_i32(*io_hash, coeff_out[i]);
@@ -484,7 +587,6 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 
 			// Y blocks
 			uint8_t y_has[4][4];
-			for (int rr = 0; rr < 4; rr++) for (int cc = 0; cc < 4; cc++) y_has[rr][cc] = 0;
 
 			int y_plane = has_y2 ? 0 : 3;
 			int first_coeff = has_y2 ? 1 : 0;
@@ -500,20 +602,14 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 						dst = (frame && frame->coeff_y) ? (frame->coeff_y + blk * 16u) : NULL;
 						int16_t* visitor_dst = cb_coeffs ? cb_coeffs->y[rr * 4 + cc] : NULL;
 						int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
-						has = decode_block(&d,
-					                 g_coeff_probs[y_plane],
-					                 first_coeff,
-					                 left_has,
-					                 above_has,
-					                 &out->coeff_nonzero_total,
-					                 &out->coeff_eob_tokens,
-					                 &out->coeff_abs_max,
-					                 coeff_out,
-					                 out,
-					                 collect_stats,
-					                 mb_index,
-					                 /*plane=*/0,
-					                 /*block_index=*/(uint32_t)(rr * 4 + cc));
+						if (coeff_out == block) memset(block, 0, sizeof(block));
+						if (collect_stats) {
+							has = decode_block_profiled(&d, g_coeff_probs[y_plane], first_coeff, left_has, above_has,
+							                           coeff_out, out, mb_index, /*plane=*/0,
+							                           /*block_index=*/(uint32_t)(rr * 4 + cc));
+						} else {
+							has = decode_block_fast(&d, g_coeff_probs[y_plane], first_coeff, left_has, above_has, coeff_out);
+						}
 						if (io_hash || (dst && coeff_out != dst)) {
 							for (int i = 0; i < 16; i++) {
 								if (io_hash) *io_hash = fnv1a64_i32(*io_hash, coeff_out[i]);
@@ -540,7 +636,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 			}
 
 			// U blocks (2x2)
-			uint8_t u_has[2][2] = {{0, 0}, {0, 0}};
+			uint8_t u_has[2][2];
 			for (int rr = 0; rr < 2; rr++) {
 				for (int cc = 0; cc < 2; cc++) {
 					if (collect_stats) out->blocks_total_u++;
@@ -552,20 +648,14 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 						dst = (frame && frame->coeff_u) ? (frame->coeff_u + blk * 16u) : NULL;
 						int16_t* visitor_dst = cb_coeffs ? cb_coeffs->u[rr * 2 + cc] : NULL;
 						int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
-						has = decode_block(&d,
-					                 g_coeff_probs[2],
-					                 0,
-					                 left_has,
-					                 above_has,
-					                 &out->coeff_nonzero_total,
-					                 &out->coeff_eob_tokens,
-					                 &out->coeff_abs_max,
-					                 coeff_out,
-					                 out,
-					                 collect_stats,
-					                 mb_index,
-					                 /*plane=*/2,
-					                 /*block_index=*/(uint32_t)(rr * 2 + cc));
+						if (coeff_out == block) memset(block, 0, sizeof(block));
+						if (collect_stats) {
+							has = decode_block_profiled(&d, g_coeff_probs[2], 0, left_has, above_has, coeff_out, out,
+							                           mb_index, /*plane=*/2,
+							                           /*block_index=*/(uint32_t)(rr * 2 + cc));
+						} else {
+							has = decode_block_fast(&d, g_coeff_probs[2], 0, left_has, above_has, coeff_out);
+						}
 						if (io_hash || (dst && coeff_out != dst)) {
 							for (int i = 0; i < 16; i++) {
 								if (io_hash) *io_hash = fnv1a64_i32(*io_hash, coeff_out[i]);
@@ -588,7 +678,7 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 			for (int rr = 0; rr < 2; rr++) left_u[rr] = u_has[rr][1];
 
 			// V blocks (2x2)
-			uint8_t v_has[2][2] = {{0, 0}, {0, 0}};
+			uint8_t v_has[2][2];
 			for (int rr = 0; rr < 2; rr++) {
 				for (int cc = 0; cc < 2; cc++) {
 					if (collect_stats) out->blocks_total_v++;
@@ -600,20 +690,14 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 						dst = (frame && frame->coeff_v) ? (frame->coeff_v + blk * 16u) : NULL;
 						int16_t* visitor_dst = cb_coeffs ? cb_coeffs->v[rr * 2 + cc] : NULL;
 						int16_t* coeff_out = visitor_dst ? visitor_dst : ((io_hash || !dst) ? block : dst);
-						has = decode_block(&d,
-					                 g_coeff_probs[2],
-					                 0,
-					                 left_has,
-					                 above_has,
-					                 &out->coeff_nonzero_total,
-					                 &out->coeff_eob_tokens,
-					                 &out->coeff_abs_max,
-					                 coeff_out,
-					                 out,
-					                 collect_stats,
-					                 mb_index,
-					                 /*plane=*/3,
-					                 /*block_index=*/(uint32_t)(rr * 2 + cc));
+						if (coeff_out == block) memset(block, 0, sizeof(block));
+						if (collect_stats) {
+							has = decode_block_profiled(&d, g_coeff_probs[2], 0, left_has, above_has, coeff_out, out,
+							                           mb_index, /*plane=*/3,
+							                           /*block_index=*/(uint32_t)(rr * 2 + cc));
+						} else {
+							has = decode_block_fast(&d, g_coeff_probs[2], 0, left_has, above_has, coeff_out);
+						}
 						if (io_hash || (dst && coeff_out != dst)) {
 							for (int i = 0; i < 16; i++) {
 								if (io_hash) *io_hash = fnv1a64_i32(*io_hash, coeff_out[i]);

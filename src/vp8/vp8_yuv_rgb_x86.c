@@ -4,6 +4,12 @@
 #include "vp8_yuv_rgb.h"
 
 #include <emmintrin.h>
+#if defined(VP8_YUV_RGB_HAVE_SSSE3)
+#include <tmmintrin.h>
+#endif
+#if defined(VP8_YUV_RGB_HAVE_AVX2)
+#include <immintrin.h>
+#endif
 
 enum {
 	YUV_SIMD_FIX = 6,
@@ -72,6 +78,46 @@ static inline void store_rgb4(uint8_t* dst, uint32_t r4, uint32_t g4, uint32_t b
 	store_u32(dst + 8, out2);
 }
 
+#if defined(VP8_YUV_RGB_HAVE_SSSE3)
+static inline void store_rgb4_ssse3(uint8_t* dst, __m128i r, __m128i g, __m128i b) {
+	const __m128i mr = _mm_setr_epi8(0, (char)0x80, (char)0x80, 1, (char)0x80, (char)0x80, 2, (char)0x80,
+	                                (char)0x80, 3, (char)0x80, (char)0x80, (char)0x80, (char)0x80,
+	                                (char)0x80, (char)0x80);
+	const __m128i mg = _mm_setr_epi8((char)0x80, 0, (char)0x80, (char)0x80, 1, (char)0x80, (char)0x80, 2,
+	                                (char)0x80, (char)0x80, 3, (char)0x80, (char)0x80, (char)0x80,
+	                                (char)0x80, (char)0x80);
+	const __m128i mb = _mm_setr_epi8((char)0x80, (char)0x80, 0, (char)0x80, (char)0x80, 1, (char)0x80,
+	                                (char)0x80, 2, (char)0x80, (char)0x80, 3, (char)0x80, (char)0x80,
+	                                (char)0x80, (char)0x80);
+	const __m128i out = _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(r, mr), _mm_shuffle_epi8(g, mg)),
+	                                _mm_shuffle_epi8(b, mb));
+	_mm_storel_epi64((__m128i*)dst, out);
+	store_u32(dst + 8, (uint32_t)_mm_cvtsi128_si32(_mm_srli_si128(out, 8)));
+}
+
+static inline void yuv_to_rgb4_row_ssse3(const uint8_t* y,
+                                         uint8_t u0,
+                                         uint8_t v0,
+                                         uint8_t u1,
+                                         uint8_t v1,
+                                         uint8_t u2,
+                                         uint8_t v2,
+                                         uint8_t u3,
+                                         uint8_t v3,
+                                         uint8_t* dst) {
+	const __m128i yy = _mm_set_epi32(y[3], y[2], y[1], y[0]);
+	const __m128i uu = _mm_set_epi32(u3, u2, u1, u0);
+	const __m128i vv = _mm_set_epi32(v3, v2, v1, v0);
+	const __m128i y_mul = mult_hi_u8_sse2(yy, 19077);
+	const __m128i r = _mm_sub_epi32(_mm_add_epi32(y_mul, mult_hi_u8_sse2(vv, 26149)), _mm_set1_epi32(14234));
+	const __m128i g = _mm_add_epi32(_mm_sub_epi32(_mm_sub_epi32(y_mul, mult_hi_u8_sse2(uu, 6419)),
+	                                             mult_hi_u8_sse2(vv, 13320)),
+	                               _mm_set1_epi32(8708));
+	const __m128i b = _mm_sub_epi32(_mm_add_epi32(y_mul, mult_hi_u8_sse2(uu, 33050)), _mm_set1_epi32(17685));
+	store_rgb4_ssse3(dst, clip_fixed6_to_u8_sse2(r), clip_fixed6_to_u8_sse2(g), clip_fixed6_to_u8_sse2(b));
+}
+#endif
+
 static inline void yuv_to_rgb4_row_sse2(const uint8_t* y,
                                         uint8_t u0,
                                         uint8_t v0,
@@ -82,13 +128,128 @@ static inline void yuv_to_rgb4_row_sse2(const uint8_t* y,
                                         uint8_t u3,
                                         uint8_t v3,
                                         uint8_t* dst) {
+#if defined(VP8_YUV_RGB_HAVE_SSSE3)
+	yuv_to_rgb4_row_ssse3(y, u0, v0, u1, v1, u2, v2, u3, v3, dst);
+#else
 	uint32_t r4;
 	uint32_t g4;
 	uint32_t b4;
 	yuv_to_rgb4_sse2(_mm_set_epi32(y[3], y[2], y[1], y[0]), _mm_set_epi32(u3, u2, u1, u0),
 	                 _mm_set_epi32(v3, v2, v1, v0), &r4, &g4, &b4);
 	store_rgb4(dst, r4, g4, b4);
+#endif
 }
+
+#if defined(VP8_YUV_RGB_HAVE_AVX2)
+static inline __m256i mult_hi_u8_avx2(__m256i values, int coeff) {
+	return _mm256_srai_epi32(_mm256_mullo_epi32(values, _mm256_set1_epi32(coeff)), 8);
+}
+
+static inline __m128i clip_fixed6_to_u8_avx2(__m256i v) {
+	const __m256i zero = _mm256_setzero_si256();
+	const __m256i max = _mm256_set1_epi32(YUV_SIMD_MASK);
+	const __m256i neg = _mm256_cmpgt_epi32(zero, v);
+	const __m256i over = _mm256_cmpgt_epi32(v, max);
+
+	v = _mm256_andnot_si256(neg, v);
+	v = _mm256_or_si256(_mm256_and_si256(over, max), _mm256_andnot_si256(over, v));
+	v = _mm256_srli_epi32(v, YUV_SIMD_FIX);
+
+	const __m128i lo = _mm256_castsi256_si128(v);
+	const __m128i hi = _mm256_extracti128_si256(v, 1);
+	const __m128i v16 = _mm_packs_epi32(lo, hi);
+	return _mm_packus_epi16(v16, _mm_setzero_si128());
+}
+
+static inline void store_rgb8_avx2(uint8_t* dst, __m128i r, __m128i g, __m128i b) {
+	const __m128i r0 = _mm_setr_epi8(0, (char)0x80, (char)0x80, 1, (char)0x80, (char)0x80, 2, (char)0x80,
+	                                (char)0x80, 3, (char)0x80, (char)0x80, 4, (char)0x80, (char)0x80, 5);
+	const __m128i g0 = _mm_setr_epi8((char)0x80, 0, (char)0x80, (char)0x80, 1, (char)0x80, (char)0x80, 2,
+	                                (char)0x80, (char)0x80, 3, (char)0x80, (char)0x80, 4, (char)0x80,
+	                                (char)0x80);
+	const __m128i b0 = _mm_setr_epi8((char)0x80, (char)0x80, 0, (char)0x80, (char)0x80, 1, (char)0x80,
+	                                (char)0x80, 2, (char)0x80, (char)0x80, 3, (char)0x80, (char)0x80, 4,
+	                                (char)0x80);
+	const __m128i r1 = _mm_setr_epi8((char)0x80, (char)0x80, 6, (char)0x80, (char)0x80, 7, (char)0x80,
+	                                (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80,
+	                                (char)0x80, (char)0x80, (char)0x80);
+	const __m128i g1 = _mm_setr_epi8(5, (char)0x80, (char)0x80, 6, (char)0x80, (char)0x80, 7, (char)0x80,
+	                                (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80,
+	                                (char)0x80, (char)0x80);
+	const __m128i b1 = _mm_setr_epi8((char)0x80, 5, (char)0x80, (char)0x80, 6, (char)0x80, (char)0x80, 7,
+	                                (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80,
+	                                (char)0x80, (char)0x80);
+	const __m128i out0 = _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(r, r0), _mm_shuffle_epi8(g, g0)),
+	                                 _mm_shuffle_epi8(b, b0));
+	const __m128i out1 = _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(r, r1), _mm_shuffle_epi8(g, g1)),
+	                                 _mm_shuffle_epi8(b, b1));
+	_mm_storeu_si128((__m128i*)dst, out0);
+	_mm_storel_epi64((__m128i*)(dst + 16), out1);
+}
+
+static inline void yuv_to_rgb8_row_avx2(const uint8_t* y,
+                                        uint8_t u0,
+                                        uint8_t v0,
+                                        uint8_t u1,
+                                        uint8_t v1,
+                                        uint8_t u2,
+                                        uint8_t v2,
+                                        uint8_t u3,
+                                        uint8_t v3,
+                                        uint8_t u4,
+                                        uint8_t v4,
+                                        uint8_t u5,
+                                        uint8_t v5,
+                                        uint8_t u6,
+                                        uint8_t v6,
+                                        uint8_t u7,
+                                        uint8_t v7,
+                                        uint8_t* dst) {
+	const __m256i yy = _mm256_setr_epi32(y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7]);
+	const __m256i uu = _mm256_setr_epi32(u0, u1, u2, u3, u4, u5, u6, u7);
+	const __m256i vv = _mm256_setr_epi32(v0, v1, v2, v3, v4, v5, v6, v7);
+	const __m256i y_mul = mult_hi_u8_avx2(yy, 19077);
+	const __m256i r = _mm256_sub_epi32(_mm256_add_epi32(y_mul, mult_hi_u8_avx2(vv, 26149)),
+	                                  _mm256_set1_epi32(14234));
+	const __m256i g = _mm256_add_epi32(_mm256_sub_epi32(_mm256_sub_epi32(y_mul, mult_hi_u8_avx2(uu, 6419)),
+	                                                   mult_hi_u8_avx2(vv, 13320)),
+	                                  _mm256_set1_epi32(8708));
+	const __m256i b = _mm256_sub_epi32(_mm256_add_epi32(y_mul, mult_hi_u8_avx2(uu, 33050)),
+	                                  _mm256_set1_epi32(17685));
+	store_rgb8_avx2(dst, clip_fixed6_to_u8_avx2(r), clip_fixed6_to_u8_avx2(g), clip_fixed6_to_u8_avx2(b));
+}
+
+typedef struct {
+	uint8_t top0_u, top0_v, top1_u, top1_v;
+	uint8_t bottom0_u, bottom0_v, bottom1_u, bottom1_v;
+} Vp8UvEdge;
+
+static inline Vp8UvEdge make_uv_edge(uint32_t tl_u,
+                                     uint32_t tl_v,
+                                     uint32_t l_u,
+                                     uint32_t l_v,
+                                     uint32_t t_u,
+                                     uint32_t t_v,
+                                     uint32_t u,
+                                     uint32_t v) {
+	const uint32_t avg_u = tl_u + t_u + l_u + u + 8u;
+	const uint32_t avg_v = tl_v + t_v + l_v + v + 8u;
+	const uint32_t diag_12_u = (avg_u + 2u * (t_u + l_u)) >> 3;
+	const uint32_t diag_12_v = (avg_v + 2u * (t_v + l_v)) >> 3;
+	const uint32_t diag_03_u = (avg_u + 2u * (tl_u + u)) >> 3;
+	const uint32_t diag_03_v = (avg_v + 2u * (tl_v + v)) >> 3;
+	Vp8UvEdge e;
+	e.top0_u = (uint8_t)((diag_12_u + tl_u) >> 1);
+	e.top0_v = (uint8_t)((diag_12_v + tl_v) >> 1);
+	e.top1_u = (uint8_t)((diag_03_u + t_u) >> 1);
+	e.top1_v = (uint8_t)((diag_03_v + t_v) >> 1);
+	e.bottom0_u = (uint8_t)((diag_03_u + l_u) >> 1);
+	e.bottom0_v = (uint8_t)((diag_03_v + l_v) >> 1);
+	e.bottom1_u = (uint8_t)((diag_12_u + u) >> 1);
+	e.bottom1_v = (uint8_t)((diag_12_v + v) >> 1);
+	return e;
+}
+#endif
 
 void vp8_yuv_to_rgb4_sse2(uint8_t y0,
                           uint8_t u0,
@@ -150,6 +311,41 @@ void vp8_upsample_rgb_line_sse2(const uint8_t* top_y,
 	}
 
 	uint32_t x = 1;
+#if defined(VP8_YUV_RGB_HAVE_AVX2)
+	for (; x + 3u <= last_pixel_pair; x += 4u) {
+		const uint32_t t0_u = top_u[x];
+		const uint32_t t0_v = top_v[x];
+		const uint32_t u0 = cur_u[x];
+		const uint32_t v0 = cur_v[x];
+		const uint32_t t1_u = top_u[x + 1u];
+		const uint32_t t1_v = top_v[x + 1u];
+		const uint32_t u1 = cur_u[x + 1u];
+		const uint32_t v1 = cur_v[x + 1u];
+		const uint32_t t2_u = top_u[x + 2u];
+		const uint32_t t2_v = top_v[x + 2u];
+		const uint32_t u2 = cur_u[x + 2u];
+		const uint32_t v2 = cur_v[x + 2u];
+		const uint32_t t3_u = top_u[x + 3u];
+		const uint32_t t3_v = top_v[x + 3u];
+		const uint32_t u3 = cur_u[x + 3u];
+		const uint32_t v3 = cur_v[x + 3u];
+
+		const Vp8UvEdge e0 = make_uv_edge(tl_u, tl_v, l_u, l_v, t0_u, t0_v, u0, v0);
+		const Vp8UvEdge e1 = make_uv_edge(t0_u, t0_v, u0, v0, t1_u, t1_v, u1, v1);
+		const Vp8UvEdge e2 = make_uv_edge(t1_u, t1_v, u1, v1, t2_u, t2_v, u2, v2);
+		const Vp8UvEdge e3 = make_uv_edge(t2_u, t2_v, u2, v2, t3_u, t3_v, u3, v3);
+
+		yuv_to_rgb8_row_avx2(top_y + 2u * x - 1u, e0.top0_u, e0.top0_v, e0.top1_u, e0.top1_v,
+		                     e1.top0_u, e1.top0_v, e1.top1_u, e1.top1_v, e2.top0_u, e2.top0_v,
+		                     e2.top1_u, e2.top1_v, e3.top0_u, e3.top0_v, e3.top1_u, e3.top1_v,
+		                     top_dst + (2u * x - 1u) * 3u);
+
+		tl_u = t3_u;
+		tl_v = t3_v;
+		l_u = u3;
+		l_v = v3;
+	}
+#endif
 	for (; x + 1u <= last_pixel_pair; x += 2u) {
 		const uint32_t t0_u = top_u[x];
 		const uint32_t t0_v = top_v[x];
@@ -251,6 +447,45 @@ void vp8_upsample_rgb_line_pair_sse2(const uint8_t* top_y,
 	}
 
 	uint32_t x = 1;
+#if defined(VP8_YUV_RGB_HAVE_AVX2)
+	for (; x + 3u <= last_pixel_pair; x += 4u) {
+		const uint32_t t0_u = top_u[x];
+		const uint32_t t0_v = top_v[x];
+		const uint32_t u0 = cur_u[x];
+		const uint32_t v0 = cur_v[x];
+		const uint32_t t1_u = top_u[x + 1u];
+		const uint32_t t1_v = top_v[x + 1u];
+		const uint32_t u1 = cur_u[x + 1u];
+		const uint32_t v1 = cur_v[x + 1u];
+		const uint32_t t2_u = top_u[x + 2u];
+		const uint32_t t2_v = top_v[x + 2u];
+		const uint32_t u2 = cur_u[x + 2u];
+		const uint32_t v2 = cur_v[x + 2u];
+		const uint32_t t3_u = top_u[x + 3u];
+		const uint32_t t3_v = top_v[x + 3u];
+		const uint32_t u3 = cur_u[x + 3u];
+		const uint32_t v3 = cur_v[x + 3u];
+
+		const Vp8UvEdge e0 = make_uv_edge(tl_u, tl_v, l_u, l_v, t0_u, t0_v, u0, v0);
+		const Vp8UvEdge e1 = make_uv_edge(t0_u, t0_v, u0, v0, t1_u, t1_v, u1, v1);
+		const Vp8UvEdge e2 = make_uv_edge(t1_u, t1_v, u1, v1, t2_u, t2_v, u2, v2);
+		const Vp8UvEdge e3 = make_uv_edge(t2_u, t2_v, u2, v2, t3_u, t3_v, u3, v3);
+
+		yuv_to_rgb8_row_avx2(top_y + 2u * x - 1u, e0.top0_u, e0.top0_v, e0.top1_u, e0.top1_v,
+		                     e1.top0_u, e1.top0_v, e1.top1_u, e1.top1_v, e2.top0_u, e2.top0_v,
+		                     e2.top1_u, e2.top1_v, e3.top0_u, e3.top0_v, e3.top1_u, e3.top1_v,
+		                     top_dst + (2u * x - 1u) * 3u);
+		yuv_to_rgb8_row_avx2(bottom_y + 2u * x - 1u, e0.bottom0_u, e0.bottom0_v, e0.bottom1_u,
+		                     e0.bottom1_v, e1.bottom0_u, e1.bottom0_v, e1.bottom1_u, e1.bottom1_v,
+		                     e2.bottom0_u, e2.bottom0_v, e2.bottom1_u, e2.bottom1_v, e3.bottom0_u,
+		                     e3.bottom0_v, e3.bottom1_u, e3.bottom1_v, bottom_dst + (2u * x - 1u) * 3u);
+
+		tl_u = t3_u;
+		tl_v = t3_v;
+		l_u = u3;
+		l_v = v3;
+	}
+#endif
 	for (; x + 1u <= last_pixel_pair; x += 2u) {
 		const uint32_t t0_u = top_u[x];
 		const uint32_t t0_v = top_v[x];

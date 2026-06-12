@@ -89,8 +89,47 @@ static const uint32_t crc32_table[256] = {
 	0xB40BBE37u, 0xC30C8EA1u, 0x5A05DF1Bu, 0x2D02EF8Du,
 };
 
+// IDAT CRC covers every stored byte, so use slicing-by-8 for the large scanline payloads.
+static uint32_t crc32_slicing_table[8][256];
+static int crc32_slicing_ready;
+
+static void crc32_slicing_init(void) {
+	if (crc32_slicing_ready) return;
+	for (uint32_t i = 0; i < 256u; i++) {
+		crc32_slicing_table[0][i] = crc32_table[i];
+	}
+	for (uint32_t slice = 1; slice < 8u; slice++) {
+		for (uint32_t i = 0; i < 256u; i++) {
+			const uint32_t prev = crc32_slicing_table[slice - 1u][i];
+			crc32_slicing_table[slice][i] = crc32_table[prev & 0xFFu] ^ (prev >> 8);
+		}
+	}
+	crc32_slicing_ready = 1;
+}
+
+static inline uint32_t load32le(const uint8_t* p) {
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
 static uint32_t crc32_update(uint32_t crc, const uint8_t* buf, size_t len) {
 	crc ^= 0xFFFFFFFFu;
+	if (len >= 16u) {
+		crc32_slicing_init();
+		while (len >= 8u) {
+			crc ^= load32le(buf);
+			const uint32_t high = load32le(buf + 4);
+			crc = crc32_slicing_table[7][crc & 0xFFu] ^
+			      crc32_slicing_table[6][(crc >> 8) & 0xFFu] ^
+			      crc32_slicing_table[5][(crc >> 16) & 0xFFu] ^
+			      crc32_slicing_table[4][crc >> 24] ^
+			      crc32_slicing_table[3][high & 0xFFu] ^
+			      crc32_slicing_table[2][(high >> 8) & 0xFFu] ^
+			      crc32_slicing_table[1][(high >> 16) & 0xFFu] ^
+			      crc32_slicing_table[0][high >> 24];
+			buf += 8;
+			len -= 8u;
+		}
+	}
 	for (size_t i = 0; i < len; i++) {
 		crc = crc32_table[(crc ^ buf[i]) & 0xFFu] ^ (crc >> 8);
 	}
@@ -120,6 +159,42 @@ static inline void adler32_update(uint32_t* a, uint32_t* b, const uint8_t* buf, 
 	while (len > 0) {
 		size_t n = (len < NMAX) ? len : NMAX;
 		len -= n;
+		while (n >= 16u) {
+			aa += buf[0];
+			bb += aa;
+			aa += buf[1];
+			bb += aa;
+			aa += buf[2];
+			bb += aa;
+			aa += buf[3];
+			bb += aa;
+			aa += buf[4];
+			bb += aa;
+			aa += buf[5];
+			bb += aa;
+			aa += buf[6];
+			bb += aa;
+			aa += buf[7];
+			bb += aa;
+			aa += buf[8];
+			bb += aa;
+			aa += buf[9];
+			bb += aa;
+			aa += buf[10];
+			bb += aa;
+			aa += buf[11];
+			bb += aa;
+			aa += buf[12];
+			bb += aa;
+			aa += buf[13];
+			bb += aa;
+			aa += buf[14];
+			bb += aa;
+			aa += buf[15];
+			bb += aa;
+			buf += 16;
+			n -= 16u;
+		}
 		while (n-- > 0) {
 			aa += *buf++;
 			bb += aa;
@@ -131,20 +206,16 @@ static inline void adler32_update(uint32_t* a, uint32_t* b, const uint8_t* buf, 
 	*b = bb;
 }
 
-#define PNG_IDAT_BUF_SIZE 65536u
+#define PNG_IDAT_BUF_SIZE 262144u
 
 typedef struct {
 	int fd;
 	uint32_t crc;
 	uint8_t* buf;
 	size_t used;
+	uint64_t raw_left;
+	uint32_t block_left;
 } PngIdatWriter;
-
-static inline void adler32_update_zero(uint32_t* a, uint32_t* b) {
-	(void)a;
-	*b += *a;
-	if (*b >= 65521u) *b -= 65521u;
-}
 
 static int png_idat_flush(PngIdatWriter* w) {
 	if (w->used == 0) return 0;
@@ -186,34 +257,31 @@ static int png_write_stored_header(PngIdatWriter* w, uint32_t len, uint8_t bfina
 	return png_idat_write(w, hdr, sizeof(hdr));
 }
 
-static int png_write_row_blocks(PngIdatWriter* w,
-                                uint32_t* ad_a,
-                                uint32_t* ad_b,
-                                const uint8_t* row,
-                                uint32_t row_bytes,
-                                int is_last_row) {
-	uint32_t remaining = row_bytes + 1u;
-	uint32_t row_pos = 0;
-	while (remaining > 0) {
-		const uint32_t block_len = (remaining > 65535u) ? 65535u : remaining;
-		const uint8_t bfinal = (is_last_row && remaining == block_len) ? 1u : 0u;
-		if (png_write_stored_header(w, block_len, bfinal) != 0) return -1;
-		if (row_pos == 0) {
-			const uint8_t filter = 0;
-			if (png_idat_write(w, &filter, 1) != 0) return -1;
-			adler32_update_zero(ad_a, ad_b);
-			const uint32_t n = block_len - 1u;
-			if (n != 0) {
-				if (png_idat_write(w, row, n) != 0) return -1;
-				adler32_update(ad_a, ad_b, row, n);
-				row_pos += n;
-			}
-		} else {
-			if (png_idat_write(w, row + row_pos, block_len) != 0) return -1;
-			adler32_update(ad_a, ad_b, row + row_pos, block_len);
-			row_pos += block_len;
+// Stored DEFLATE blocks may span PNG scanlines; packing the raw scanline stream into
+// 64 KiB blocks avoids per-row block headers while preserving filter-0 RGB bytes.
+static int png_write_raw_bytes(PngIdatWriter* w,
+                               uint32_t* ad_a,
+                               uint32_t* ad_b,
+                               const uint8_t* data,
+                               size_t len) {
+	if ((uint64_t)len > w->raw_left) {
+		PNG_SET_ERRNO(EINVAL);
+		return -1;
+	}
+	while (len > 0) {
+		if (w->block_left == 0) {
+			const uint32_t block_len = (w->raw_left > 65535u) ? 65535u : (uint32_t)w->raw_left;
+			const uint8_t bfinal = (w->raw_left == (uint64_t)block_len) ? 1u : 0u;
+			if (png_write_stored_header(w, block_len, bfinal) != 0) return -1;
+			w->block_left = block_len;
 		}
-		remaining -= block_len;
+		const size_t n = (len < (size_t)w->block_left) ? len : (size_t)w->block_left;
+		if (png_idat_write(w, data, n) != 0) return -1;
+		adler32_update(ad_a, ad_b, data, n);
+		data += n;
+		len -= n;
+		w->block_left -= (uint32_t)n;
+		w->raw_left -= (uint64_t)n;
 	}
 	return 0;
 }
@@ -256,14 +324,13 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 		PNG_SET_ERRNO(EFBIG);
 		return -1;
 	}
-	const uint64_t blocks_per_row = ((uint64_t)scanline_bytes + 65534u) / 65535u;
-	const uint64_t blocks = (uint64_t)img->height * blocks_per_row;
+	const uint64_t blocks = (raw_size64 + 65534u) / 65535u;
 	const uint64_t zsize64 = 2u + raw_size64 + blocks * 5u + 4u;
 	if (zsize64 > 0xFFFFFFFFu) {
 		PNG_SET_ERRNO(EFBIG);
 		return -1;
 	}
-	uint8_t* rows = (uint8_t*)malloc((size_t)row_bytes * 2u);
+	uint8_t* rows = (uint8_t*)malloc((size_t)scanline_bytes * 2u);
 	uint8_t* idat_buf = (uint8_t*)malloc(PNG_IDAT_BUF_SIZE);
 	if (!rows || !idat_buf) {
 		free(rows);
@@ -271,8 +338,12 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 		PNG_SET_ERRNO(ENOMEM);
 		return -1;
 	}
-	uint8_t* top_row = rows;
-	uint8_t* bottom_row = rows + row_bytes;
+	uint8_t* top_scanline = rows;
+	uint8_t* bottom_scanline = rows + scanline_bytes;
+	uint8_t* top_row = top_scanline + 1u;
+	uint8_t* bottom_row = bottom_scanline + 1u;
+	top_scanline[0] = 0;
+	bottom_scanline[0] = 0;
 
 	uint8_t idat_hdr[8];
 	uint32_t idat_len_be = be32((uint32_t)zsize64);
@@ -289,6 +360,8 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 		.crc = crc32_update(0, (const uint8_t*)"IDAT", 4),
 		.buf = idat_buf,
 		.used = 0,
+		.raw_left = raw_size64,
+		.block_left = 0,
 	};
 
 	uint32_t ad_a = 1u;
@@ -303,7 +376,7 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 		const uint8_t* u0 = img->u;
 		const uint8_t* v0 = img->v;
 		upsample_rgb_line_pair(y0, NULL, u0, v0, u0, v0, top_row, NULL, img->width);
-		if (png_write_row_blocks(&idat, &ad_a, &ad_b, top_row, row_bytes, img->height == 1u) != 0) goto idat_error;
+		if (png_write_raw_bytes(&idat, &ad_a, &ad_b, top_scanline, scanline_bytes) != 0) goto idat_error;
 	}
 
 	const uint32_t ch = (img->height + 1u) >> 1;
@@ -319,12 +392,15 @@ int yuv420_write_png_fd(int fd, const Yuv420Image* img) {
 		const uint8_t* cur_v = img->v + (size_t)cur_cy * img->stride_uv;
 
 		upsample_rgb_line_pair(top_y, bottom_y, top_u, top_v, cur_u, cur_v, top_row, bottom_row, img->width);
-		if (png_write_row_blocks(&idat, &ad_a, &ad_b, top_row, row_bytes, bottom_y == NULL) != 0) goto idat_error;
 		if (bottom_y != NULL) {
-			if (png_write_row_blocks(&idat, &ad_a, &ad_b, bottom_row, row_bytes, y + 2u == img->height) != 0) {
-				goto idat_error;
-			}
+			if (png_write_raw_bytes(&idat, &ad_a, &ad_b, top_scanline, (size_t)scanline_bytes * 2u) != 0) goto idat_error;
+		} else {
+			if (png_write_raw_bytes(&idat, &ad_a, &ad_b, top_scanline, scanline_bytes) != 0) goto idat_error;
 		}
+	}
+	if (idat.raw_left != 0 || idat.block_left != 0) {
+		PNG_SET_ERRNO(EINVAL);
+		goto idat_error;
 	}
 
 	const uint32_t adler = (ad_b << 16) | ad_a;
