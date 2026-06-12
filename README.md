@@ -46,7 +46,7 @@ This produces two binaries:
 
 ### Build everything
 
-If you want all build flavors (normal + all nolibc variants) in one go:
+If you want the normal binaries plus the nolibc decoder in one go:
 
 ```sh
 ./scripts/build_all.sh
@@ -61,38 +61,6 @@ make nolibc
 ```
 
 This produces `decoder_nolibc`.
-
-### Tiny (smaller, no RGB)
-
-If you want something smaller (but without RGB/PPM/PNG output):
-
-```sh
-make nolibc_tiny
-```
-
-This produces `decoder_nolibc_tiny` (supports `-info`, `-yuv`, `-yuvf`).
-
-### Ultra (tiny, syscall-only)
-
-On Linux x86_64 you can also build a very small, static, syscall-only binary that writes PNG by default.
-
-On macOS (or other non-Linux platforms), `make ultra` builds a **portable libc-based** ultra binary with the same CLI/output behavior (but it is not syscall-only/static).
-
-```sh
-make ultra
-```
-
-This produces:
-
-- `decoder_nolibc_ultra`
-- `encoder_nolibc_ultra`
-- (and also builds the normal `encoder`)
-
-The ultra decoder is intended to be run as:
-
-```sh
-./decoder_nolibc_ultra input.webp out.png
-```
 
 ## Usage
 

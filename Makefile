@@ -37,12 +37,6 @@ ENC_M09_MODEENC_BIN := build/enc_m09_modeenc
 ENC_M09_BPREDENC_BIN := build/enc_m09_bpredenc
 NOLIBC_BUILD_DIR := build/nolibc
 NOLIBC_BIN := decoder_nolibc
-NOLIBC_TINY_BUILD_DIR := build/nolibc_tiny
-NOLIBC_TINY_BIN := decoder_nolibc_tiny
-NOLIBC_ULTRA_BUILD_DIR := build/nolibc_ultra
-NOLIBC_ULTRA_BIN := decoder_nolibc_ultra
-ENC_NOLIBC_ULTRA_BUILD_DIR := build/nolibc_ultra_enc
-ENC_NOLIBC_ULTRA_BIN := encoder_nolibc_ultra
 
 VP8_DECODER_SHARED_SRC := \
 	src/vp8/vp8_quant.c \
@@ -79,7 +73,7 @@ CFLAGS_COMMON := -std=c11 -Wall -Wextra -Wpedantic -Werror \
 
 LDFLAGS_COMMON := -flto
 
-.PHONY: all clean nolibc nolibc_tiny nolibc_ultra ultra test
+.PHONY: all clean nolibc test
 .PHONY: enc_pngdump
 .PHONY: enc_png2ppm
 .PHONY: enc_quality_metrics
@@ -97,7 +91,7 @@ LDFLAGS_COMMON := -flto
 
 all: $(BIN) $(ENCODER)
 
-test: all ultra \
+test: all nolibc \
 	enc_pngdump enc_png2ppm enc_quality_metrics enc_webpwrap enc_boolselftest \
 	enc_m03_miniframe enc_m04_miniframe enc_m05_yuvdump enc_m06_intradump \
 	enc_m07_quantdump enc_m08_tokentest enc_m09_dcenc enc_m09_modeenc enc_m09_bpredenc
@@ -136,24 +130,11 @@ enc_m09_bpredenc: $(ENC_M09_BPREDENC_BIN)
 
 ifeq ($(NOLIBC_SUPPORTED),1)
 nolibc: $(NOLIBC_BIN)
-
-nolibc_tiny: $(NOLIBC_TINY_BIN)
-
-nolibc_ultra: $(NOLIBC_ULTRA_BIN)
 else
-nolibc nolibc_tiny nolibc_ultra:
+nolibc:
 	@echo "error: nolibc targets are supported only on Linux x86_64" >&2
-	@echo "hint: use 'make' (normal libc build) or 'make ultra' (portable ultra build)" >&2
+	@echo "hint: use 'make' for the normal libc build" >&2
 	@exit 2
-endif
-
-# Friendly alias: `make ultra` builds the tiny PNG-by-default syscall-only binary,
-# and also builds both the normal (libc) encoder and a nolibc ultra encoder.
-ifeq ($(NOLIBC_SUPPORTED),1)
-ultra: nolibc_ultra $(ENC_NOLIBC_ULTRA_BIN) $(ENCODER)
-else
-.PHONY: ultra_portable
-ultra: ultra_portable $(ENCODER)
 endif
 
 $(BIN): $(OBJ)
@@ -439,71 +420,6 @@ NOLIBC_LDFLAGS := -nostdlib -static \
 $(NOLIBC_BIN): $(NOLIBC_OBJ)
 	$(CC) $(NOLIBC_LTO) -o $@ $(NOLIBC_OBJ) $(NOLIBC_LDFLAGS) -lgcc
 
-NOLIBC_TINY_SRC := $(filter-out \
-	src/m08_yuv2rgb_ppm/yuv2rgb_ppm.c \
-	src/m09_png/yuv2rgb_png.c,\
-	$(SRC)) \
-	src/nolibc/syscall_glue.c
-
-NOLIBC_TINY_OBJ := $(patsubst src/%.c,$(NOLIBC_TINY_BUILD_DIR)/%.o,$(filter %.c,$(NOLIBC_TINY_SRC))) \
-	$(NOLIBC_TINY_BUILD_DIR)/nolibc/start.o
-
-NOLIBC_TINY_CFLAGS := $(NOLIBC_CFLAGS) -DDECODER_TINY
-
-# Ultra is a very small, PNG-by-default, nolibc build. Allow extra size-tuning flags here.
-# You can pass additional flags at build time, e.g.
-#   make nolibc_ultra ULTRA_EXTRA_CFLAGS='-fno-ipa-cp'
-NOLIBC_ULTRA_CFLAGS := $(NOLIBC_CFLAGS) -DDECODER_ULTRA -fno-inline $(ULTRA_EXTRA_CFLAGS)
-
-$(NOLIBC_TINY_BIN): $(NOLIBC_TINY_OBJ)
-	$(CC) $(NOLIBC_LTO) -o $@ $(NOLIBC_TINY_OBJ) $(NOLIBC_LDFLAGS) -lgcc
-
-NOLIBC_ULTRA_SRC := \
-	src/main_ultra.c \
-	src/common/os_readall.c \
-	$(VP8_DECODER_SHARED_SRC) \
-	src/decoder/webp_container.c \
-	src/decoder/vp8_header.c \
-	src/decoder/bool_decoder.c \
-	src/decoder/vp8_frame_header_basic.c \
-	src/decoder/vp8_tree.c \
-	src/decoder/vp8_tokens.c \
-	src/decoder/vp8_recon.c \
-	src/decoder/vp8_loopfilter.c \
-	src/decoder/yuv2rgb_png.c \
-	src/nolibc/syscall_glue.c
-
-NOLIBC_ULTRA_OBJ := $(patsubst src/%.c,$(NOLIBC_ULTRA_BUILD_DIR)/%.o,$(filter %.c,$(NOLIBC_ULTRA_SRC))) \
-	$(NOLIBC_ULTRA_BUILD_DIR)/nolibc/start.o
-
-ifeq ($(NOLIBC_SUPPORTED),1)
-$(NOLIBC_ULTRA_BIN): $(NOLIBC_ULTRA_OBJ)
-	$(CC) $(NOLIBC_LTO) -o $@ $(NOLIBC_ULTRA_OBJ) $(NOLIBC_LDFLAGS) -lgcc
-
-$(NOLIBC_ULTRA_BUILD_DIR)/%.o: src/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(NOLIBC_ULTRA_CFLAGS) -c $< -o $@
-
-$(NOLIBC_ULTRA_BUILD_DIR)/nolibc/start.o: src/nolibc/start.S
-	@mkdir -p $(dir $@)
-	$(CC) -c $< -o $@
-else
-ULTRA_PORTABLE_DECODER_SRC := $(filter-out src/nolibc/syscall_glue.c,$(NOLIBC_ULTRA_SRC))
-
-ultra_portable: $(NOLIBC_ULTRA_BIN) $(ENC_NOLIBC_ULTRA_BIN)
-
-$(NOLIBC_ULTRA_BIN): $(ULTRA_PORTABLE_DECODER_SRC)
-	$(CC) $(CFLAGS_COMMON) -Os -o $@ $(ULTRA_PORTABLE_DECODER_SRC) $(LDFLAGS_COMMON)
-endif
-
-$(NOLIBC_TINY_BUILD_DIR)/%.o: src/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(NOLIBC_TINY_CFLAGS) -c $< -o $@
-
-$(NOLIBC_TINY_BUILD_DIR)/nolibc/start.o: src/nolibc/start.S
-	@mkdir -p $(dir $@)
-	$(CC) -c $< -o $@
-
 $(NOLIBC_BUILD_DIR)/%.o: src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(NOLIBC_CFLAGS) -c $< -o $@
@@ -517,46 +433,4 @@ $(BUILD_DIR)/%.o: src/%.c
 	$(CC) $(CFLAGS_COMMON) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(BIN) $(ENCODER) $(NOLIBC_BIN) $(NOLIBC_TINY_BIN) $(NOLIBC_ULTRA_BIN) $(ENC_NOLIBC_ULTRA_BIN)
-
-# --- nolibc ultra encoder ---
-
-ENC_NOLIBC_ULTRA_SRC := \
-	src/encoder_main_ultra.c \
-	$(VP8_ENCODER_SHARED_SRC) \
-	src/encoder/enc_png.c \
-	src/encoder/enc_rgb_to_yuv.c \
-	src/encoder/enc_gamma_tables.c \
-	src/encoder/enc_pad.c \
-	src/encoder/enc_transform.c \
-	src/encoder/enc_quant.c \
-	src/encoder/enc_quality_table.c \
-	src/encoder/enc_vp8_tokens.c \
-	src/encoder/enc_loopfilter.c \
-	src/encoder/enc_recon.c \
-	src/encoder/enc_bool.c \
-	src/encoder/enc_riff.c \
-	src/nolibc/syscall_glue.c
-
-ENC_NOLIBC_ULTRA_OBJ := $(patsubst src/%.c,$(ENC_NOLIBC_ULTRA_BUILD_DIR)/%.o,$(filter %.c,$(ENC_NOLIBC_ULTRA_SRC))) \
-	$(ENC_NOLIBC_ULTRA_BUILD_DIR)/nolibc/start.o
-
-ENC_NOLIBC_ULTRA_CFLAGS := $(NOLIBC_CFLAGS) -DENCODER_ULTRA -fno-inline $(ULTRA_EXTRA_CFLAGS)
-
-ifeq ($(NOLIBC_SUPPORTED),1)
-$(ENC_NOLIBC_ULTRA_BIN): $(ENC_NOLIBC_ULTRA_OBJ)
-	$(CC) $(NOLIBC_LTO) -o $@ $(ENC_NOLIBC_ULTRA_OBJ) $(NOLIBC_LDFLAGS) -lgcc
-
-$(ENC_NOLIBC_ULTRA_BUILD_DIR)/%.o: src/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(ENC_NOLIBC_ULTRA_CFLAGS) -c $< -o $@
-
-$(ENC_NOLIBC_ULTRA_BUILD_DIR)/nolibc/start.o: src/nolibc/start.S
-	@mkdir -p $(dir $@)
-	$(CC) -c $< -o $@
-else
-ULTRA_PORTABLE_ENCODER_SRC := $(filter-out src/nolibc/syscall_glue.c,$(ENC_NOLIBC_ULTRA_SRC))
-
-$(ENC_NOLIBC_ULTRA_BIN): $(ULTRA_PORTABLE_ENCODER_SRC)
-	$(CC) $(CFLAGS_COMMON) -Os -o $@ $(ULTRA_PORTABLE_ENCODER_SRC) $(LDFLAGS_COMMON)
-endif
+	rm -rf $(BUILD_DIR) $(BIN) $(ENCODER) $(NOLIBC_BIN)

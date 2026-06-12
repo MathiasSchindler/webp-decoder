@@ -10,11 +10,7 @@
 #include "../common/os.h"
 #include "../vp8/vp8_yuv_rgb.h"
 
-#ifdef DECODER_ULTRA
-#define PNG_SET_ERRNO(e) ((void)0)
-#else
 #define PNG_SET_ERRNO(e) (errno = (e))
-#endif
 
 static void upsample_rgb_line_pair(const uint8_t* top_y, const uint8_t* bottom_y, const uint8_t* top_u,
                                    const uint8_t* top_v, const uint8_t* cur_u, const uint8_t* cur_v,

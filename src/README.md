@@ -28,8 +28,6 @@ This folder contains the decoder and encoder implementations, now organized by r
 
 ## Entrypoints
 
-- `main.c`: normal decoder CLI
-- `main_ultra.c`: syscall-only decoder CLI (ultra/nolibc)
+- `main.c`: decoder CLI used by both normal and nolibc builds
 - `encoder_main.c`: normal encoder CLI
-- `encoder_main_ultra.c`: syscall-only encoder CLI (ultra/nolibc)
-- `nolibc/`: minimal syscall-only runtime glue used by the ultra builds
+- `nolibc/`: minimal syscall-only runtime glue used by the nolibc build

@@ -3,14 +3,14 @@ set -euo pipefail
 
 # Benchmarks WebP->PNG decode time across all .webp files under ./images.
 # Produces a CSV with one row per file:
-#   file,dwebp_us,decoder_nolibc_ultra_us
+#   file,dwebp_us,decoder_nolibc_us
 #
 # Usage:
 #   scripts/benchmark_decode_png_csv.sh out.csv
 #
 # Env vars:
 #   DWEBP   Path to dwebp (default: "$HOME/libwebp/examples/dwebp")
-#   ULTRA   Path to decoder_nolibc_ultra (default: "./decoder_nolibc_ultra")
+#   NOLIBC  Path to decoder_nolibc (default: "./decoder_nolibc")
 #   RUNS    Runs per decoder per file; script records the minimum (default: 3)
 #
 # Notes:
@@ -19,7 +19,7 @@ set -euo pipefail
 
 OUT_CSV=${1:-bench_decode_png.csv}
 DWEBP=${DWEBP:-"$HOME/libwebp/examples/dwebp"}
-ULTRA=${ULTRA:-"./decoder_nolibc_ultra"}
+NOLIBC=${NOLIBC:-"./decoder_nolibc"}
 RUNS=${RUNS:-3}
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -37,9 +37,9 @@ if [[ ! -x "$DWEBP" ]]; then
   echo "error: dwebp not found/executable: $DWEBP" >&2
   exit 2
 fi
-if [[ ! -x "$ULTRA" ]]; then
-  echo "error: decoder_nolibc_ultra not found/executable: $ULTRA" >&2
-  echo "hint: run: make nolibc_ultra" >&2
+if [[ ! -x "$NOLIBC" ]]; then
+  echo "error: decoder_nolibc not found/executable: $NOLIBC" >&2
+  echo "hint: run: make nolibc" >&2
   exit 2
 fi
 if [[ ! -d images ]]; then
@@ -112,7 +112,7 @@ tmpdir=$(mktemp -d "$ARTIFACT_DIR/tmp.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
 
 {
-  echo "file,dwebp_us,decoder_nolibc_ultra_us"
+  echo "file,dwebp_us,decoder_nolibc_us"
 
   i=0
   while IFS= read -r -d '' f; do
@@ -120,11 +120,11 @@ trap 'rm -rf "$tmpdir"' EXIT
 
     # Use unique output paths to avoid accidental reuse.
     out_d="$tmpdir/dwebp_$i.png"
-    out_u="$tmpdir/ultra_$i.png"
+    out_u="$tmpdir/nolibc_$i.png"
 
     # dwebp: output format inferred by extension.
     t_d=$(run_min_us "$tmpdir" "$DWEBP" "$f" -o "$out_d" -quiet)
-    t_u=$(run_min_us "$tmpdir" "$ULTRA" "$f" "$out_u")
+    t_u=$(run_min_us "$tmpdir" "$NOLIBC" -png "$f" "$out_u")
 
     printf "%s,%s,%s\n" "$(csv_escape "$f")" "$t_d" "$t_u"
   done < <(find images -type f -name '*.webp' -print0 | sort -z)

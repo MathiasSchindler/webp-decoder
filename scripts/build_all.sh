@@ -12,10 +12,4 @@ make -s all
 echo "== build: nolibc ==" >&2
 make -s nolibc
 
-echo "== build: nolibc_tiny ==" >&2
-make -s nolibc_tiny
-
-echo "== build: ultra ==" >&2
-make -s ultra
-
 echo "OK: built all binaries" >&2

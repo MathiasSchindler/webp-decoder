@@ -4,7 +4,7 @@ set -euo pipefail
 # Build a minimal source release archive.
 #
 # Includes:
-# - All sources required to build decoder/encoder (normal + ultra)
+# - All sources required to build decoder/encoder (normal + nolibc)
 # - SSIM/PSNR tooling (enc_png2ppm + enc_quality_metrics) and the harness script
 #
 # Excludes:
@@ -34,7 +34,7 @@ cat >"$DEST/RELEASE_README.txt" <<EOF
 webp-decoder source release
 
 Included:
-- src/: decoder + encoder sources (normal + ultra)
+- src/: decoder + encoder sources (normal + nolibc)
 - Makefile
 - tools/enc_png2ppm.c and tools/enc_quality_metrics.c (PSNR/SSIM toolchain)
 - scripts/common.sh and scripts/enc_vs_cwebp_quality.sh (PSNR/SSIM harness)
@@ -45,7 +45,7 @@ Excluded:
 - Most scripts/ (gates, benchmarks, etc.)
 
 Build:
-  make all ultra
+  make all nolibc
 
 Build SSIM/PSNR tooling:
   make enc_png2ppm enc_quality_metrics
