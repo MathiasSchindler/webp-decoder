@@ -25,6 +25,7 @@ static void usage(void) {
 	fmt_write_str(2, "  decoder -dump_mb <file.webp> [mb_index]\n");
 	fmt_write_str(2, "  decoder -ppm <file.webp> <out.ppm>\n");
 	fmt_write_str(2, "  decoder -png <file.webp> <out.png>\n");
+	fmt_write_str(2, "  decoder -profile_stages <file.webp> <out.ppm>\n");
 	fmt_write_str(2, "  decoder -diff_mb <file.webp> <oracle.i420>\n");
 }
 
@@ -756,6 +757,134 @@ static int cmd_png(const char* in_path, const char* out_path) {
 	return 0;
 }
 
+static void print_profile_row(const char* kind, const char* name, uint64_t value) {
+	fmt_write_str(1, kind);
+	fmt_write_str(1, ",");
+	fmt_write_str(1, name);
+	fmt_write_str(1, ",");
+	fmt_write_u64(1, value);
+	fmt_write_nl(1);
+}
+
+static int cmd_profile_stages(const char* in_path, const char* out_path) {
+	uint64_t total_start = os_monotonic_raw_ns();
+	uint64_t t0 = total_start;
+	ByteSpan file;
+	file.data = NULL;
+	file.size = 0;
+	if (os_map_file_readonly(in_path, &file) != 0) {
+		fmt_write_str(2, "error: cannot open/map file\n");
+		return 1;
+	}
+	uint64_t input_map_ns = os_monotonic_raw_ns() - t0;
+
+	WebPContainer c;
+	t0 = os_monotonic_raw_ns();
+	int rc = webp_parse_simple_lossy(file, &c);
+	uint64_t container_parse_ns = os_monotonic_raw_ns() - t0;
+	if (rc != 0) {
+		fmt_write_str(2, "error: not a supported simple lossy WebP (RIFF/WEBP + single VP8 chunk)\n");
+		os_unmap_file(file);
+		return 1;
+	}
+
+	ByteSpan vp8_payload = {
+		.data = file.data + c.vp8_chunk_offset,
+		.size = c.vp8_chunk_size,
+	};
+
+	Vp8KeyFrameHeader kf;
+	t0 = os_monotonic_raw_ns();
+	if (vp8_parse_keyframe_header(vp8_payload, &kf) != 0 || !kf.is_key_frame) {
+		fmt_write_str(2, "error: VP8 key-frame header parse failed\n");
+		os_unmap_file(file);
+		return 1;
+	}
+	uint64_t keyframe_header_ns = os_monotonic_raw_ns() - t0;
+
+	Vp8DecodedFrame decoded;
+	t0 = os_monotonic_raw_ns();
+	if (vp8_decode_decoded_frame(vp8_payload, &decoded) != 0) {
+		fmt_write_str(2, "error: VP8 macroblock/token decode failed\n");
+		os_unmap_file(file);
+		return 1;
+	}
+	uint64_t entropy_token_decode_ns = os_monotonic_raw_ns() - t0;
+
+	Yuv420Image unfiltered;
+	t0 = os_monotonic_raw_ns();
+	if (vp8_reconstruct_keyframe_yuv(&kf, &decoded, &unfiltered) != 0) {
+		fmt_write_str(2, "error: VP8 reconstruction failed\n");
+		vp8_decoded_frame_free(&decoded);
+		os_unmap_file(file);
+		return 1;
+	}
+	uint64_t reconstruct_ns = os_monotonic_raw_ns() - t0;
+
+	Yuv420Image filtered;
+	t0 = os_monotonic_raw_ns();
+	if (vp8_reconstruct_keyframe_yuv_filtered(&kf, &decoded, &filtered) != 0) {
+		fmt_write_str(2, "error: VP8 reconstruction/loopfilter failed\n");
+		yuv420_free(&unfiltered);
+		vp8_decoded_frame_free(&decoded);
+		os_unmap_file(file);
+		return 1;
+	}
+	uint64_t reconstruct_loopfilter_ns = os_monotonic_raw_ns() - t0;
+	uint64_t loopfilter_derived_ns = (reconstruct_loopfilter_ns > reconstruct_ns) ? (reconstruct_loopfilter_ns - reconstruct_ns) : 0;
+	yuv420_free(&unfiltered);
+
+	t0 = os_monotonic_raw_ns();
+	int fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	uint64_t output_open_ns = os_monotonic_raw_ns() - t0;
+	if (fd < 0) {
+		fmt_write_str(2, "error: cannot open output file\n");
+		yuv420_free(&filtered);
+		vp8_decoded_frame_free(&decoded);
+		os_unmap_file(file);
+		return 1;
+	}
+
+	Yuv420PpmProfile ppm_profile;
+	if (yuv420_write_ppm_fd_profiled(fd, &filtered, &ppm_profile) != 0) {
+		fmt_write_str(2, "error: PPM write failed\n");
+		(void)close(fd);
+		yuv420_free(&filtered);
+		vp8_decoded_frame_free(&decoded);
+		os_unmap_file(file);
+		return 1;
+	}
+	t0 = os_monotonic_raw_ns();
+	(void)close(fd);
+	uint64_t output_close_ns = os_monotonic_raw_ns() - t0;
+
+	uint64_t width = filtered.width;
+	uint64_t height = filtered.height;
+	yuv420_free(&filtered);
+	vp8_decoded_frame_free(&decoded);
+	os_unmap_file(file);
+	uint64_t total_ns = os_monotonic_raw_ns() - total_start;
+
+	fmt_write_str(1, "kind,name,value_ns\n");
+	print_profile_row("meta", "width", width);
+	print_profile_row("meta", "height", height);
+	print_profile_row("stage", "input_map", input_map_ns);
+	print_profile_row("stage", "container_parse", container_parse_ns);
+	print_profile_row("stage", "keyframe_header_parse", keyframe_header_ns);
+	print_profile_row("stage", "entropy_token_decode", entropy_token_decode_ns);
+	print_profile_row("stage", "reconstruction_idct_prediction", reconstruct_ns);
+	print_profile_row("stage", "reconstruction_plus_loopfilter", reconstruct_loopfilter_ns);
+	print_profile_row("stage", "loopfilter_derived", loopfilter_derived_ns);
+	print_profile_row("stage", "output_open", output_open_ns);
+	print_profile_row("stage", "ppm_header_write", ppm_profile.header_write_ns);
+	print_profile_row("stage", "yuv_to_rgb_output_format", ppm_profile.yuv_to_rgb_ns);
+	print_profile_row("stage", "ppm_pixel_writes", ppm_profile.pixel_write_ns);
+	print_profile_row("stage", "ppm_output_total", ppm_profile.total_ns);
+	print_profile_row("stage", "output_close", output_close_ns);
+	print_profile_row("stage", "total_profiled", total_ns);
+	return 0;
+}
+
 static uint64_t u64_abs_diff_u8(uint8_t a, uint8_t b) { return (a >= b) ? (uint64_t)(a - b) : (uint64_t)(b - a); }
 
 static int cmd_diff_mb(const char* webp_path, const char* oracle_i420_path) {
@@ -935,6 +1064,13 @@ int main(int argc, char** argv) {
 	if (argc < 3) {
 		usage();
 		return 2;
+	}
+	if (strcmp(argv[1], "-profile_stages") == 0) {
+		if (argc != 4) {
+			usage();
+			return 2;
+		}
+		return cmd_profile_stages(argv[2], argv[3]);
 	}
 	if (argv[1][0] == '-' && argv[1][1] == 'i' && argv[1][2] == 'n' && argv[1][3] == 'f' &&
 	    argv[1][4] == 'o' && argv[1][5] == '\0') {

@@ -306,22 +306,23 @@ typedef struct {
 } ReconCoeffView;
 
 static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFrame* decoded, const DequantFactors dqf[4],
-                                            uint32_t mb, const ReconCoeffView* coeffs) {
+                                            uint32_t mb, const Vp8MacroblockSyntax* syntax,
+                                            const ReconCoeffView* coeffs) {
 	uint32_t mb_cols = decoded->mb_cols;
 	uint32_t mb_r = mb / mb_cols;
 	uint32_t mb_c = mb - mb_r * mb_cols;
-	uint32_t seg = decoded->segmentation_enabled ? (uint32_t)(decoded->segment_id[mb] & 3u) : 0u;
+	uint32_t seg = decoded->segmentation_enabled ? (uint32_t)(syntax->segment_id & 3u) : 0u;
 	const DequantFactors* q = &dqf[seg];
 
 	uint32_t x = mb_c * 16u;
 	uint32_t y = mb_r * 16u;
 
-	uint8_t ymode = decoded->ymode[mb];
+	uint8_t ymode = syntax->ymode;
 	if (ymode == 4) {
 		for (uint32_t sb_r = 0; sb_r < 4; sb_r++) {
 			for (uint32_t sb_c = 0; sb_c < 4; sb_c++) {
 				uint32_t sb = sb_r * 4u + sb_c;
-				uint8_t mode = decoded->bmode[mb * 16u + sb];
+				uint8_t mode = syntax->bmode ? syntax->bmode[sb] : 0;
 				uint32_t sx = x + sb_c * 4u;
 				uint32_t sy = y + sb_r * 4u;
 
@@ -444,7 +445,7 @@ static void reconstruct_macroblock_keyframe(Yuv420Image* pad, const Vp8DecodedFr
 	get_left_col(pad->v, pad->stride_uv, ch, cx, cy, 8, 129, L8v);
 	int have_above_c = (cy != 0);
 	int have_left_c = (cx != 0);
-	switch (decoded->uv_mode[mb]) {
+	switch (syntax->uv_mode) {
 		case 0:
 			pred_dc(pred_u, 8, A8u, L8u, 8, have_above_c, have_left_c, 127, 129);
 			pred_dc(pred_vp, 8, A8v, L8v, 8, have_above_c, have_left_c, 127, 129);
@@ -560,7 +561,15 @@ static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, co
 				.u = decoded->coeff_u + (size_t)mb * 4u * 16u,
 				.v = decoded->coeff_v + (size_t)mb * 4u * 16u,
 			};
-			reconstruct_macroblock_keyframe(&pad, decoded, dqf, mb, &coeffs);
+			Vp8MacroblockSyntax syntax = {
+				.segment_id = decoded->segment_id ? decoded->segment_id[mb] : 0,
+				.has_coeff = decoded->has_coeff ? decoded->has_coeff[mb] : 0,
+				.has_y2 = (uint8_t)(decoded->ymode[mb] != 4),
+				.ymode = decoded->ymode[mb],
+				.uv_mode = decoded->uv_mode[mb],
+				.bmode = decoded->bmode ? (decoded->bmode + (size_t)mb * 16u) : NULL,
+			};
+			reconstruct_macroblock_keyframe(&pad, decoded, dqf, mb, &syntax, &coeffs);
 		}
 	}
 
@@ -572,9 +581,22 @@ typedef struct {
 	Yuv420Image pad;
 	DequantFactors dqf[4];
 	int initialized;
+	int apply_loopfilter;
 } FusedReconState;
 
-static int fused_recon_visit(void* user, uint32_t mb_index, const Vp8MacroblockCoeffs* coeffs) {
+static uint8_t* alloc_mb_flags(uint32_t mb_total) {
+	size_t bytes = 0;
+	if (checked_mul_size((size_t)mb_total, sizeof(uint8_t), &bytes) != 0) {
+		errno = ENOMEM;
+		return NULL;
+	}
+	uint8_t* p = (uint8_t*)calloc(1, bytes);
+	if (!p) errno = ENOMEM;
+	return p;
+}
+
+static int fused_recon_visit(void* user, uint32_t mb_index, const Vp8MacroblockSyntax* syntax,
+                             const Vp8MacroblockCoeffs* coeffs) {
 	FusedReconState* state = (FusedReconState*)user;
 	if (!state->initialized) {
 		uint32_t padded_w = state->decoded->mb_cols * 16u;
@@ -582,7 +604,22 @@ static int fused_recon_visit(void* user, uint32_t mb_index, const Vp8MacroblockC
 		if (yuv420_alloc_internal(&state->pad, padded_w, padded_h, 0) != 0) return -1;
 		memset(state->dqf, 0, sizeof(state->dqf));
 		dequant_init(state->dqf, state->decoded);
+		if (state->apply_loopfilter) {
+			uint32_t mb_total = state->decoded->mb_total;
+			if (state->decoded->segmentation_enabled) {
+				state->decoded->segment_id = alloc_mb_flags(mb_total);
+				if (!state->decoded->segment_id) return -1;
+			}
+			state->decoded->has_coeff = alloc_mb_flags(mb_total);
+			state->decoded->ymode = alloc_mb_flags(mb_total);
+			if (!state->decoded->has_coeff || !state->decoded->ymode) return -1;
+		}
 		state->initialized = 1;
+	}
+	if (state->apply_loopfilter) {
+		if (state->decoded->segment_id) state->decoded->segment_id[mb_index] = syntax->segment_id;
+		state->decoded->has_coeff[mb_index] = syntax->has_coeff;
+		state->decoded->ymode[mb_index] = syntax->ymode;
 	}
 
 	ReconCoeffView view = {
@@ -591,7 +628,7 @@ static int fused_recon_visit(void* user, uint32_t mb_index, const Vp8MacroblockC
 		.u = &coeffs->u[0][0],
 		.v = &coeffs->v[0][0],
 	};
-	reconstruct_macroblock_keyframe(&state->pad, state->decoded, state->dqf, mb_index, &view);
+	reconstruct_macroblock_keyframe(&state->pad, state->decoded, state->dqf, mb_index, syntax, &view);
 	return 0;
 }
 
@@ -610,7 +647,8 @@ static int vp8_decode_reconstruct_keyframe_yuv_internal(ByteSpan vp8_payload, Yu
 	FusedReconState state;
 	memset(&state, 0, sizeof(state));
 	state.decoded = &decoded;
-	if (vp8_decode_decoded_frame_visit_coeffs(vp8_payload, &decoded, fused_recon_visit, &state) != 0) {
+	state.apply_loopfilter = apply_loopfilter;
+	if (vp8_decode_decoded_frame_visit_macroblocks(vp8_payload, &decoded, fused_recon_visit, &state) != 0) {
 		yuv420_free(&state.pad);
 		vp8_decoded_frame_free(&decoded);
 		return -1;

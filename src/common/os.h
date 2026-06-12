@@ -14,3 +14,6 @@ void os_unmap_file(ByteSpan span);
 
 // Writes all bytes to fd. Returns 0 on success.
 int os_write_all(int fd, const void* buf, size_t len);
+
+// Monotonic nanosecond timestamp for opt-in profiling.
+uint64_t os_monotonic_raw_ns(void);

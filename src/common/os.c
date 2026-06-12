@@ -1,3 +1,7 @@
+#ifndef NO_LIBC
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "os.h"
 
 #include <errno.h>
@@ -5,6 +9,9 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#ifndef NO_LIBC
+#include <time.h>
+#endif
 
 int os_map_file_readonly(const char* path, ByteSpan* out_span) {
 	if (!out_span) return -1;
@@ -60,4 +67,33 @@ int os_write_all(int fd, const void* buf, size_t len) {
 		off += (size_t)n;
 	}
 	return 0;
+}
+
+uint64_t os_monotonic_raw_ns(void) {
+#ifdef NO_LIBC
+	struct os_timespec {
+		long tv_sec;
+		long tv_nsec;
+	} ts;
+	enum {
+		os_nr_clock_gettime = 228,
+		os_clock_monotonic_raw = 4,
+	};
+	long ret;
+	__asm__ volatile("syscall"
+	                 : "=a"(ret)
+	                 : "a"(os_nr_clock_gettime), "D"(os_clock_monotonic_raw), "S"(&ts)
+	                 : "rcx", "r11", "memory");
+	if (ret < 0) return 0;
+	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+#else
+	struct timespec ts;
+#ifdef CLOCK_MONOTONIC_RAW
+	const clockid_t clock_id = CLOCK_MONOTONIC_RAW;
+#else
+	const clockid_t clock_id = CLOCK_MONOTONIC;
+#endif
+	if (clock_gettime(clock_id, &ts) != 0) return 0;
+	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+#endif
 }

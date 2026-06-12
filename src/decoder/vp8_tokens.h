@@ -105,7 +105,19 @@ typedef struct {
 	int16_t v[4][16];
 } Vp8MacroblockCoeffs;
 
+typedef struct {
+	uint8_t segment_id;
+	uint8_t skip_coeff;
+	uint8_t has_coeff;
+	uint8_t has_y2;
+	uint8_t ymode;
+	uint8_t uv_mode;
+	const uint8_t* bmode; // 16 entries when ymode==4, otherwise NULL.
+} Vp8MacroblockSyntax;
+
 typedef int (*Vp8MacroblockCoeffVisitor)(void* user, uint32_t mb_index, const Vp8MacroblockCoeffs* coeffs);
+typedef int (*Vp8MacroblockVisitor)(void* user, uint32_t mb_index, const Vp8MacroblockSyntax* syntax,
+                                    const Vp8MacroblockCoeffs* coeffs);
 
 // Parses macroblock prediction data + coefficient partitions (key frames only)
 // and computes a deterministic hash over decoded coefficient values.
@@ -123,5 +135,11 @@ int vp8_decode_decoded_frame(ByteSpan vp8_payload, Vp8DecodedFrame* out);
 // vp8_decoded_frame_free(). The callback is invoked in raster macroblock order.
 int vp8_decode_decoded_frame_visit_coeffs(ByteSpan vp8_payload, Vp8DecodedFrame* out,
                                           Vp8MacroblockCoeffVisitor visitor, void* user);
+
+// Decodes keyframe macroblock syntax + coefficients and streams both records to
+// `visitor`. This macroblock-local path fills frame header/loopfilter metadata in
+// `out` but does not allocate frame-sized syntax or coefficient arrays.
+int vp8_decode_decoded_frame_visit_macroblocks(ByteSpan vp8_payload, Vp8DecodedFrame* out,
+                                              Vp8MacroblockVisitor visitor, void* user);
 
 void vp8_decoded_frame_free(Vp8DecodedFrame* f);

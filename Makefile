@@ -66,6 +66,7 @@ SRC := \
 	src/decoder/vp8_tokens.c \
 	src/decoder/vp8_recon.c \
 	src/decoder/vp8_loopfilter.c \
+	src/decoder/vp8_loopfilter_x86.c \
 	src/decoder/yuv2rgb_ppm.c \
 	src/decoder/yuv2rgb_png.c
 

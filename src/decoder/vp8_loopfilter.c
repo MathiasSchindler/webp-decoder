@@ -1,4 +1,5 @@
 #include "vp8_loopfilter.h"
+#include "vp8_loopfilter_x86.h"
 
 #include <errno.h>
 #include <stddef.h>
@@ -128,6 +129,12 @@ static void filter_subblock_v_edge(uint8_t* src_q0, int stride, int edge_limit, 
 
 static void filter_mb_h_edge(uint8_t* src_q0, int stride, int edge_limit, int interior_limit, int hev_threshold,
                             int size_blocks) {
+#if defined(VP8_LOOPFILTER_HAVE_SSE2)
+	if (size_blocks == 2) {
+		vp8_filter_mb_h_edge_sse2(src_q0, stride, edge_limit, interior_limit, hev_threshold);
+		return;
+	}
+#endif
 	for (int i = 0; i < 8 * size_blocks; i++) {
 		if (normal_threshold(src_q0, stride, edge_limit, interior_limit)) {
 			if (high_edge_variance(src_q0, stride, hev_threshold))
@@ -141,6 +148,12 @@ static void filter_mb_h_edge(uint8_t* src_q0, int stride, int edge_limit, int in
 
 static void filter_subblock_h_edge(uint8_t* src_q0, int stride, int edge_limit, int interior_limit, int hev_threshold,
                                   int size_blocks) {
+#if defined(VP8_LOOPFILTER_HAVE_SSE2)
+	if (size_blocks == 2) {
+		vp8_filter_subblock_h_edge_sse2(src_q0, stride, edge_limit, interior_limit, hev_threshold);
+		return;
+	}
+#endif
 	for (int i = 0; i < 8 * size_blocks; i++) {
 		if (normal_threshold(src_q0, stride, edge_limit, interior_limit)) {
 			filter_common(src_q0, stride, high_edge_variance(src_q0, stride, hev_threshold));
@@ -157,10 +170,14 @@ static void filter_v_edge_simple(uint8_t* src_q0, int stride, int filter_limit) 
 }
 
 static void filter_h_edge_simple(uint8_t* src_q0, int stride, int filter_limit) {
+#if defined(VP8_LOOPFILTER_HAVE_SSE2)
+	vp8_filter_h_edge_simple_sse2(src_q0, stride, filter_limit);
+#else
 	for (int i = 0; i < 16; i++) {
 		if (simple_threshold(src_q0, stride, filter_limit)) filter_common(src_q0, stride, 1);
 		src_q0 += 1;
 	}
+#endif
 }
 
 static void calc_params_keyframe(const Vp8DecodedFrame* decoded, uint32_t mb, int* edge_limit, int* interior_limit,

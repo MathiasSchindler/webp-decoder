@@ -26,8 +26,9 @@ Core VP8/WebP decoding (lossy still images):
   - Built-in PNG output (`-png`) using a minimal PNG writer (RGB8, filter=0, zlib stored blocks)
 - Pixel-output commands now use a fused decode+reconstruct path that streams
   macroblock coefficients and avoids frame-sized coefficient arrays.
-- x86_64 builds include an optional SSE2 helper for the YUV-to-RGB hot path;
-  `NATIVE=0` builds still compile with the baseline x86-64 ISA.
+- x86_64 builds include guarded SSE2 helpers for horizontal loopfilter edges
+  and the YUV-to-RGB hot path; `NATIVE=0` builds still compile with the
+  baseline x86-64 ISA.
 
 Verification (oracle-based):
 
@@ -36,14 +37,15 @@ Verification (oracle-based):
 - PPM parity vs `dwebp -ppm` across the corpus
 - PNG correctness validated by decoding PNG and comparing bytes to already-oracle-validated RGB (PPM path)
 
-Engineering / build system milestones:
+Engineering / build system status:
 
-- Repo hygiene for publication (README, license, ignore rules)
-- Multiple build targets:
-  - `make` builds the normal libc tool (`decoder`)
-  - `make nolibc` builds a static Linux x86_64 syscall-only variant (`decoder_nolibc`)
-  - `make nolibc_tiny` builds a smaller YUV-only syscall build (`decoder_nolibc_tiny`)
-  - `make ultra` builds a very small PNG-by-default syscall build (`decoder_nolibc_ultra`)
+- Repo hygiene for publication (README, license, ignore rules).
+- `make` builds static Linux x86_64 syscall-only `build/decoder` and
+  `build/encoder` binaries. The default decoder is speed-oriented
+  (`-O3 -march=native`); `make NATIVE=0 all` keeps the decoder on baseline
+  `-march=x86-64` while still compiling the guarded SSE2 files.
+- `make test` runs the decoder/encoder oracle gates; keep `TMPDIR` inside
+  `build/test-artifacts/_tmp` for reproducible local validation.
 
 ## Current scope and known limitations
 
@@ -95,16 +97,20 @@ Local snapshot after broadening the decoder gates:
 
 ## Current speed snapshot
 
-Latest local Commons stage profile:
+Latest local Commons stage/core profile:
 
-- Command: `python3 scripts/profile_decode_stages.py --runs 3 --out-dir build/profile/commons-decoder-stage-profile`
+- Command: `python3 scripts/profile_decode_stages.py --runs 3 --out-dir build/profile/final-215mp-integration-20260612T1217`
 - Corpus: 28 generated Commons WebPs, 378.031 MP per run.
-- Our cumulative throughput: `-yuv` 169.63 MP/s, `-yuvf` 99.84 MP/s,
-  `-ppm` 82.28 MP/s, `-png` 57.76 MP/s.
-- Comparative PPM throughput: libwebp API 214.88 MP/s, ffmpeg 76.53 MP/s,
-  ImageMagick 102.52 MP/s.
-- Remaining largest local deltas: PNG output (~2.758 s), loopfilter (~1.558 s),
-  and RGB/PPM output (~0.808 s) over the 378 MP corpus.
+- Our cumulative throughput: `-yuv` 173.37 MP/s, `-yuvf` 113.80 MP/s,
+  `-ppm` 93.22 MP/s, `-png` 62.69 MP/s.
+- System libwebp core throughput: YUV no-filter 326.12 MP/s, YUV filtered
+  279.65 MP/s, RGB buffer 216.25 MP/s, RGB+PPM 214.95 MP/s.
+- Comparative PPM throughput: ffmpeg 76.78 MP/s, ImageMagick 101.59 MP/s.
+- Remaining largest local deltas: PNG output (~2.709 s), loopfilter (~1.141 s),
+  RGB/PPM output (~0.734 s), token decode (~1.555 s), and reconstruction
+  (~1.029 s) over the 378 MP corpus. Internal `-profile_stages` reports
+  YUV-to-RGB formatting at ~0.730 s and PPM pixel writes at ~0.025 s, so PPM
+  writes are not masking the core decode/formatting gap.
 
 Treat these as local-machine guideposts, not portable absolute performance
 claims.

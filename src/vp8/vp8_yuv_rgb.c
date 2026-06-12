@@ -34,6 +34,10 @@ static void vp8_upsample_rgb_line_only(const uint8_t* top_y,
                                        const uint8_t* cur_v,
                                        uint8_t* top_dst,
                                        uint32_t len) {
+#if defined(VP8_YUV_RGB_HAVE_SSE2)
+	vp8_upsample_rgb_line_sse2(top_y, top_u, top_v, cur_u, cur_v, top_dst, len);
+	return;
+#endif
 	if (len == 0) return;
 
 	const uint32_t last_pixel_pair = (len - 1u) >> 1;
@@ -95,6 +99,10 @@ static void vp8_upsample_rgb_line_pair_full(const uint8_t* top_y,
                                             uint8_t* top_dst,
                                             uint8_t* bottom_dst,
                                             uint32_t len) {
+#if defined(VP8_YUV_RGB_HAVE_SSE2)
+	vp8_upsample_rgb_line_pair_sse2(top_y, bottom_y, top_u, top_v, cur_u, cur_v, top_dst, bottom_dst, len);
+	return;
+#endif
 	if (len == 0) return;
 
 	const uint32_t last_pixel_pair = (len - 1u) >> 1;
@@ -127,23 +135,6 @@ static void vp8_upsample_rgb_line_pair_full(const uint8_t* top_y,
 		const uint32_t diag_03_u = (avg_u + 2u * (tl_u + u)) >> 3;
 		const uint32_t diag_03_v = (avg_v + 2u * (tl_v + v)) >> 3;
 
-#if defined(VP8_YUV_RGB_HAVE_SSE2)
-		{
-			const uint32_t pix0 = 2u * x - 1u;
-			const uint32_t pix1 = 2u * x + 0u;
-			const uint8_t tu0 = (uint8_t)((diag_12_u + tl_u) >> 1);
-			const uint8_t tv0 = (uint8_t)((diag_12_v + tl_v) >> 1);
-			const uint8_t tu1 = (uint8_t)((diag_03_u + t_u) >> 1);
-			const uint8_t tv1 = (uint8_t)((diag_03_v + t_v) >> 1);
-			const uint8_t bu0 = (uint8_t)((diag_03_u + l_u) >> 1);
-			const uint8_t bv0 = (uint8_t)((diag_03_v + l_v) >> 1);
-			const uint8_t bu1 = (uint8_t)((diag_12_u + u) >> 1);
-			const uint8_t bv1 = (uint8_t)((diag_12_v + v) >> 1);
-			vp8_yuv_to_rgb4_sse2(top_y[pix0], tu0, tv0, top_y[pix1], tu1, tv1, bottom_y[pix0], bu0, bv0,
-			                     bottom_y[pix1], bu1, bv1, top_dst + pix0 * 3u, top_dst + pix1 * 3u,
-			                     bottom_dst + pix0 * 3u, bottom_dst + pix1 * 3u);
-		}
-#else
 		{
 			const uint8_t u0 = (uint8_t)((diag_12_u + tl_u) >> 1);
 			const uint8_t v0 = (uint8_t)((diag_12_v + tl_v) >> 1);
@@ -160,7 +151,6 @@ static void vp8_upsample_rgb_line_pair_full(const uint8_t* top_y,
 			vp8_yuv_to_rgb(bottom_y[2u * x - 1u], u0, v0, bottom_dst + (2u * x - 1u) * 3u);
 			vp8_yuv_to_rgb(bottom_y[2u * x + 0u], u1, v1, bottom_dst + (2u * x + 0u) * 3u);
 		}
-#endif
 
 		tl_u = t_u;
 		tl_v = t_v;

@@ -41,11 +41,11 @@ scripts/decoder_quality_parity_report.py
 
 - `profile_decode_stages.py`
   - Profiles our decoder modes over the generated Commons WebP corpus when present, otherwise `images/**/*.webp`.
-  - Records cumulative stages (`-info`, `-yuv`, `-yuvf`, `-ppm`, `-png`), derived loopfilter/RGB/output deltas, tool versions, command templates, corpus metadata, and CSV timings.
-  - Also benchmarks whole-pipeline PPM output against a small system `libwebp` API helper, `ffmpeg`, and ImageMagick when available.
+  - Records cumulative stages (`-info`, `-yuv`, `-yuvf`, `-ppm`, `-png`), optional internal `-profile_stages` timers, derived loopfilter/RGB/output deltas, system-libwebp RGB/YUV core timings, direct core comparison rows, tool versions, command templates, corpus metadata, caveats, and CSV timings.
+  - Also benchmarks whole-pipeline PPM output against the same generated system `libwebp` API helper, `ffmpeg`, and ImageMagick when available.
   - Copies the decoder under test into the artifact directory by default so a concurrent rebuild cannot change the profiled binary mid-run.
   - Run via `make profile-decode-stages` or directly with `python3 scripts/profile_decode_stages.py --runs 5`.
-  - Current local Commons profile artifact: `build/profile/commons-decoder-stage-profile/` (28 generated Commons WebPs, 3 runs). Use its CSVs for stage deltas; do not treat local MP/s as portable.
+  - Current local Commons profile artifact: `build/profile/final-215mp-integration-20260612T1217/` (28 generated Commons WebPs, 3 runs). Use its CSVs for stage/core deltas; do not treat local MP/s as portable. Current medians: ours `-ppm` 93.22 MP/s, system-libwebp RGB+PPM helper 214.95 MP/s; remaining costs are mainly token decode, reconstruction, loopfilter, and RGB formatting rather than PPM writes.
 
 ## Milestone 1 (container parsing)
 

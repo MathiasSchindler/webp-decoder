@@ -21,4 +21,20 @@ void vp8_yuv_to_rgb4_sse2(uint8_t y0,
                           uint8_t* dst1,
                           uint8_t* dst2,
                           uint8_t* dst3);
+void vp8_upsample_rgb_line_sse2(const uint8_t* top_y,
+                                const uint8_t* top_u,
+                                const uint8_t* top_v,
+                                const uint8_t* cur_u,
+                                const uint8_t* cur_v,
+                                uint8_t* top_dst,
+                                uint32_t len);
+void vp8_upsample_rgb_line_pair_sse2(const uint8_t* top_y,
+                                     const uint8_t* bottom_y,
+                                     const uint8_t* top_u,
+                                     const uint8_t* top_v,
+                                     const uint8_t* cur_u,
+                                     const uint8_t* cur_v,
+                                     uint8_t* top_dst,
+                                     uint8_t* bottom_dst,
+                                     uint32_t len);
 #endif

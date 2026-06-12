@@ -18,6 +18,15 @@ static void upsample_rgb_line_pair(const uint8_t* top_y, const uint8_t* bottom_y
 }
 
 int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
+	return yuv420_write_ppm_fd_profiled(fd, img, NULL);
+}
+
+int yuv420_write_ppm_fd_profiled(int fd, const Yuv420Image* img, Yuv420PpmProfile* profile) {
+	uint64_t total_start = 0;
+	if (profile) {
+		memset(profile, 0, sizeof(*profile));
+		total_start = os_monotonic_raw_ns();
+	}
 	if (fd < 0 || !img || !img->y || !img->u || !img->v) {
 		errno = EINVAL;
 		return -1;
@@ -34,11 +43,13 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 
 #ifdef NO_LIBC
 	// Avoid stdio/snprintf in the no-libc build.
+	uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 	if (os_write_all(fd, "P6\n", 3) != 0) return -1;
 	fmt_write_u32(fd, img->width);
 	if (os_write_all(fd, " ", 1) != 0) return -1;
 	fmt_write_u32(fd, img->height);
 	if (os_write_all(fd, "\n255\n", 5) != 0) return -1;
+	if (profile) profile->header_write_ns += os_monotonic_raw_ns() - t0;
 #else
 	char header[64];
 	int n = snprintf(header, sizeof(header), "P6\n%u %u\n255\n", img->width, img->height);
@@ -46,7 +57,9 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 		errno = EINVAL;
 		return -1;
 	}
+	uint64_t t0 = profile ? os_monotonic_raw_ns() : 0;
 	if (os_write_all(fd, header, (size_t)n) != 0) return -1;
+	if (profile) profile->header_write_ns += os_monotonic_raw_ns() - t0;
 #endif
 
 	uint8_t* rows = (uint8_t*)malloc((size_t)row_bytes * 2u);
@@ -66,11 +79,15 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 		const uint8_t* y0 = img->y;
 		const uint8_t* u0 = img->u;
 		const uint8_t* v0 = img->v;
+		t0 = profile ? os_monotonic_raw_ns() : 0;
 		upsample_rgb_line_pair(y0, NULL, u0, v0, u0, v0, top_row, NULL, img->width);
+		if (profile) profile->yuv_to_rgb_ns += os_monotonic_raw_ns() - t0;
+		t0 = profile ? os_monotonic_raw_ns() : 0;
 		if (os_write_all(fd, top_row, row_bytes) != 0) {
 			free(rows);
 			return -1;
 		}
+		if (profile) profile->pixel_write_ns += os_monotonic_raw_ns() - t0;
 	}
 
 	// Process pairs of rows (1,2), (3,4), ... like libwebp's fancy upsampler.
@@ -85,15 +102,20 @@ int yuv420_write_ppm_fd(int fd, const Yuv420Image* img) {
 		const uint8_t* cur_u = img->u + (size_t)cur_cy * img->stride_uv;
 		const uint8_t* cur_v = img->v + (size_t)cur_cy * img->stride_uv;
 
+		t0 = profile ? os_monotonic_raw_ns() : 0;
 		upsample_rgb_line_pair(top_y, bottom_y, top_u, top_v, cur_u, cur_v, top_row, bottom_row, img->width);
+		if (profile) profile->yuv_to_rgb_ns += os_monotonic_raw_ns() - t0;
+		t0 = profile ? os_monotonic_raw_ns() : 0;
 		if (bottom_y != NULL) {
 			if (os_write_all(fd, top_row, (size_t)row_bytes * 2u) != 0) goto write_error;
 		} else {
 			if (os_write_all(fd, top_row, row_bytes) != 0) goto write_error;
 		}
+		if (profile) profile->pixel_write_ns += os_monotonic_raw_ns() - t0;
 	}
 
 	free(rows);
+	if (profile) profile->total_ns = os_monotonic_raw_ns() - total_start;
 	return 0;
 
 write_error:

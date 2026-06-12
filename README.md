@@ -129,19 +129,28 @@ RUNS=5 scripts/benchmark_decoder_modes.py build/profile/final-speed-validation-d
 `perf` was present, but `perf_event_paranoid=4` prevented useful hardware or
 software event profiling; the artifact keeps the attempted `perf stat` output.
 
-Current Commons stage profile after the fused decode/reconstruct integration
-(`build/profile/commons-decoder-stage-profile/`, 2026-06-12):
+Current Commons stage/core profile after the fused decode/reconstruct,
+SSE2 loopfilter, and wider YUV/RGB SIMD integration
+(`build/profile/final-215mp-integration-20260612T1217/`, 2026-06-12):
 
 - Corpus: 28 generated Commons WebPs, 378.031 MP per run; median of 3 runs.
-- Our cumulative modes: `-info` 141.18 MP/s, `-yuv` 169.63 MP/s, `-yuvf`
-  99.84 MP/s, `-ppm` 82.28 MP/s, `-png` 57.76 MP/s.
-- Comparative PPM: libwebp API 214.88 MP/s, ffmpeg 76.53 MP/s,
-  ImageMagick 102.52 MP/s.
-- Derived deltas: loopfilter 1.558 s, RGB/PPM output 0.808 s, PNG output
-  2.758 s.
+- Our cumulative modes: `-info` 144.00 MP/s, `-yuv` 173.37 MP/s, `-yuvf`
+  113.80 MP/s, `-ppm` 93.22 MP/s, `-png` 62.69 MP/s.
+- System libwebp core helpers: YUV no-filter 326.12 MP/s, YUV filtered
+  279.65 MP/s, RGB buffer 216.25 MP/s, RGB+PPM 214.95 MP/s.
+- Comparative PPM: ffmpeg 76.78 MP/s, ImageMagick 101.59 MP/s.
+- Derived deltas: our loopfilter 1.141 s, our RGB/PPM output 0.734 s,
+  our PNG output 2.709 s; internal `-profile_stages` reports token decode at
+  1.555 s, reconstruction at 1.029 s, derived loopfilter at 1.042 s,
+  YUV-to-RGB formatting at 0.730 s, and PPM pixel writes at 0.025 s. Remaining
+  distance to libwebp is mostly core VP8 decode/filter work plus RGB formatting;
+  PPM writes are negligible on this run.
 
 Caveats: these are local machine timings over the generated Commons artifact
-set; `-info` includes coefficient stats and is not a pure header-only decode.
+set and include process startup, file reads, allocation, and decode work. The
+libwebp comparisons use a generated helper linked against system libwebp rather
+than local `../../libwebp/dwebp`; `-info` includes coefficient stats and is not
+a pure header-only decode.
 
 ## Usage
 
@@ -155,6 +164,9 @@ set; `-info` includes coefficient stats and is not a pure header-only decode.
 # RGB outputs
 ./build/decoder -ppm input.webp out.ppm
 ./build/decoder -png input.webp out.png
+
+# Internal profiling CSV for PPM-output decode stages
+./build/decoder -profile_stages input.webp out.ppm
 ```
 
 ## Encoder (PNG -> WebP)
