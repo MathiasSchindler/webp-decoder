@@ -47,6 +47,11 @@ scripts/decoder_quality_parity_report.py
   - Run via `make profile-decode-stages` or directly with `python3 scripts/profile_decode_stages.py --runs 5`.
   - Current local Commons profile artifact: `build/profile/opt2-integrated-comparison-20260612T1420/` (28 generated Commons WebPs, 5 runs). Use its CSVs for stage/core deltas; do not treat local MP/s as portable. Current medians: ours `-ppm` 167.50 MP/s and `-png` 146.15 MP/s; system-libwebp RGB+PPM helper is 215.64 MP/s. Remaining costs are mainly core entropy, reconstruction, and loopfilter rather than RGB formatting or PPM writes.
 
+- `benchmark_quality_size_matrix.py`
+  - Generates a WebP corpus from `images/commons/*.jpg` across configurable quality values and target megapixel buckets, then benchmarks our `-ppm` output against a generated system-libwebp RGB+PPM helper.
+  - Writes `quality_size_per_file.csv`, aggregated `quality_size_matrix.csv`, and `quality_size_heatmap.svg/html`.
+  - Example: `scripts/benchmark_quality_size_matrix.py --out-dir build/profile/quality-size-matrix --qualities 0,10,20,30,40,50,60,70,80,90,100 --megapixels 0.25,0.5,1,2,4,8,16,32`.
+
 ## Milestone 1 (container parsing)
 
 - `m1_compare_info_with_webpinfo.sh`
