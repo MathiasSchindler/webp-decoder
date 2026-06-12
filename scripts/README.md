@@ -45,7 +45,7 @@ scripts/decoder_quality_parity_report.py
   - Also benchmarks whole-pipeline PPM output against the same generated system `libwebp` API helper, `ffmpeg`, and ImageMagick when available.
   - Copies the decoder under test into the artifact directory by default so a concurrent rebuild cannot change the profiled binary mid-run.
   - Run via `make profile-decode-stages` or directly with `python3 scripts/profile_decode_stages.py --runs 5`.
-  - Current local Commons profile artifact: `build/profile/final-next-speed-pass/` (28 generated Commons WebPs, 3 runs). Use its CSVs for stage/core deltas; do not treat local MP/s as portable. Current medians: ours `-ppm` 132.60 MP/s and `-png` 110.37 MP/s; system-libwebp RGB+PPM helper is 214.58 MP/s. Remaining costs are mainly token decode, reconstruction, and RGB formatting rather than PPM writes.
+  - Current local Commons profile artifact: `build/profile/hotspot-integration-comparison-20260612T1357/` (28 generated Commons WebPs, 5 runs). Use its CSVs for stage/core deltas; do not treat local MP/s as portable. Current medians: ours `-ppm` 133.41 MP/s and `-png` 113.35 MP/s; system-libwebp RGB+PPM helper is 213.83 MP/s. Remaining PPM costs are mainly token decode, reconstruction, and RGB formatting rather than PPM writes.
 
 ## Milestone 1 (container parsing)
 

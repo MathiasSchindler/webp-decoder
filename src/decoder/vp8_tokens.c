@@ -586,16 +586,17 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 			}
 
 			// Y blocks
-			uint8_t y_has[4][4];
-
 			int y_plane = has_y2 ? 0 : 3;
 			int first_coeff = has_y2 ? 1 : 0;
+			uint8_t* above_y_col = above_y + (size_t)mb_c * 4u;
+			uint8_t y_above[4] = {above_y_col[0], above_y_col[1], above_y_col[2], above_y_col[3]};
 
 			for (int rr = 0; rr < 4; rr++) {
+				uint8_t left_row_has = left_y[rr];
 				for (int cc = 0; cc < 4; cc++) {
 					if (collect_stats) out->blocks_total_y++;
-					uint8_t left_has = (cc == 0) ? left_y[rr] : y_has[rr][cc - 1];
-					uint8_t above_has = (rr == 0) ? above_y[mb_c * 4 + cc] : y_has[rr - 1][cc];
+					uint8_t left_has = left_row_has;
+					uint8_t above_has = y_above[cc];
 					int has = 0;
 					if (!skip_coeff) {
 						size_t blk = (size_t)mb_index * 16u + (size_t)(rr * 4 + cc);
@@ -625,23 +626,25 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					}
 					if (collect_stats && has) out->blocks_nonzero_y++;
 					if (has) mb_has_coeff = 1;
-					y_has[rr][cc] = (uint8_t)has;
+					left_row_has = (uint8_t)has;
+					y_above[cc] = (uint8_t)has;
 				}
+				left_y[rr] = left_row_has;
 			}
-			for (int cc = 0; cc < 4; cc++) {
-				above_y[mb_c * 4 + cc] = y_has[3][cc];
-			}
-			for (int rr = 0; rr < 4; rr++) {
-				left_y[rr] = y_has[rr][3];
-			}
+			above_y_col[0] = y_above[0];
+			above_y_col[1] = y_above[1];
+			above_y_col[2] = y_above[2];
+			above_y_col[3] = y_above[3];
 
 			// U blocks (2x2)
-			uint8_t u_has[2][2];
+			uint8_t* above_u_col = above_u + (size_t)mb_c * 2u;
+			uint8_t u_above[2] = {above_u_col[0], above_u_col[1]};
 			for (int rr = 0; rr < 2; rr++) {
+				uint8_t left_row_has = left_u[rr];
 				for (int cc = 0; cc < 2; cc++) {
 					if (collect_stats) out->blocks_total_u++;
-					uint8_t left_has = (cc == 0) ? left_u[rr] : u_has[rr][cc - 1];
-					uint8_t above_has = (rr == 0) ? above_u[mb_c * 2 + cc] : u_has[rr - 1][cc];
+					uint8_t left_has = left_row_has;
+					uint8_t above_has = u_above[cc];
 					int has = 0;
 					if (!skip_coeff) {
 						size_t blk = (size_t)mb_index * 4u + (size_t)(rr * 2 + cc);
@@ -671,19 +674,23 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					}
 					if (collect_stats && has) out->blocks_nonzero_u++;
 					if (has) mb_has_coeff = 1;
-					u_has[rr][cc] = (uint8_t)has;
+					left_row_has = (uint8_t)has;
+					u_above[cc] = (uint8_t)has;
 				}
+				left_u[rr] = left_row_has;
 			}
-			for (int cc = 0; cc < 2; cc++) above_u[mb_c * 2 + cc] = u_has[1][cc];
-			for (int rr = 0; rr < 2; rr++) left_u[rr] = u_has[rr][1];
+			above_u_col[0] = u_above[0];
+			above_u_col[1] = u_above[1];
 
 			// V blocks (2x2)
-			uint8_t v_has[2][2];
+			uint8_t* above_v_col = above_v + (size_t)mb_c * 2u;
+			uint8_t v_above[2] = {above_v_col[0], above_v_col[1]};
 			for (int rr = 0; rr < 2; rr++) {
+				uint8_t left_row_has = left_v[rr];
 				for (int cc = 0; cc < 2; cc++) {
 					if (collect_stats) out->blocks_total_v++;
-					uint8_t left_has = (cc == 0) ? left_v[rr] : v_has[rr][cc - 1];
-					uint8_t above_has = (rr == 0) ? above_v[mb_c * 2 + cc] : v_has[rr - 1][cc];
+					uint8_t left_has = left_row_has;
+					uint8_t above_has = v_above[cc];
 					int has = 0;
 					if (!skip_coeff) {
 						size_t blk = (size_t)mb_index * 4u + (size_t)(rr * 2 + cc);
@@ -713,11 +720,13 @@ static int decode_all_coeffs_keyframe(ByteSpan vp8_payload, const Vp8KeyFrameHea
 					}
 					if (collect_stats && has) out->blocks_nonzero_v++;
 					if (has) mb_has_coeff = 1;
-					v_has[rr][cc] = (uint8_t)has;
+					left_row_has = (uint8_t)has;
+					v_above[cc] = (uint8_t)has;
 				}
+				left_v[rr] = left_row_has;
 			}
-			for (int cc = 0; cc < 2; cc++) above_v[mb_c * 2 + cc] = v_has[1][cc];
-			for (int rr = 0; rr < 2; rr++) left_v[rr] = v_has[rr][1];
+			above_v_col[0] = v_above[0];
+			above_v_col[1] = v_above[1];
 
 			if (frame && frame->has_coeff) frame->has_coeff[mb_index] = (uint8_t)(mb_has_coeff != 0);
 			if (mb_visitor) {
