@@ -459,6 +459,11 @@ static int vp8_reconstruct_keyframe_yuv_internal(const Vp8KeyFrameHeader* kf, co
 		}
 	}
 
+	if (padded_w == kf->width && padded_h == kf->height) {
+		*out = pad;
+		return 0;
+	}
+
 	// Crop padded reconstruction down to the visible frame size.
 	Yuv420Image cropped;
 	if (yuv420_alloc(&cropped, kf->width, kf->height) != 0) {

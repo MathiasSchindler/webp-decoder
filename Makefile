@@ -36,6 +36,9 @@ ENC_M09_DCENC_BIN := build/enc_m09_dcenc
 ENC_M09_MODEENC_BIN := build/enc_m09_modeenc
 ENC_M09_BPREDENC_BIN := build/enc_m09_bpredenc
 
+SPEED ?= 0
+NATIVE ?= 0
+
 VP8_DECODER_SHARED_SRC := \
 	src/vp8/vp8_quant.c \
 	src/vp8/vp8_transform.c \
@@ -389,8 +392,16 @@ NOLIBC_ENCODER_SRC := $(ENCODER_SRC) \
 
 NOLIBC_LTO := -flto
 
+NOLIBC_DECODER_OPT_FLAGS := -Os -march=x86-64
+NOLIBC_ENCODER_OPT_FLAGS := -Os -march=x86-64
+ifeq ($(SPEED),1)
+NOLIBC_DECODER_OPT_FLAGS := -O3 -march=x86-64
+ifeq ($(NATIVE),1)
+NOLIBC_DECODER_OPT_FLAGS := -O3 -march=native
+endif
+endif
+
 NOLIBC_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Werror \
-	-Os -march=x86-64 \
 	-ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables \
 	-fno-common \
 	-ffunction-sections -fdata-sections \
@@ -402,11 +413,11 @@ NOLIBC_LDFLAGS := -nostdlib -static \
 
 $(BIN): $(NOLIBC_DECODER_SRC) src/nolibc/start.S
 	@mkdir -p $(dir $@)
-	$(CC) $(NOLIBC_CFLAGS) -o $@ $(NOLIBC_DECODER_SRC) src/nolibc/start.S $(NOLIBC_LDFLAGS) -lgcc
+	$(CC) $(NOLIBC_CFLAGS) $(NOLIBC_DECODER_OPT_FLAGS) -o $@ $(NOLIBC_DECODER_SRC) src/nolibc/start.S $(NOLIBC_LDFLAGS) -lgcc
 
 $(ENCODER): $(NOLIBC_ENCODER_SRC) src/nolibc/start.S
 	@mkdir -p $(dir $@)
-	$(CC) $(NOLIBC_CFLAGS) -o $@ $(NOLIBC_ENCODER_SRC) src/nolibc/start.S $(NOLIBC_LDFLAGS) -lgcc
+	$(CC) $(NOLIBC_CFLAGS) $(NOLIBC_ENCODER_OPT_FLAGS) -o $@ $(NOLIBC_ENCODER_SRC) src/nolibc/start.S $(NOLIBC_LDFLAGS) -lgcc
 
 clean:
 	rm -rf $(BUILD_DIR) decoder encoder decoder_nolibc encoder_nolibc

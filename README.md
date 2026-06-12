@@ -47,6 +47,61 @@ This produces two binaries:
 The default build is syscall-only/nolibc. No root-level `decoder` or `encoder`
 binary is produced.
 
+The default decoder and encoder builds are size-oriented and portable across
+x86_64 machines: `-Os -march=x86-64`.
+
+For benchmarking decoder throughput, use the opt-in speed build:
+
+```sh
+make clean && make SPEED=1
+
+# Also allow CPU-specific code generation on the local machine:
+make clean && make SPEED=1 NATIVE=1
+```
+
+`SPEED=1` switches only `build/decoder` to `-O3 -march=x86-64`.
+`SPEED=1 NATIVE=1` switches only `build/decoder` to `-O3 -march=native`.
+The encoder remains built with `-Os -march=x86-64` in all cases.
+
+## Benchmarking decoder speed
+
+For per-file WebP-to-PNG timing against `dwebp`, build the decoder variant you
+want to measure and run:
+
+```sh
+RUNS=5 scripts/benchmark_decode_png_csv.sh build/test-artifacts/bench-png.csv
+```
+
+The benchmark script scans `images/**/*.webp`, records the best of `RUNS` for
+each file, and writes CSV output. It expects libwebp's `dwebp` at
+`$HOME/libwebp/examples/dwebp` unless `DWEBP=/path/to/dwebp` is set.
+
+Recent local whole-corpus timing (2026-06-12):
+
+- Host: `mathias-b650`, Linux 7.0.0-22-generic x86_64
+- Compiler: `cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0`
+- Corpus: all 433 lossy WebP files under `images/**/*.webp`, 35.987 MP total
+- Method: median of five end-to-end runs per mode; output files overwritten
+  under `build/test-artifacts/bench-final`
+- "Before" is commit `f33bec4` (default nolibc build before these
+  optimizations); "after" is this optimized tree
+
+| Mode | Before default | After default |
+| --- | ---: | ---: |
+| `-info` | 0.610111 s / 58.98 MP/s | 0.616931 s / 58.33 MP/s |
+| `-yuv` | 0.909946 s / 39.55 MP/s | 0.883781 s / 40.72 MP/s |
+| `-yuvf` | 1.112169 s / 32.36 MP/s | 1.078369 s / 33.37 MP/s |
+| `-ppm` | 1.342865 s / 26.80 MP/s | 1.288430 s / 27.93 MP/s |
+| `-png` | 2.243727 s / 16.04 MP/s | 1.550991 s / 23.20 MP/s |
+
+PNG-path timings for the optimized tree:
+
+| Build | `-png` median |
+| --- | ---: |
+| default (`-Os -march=x86-64`) | 1.550991 s / 23.20 MP/s |
+| `SPEED=1` (`-O3 -march=x86-64`) | 1.271192 s / 28.31 MP/s |
+| `SPEED=1 NATIVE=1` (`-O3 -march=native`) | 1.245413 s / 28.90 MP/s |
+
 ## Usage
 
 ```sh
@@ -111,6 +166,24 @@ If your libwebp tools live elsewhere, point the scripts at them via:
 ```sh
 LIBWEBP_BIN_DIR=/path/to/libwebp/examples make test
 ```
+
+For final decoder correctness gates, keep temporary files inside the repository:
+
+```sh
+make clean && mkdir -p build/test-artifacts/_tmp
+TMPDIR=$PWD/build/test-artifacts/_tmp make test
+
+make clean && mkdir -p build/test-artifacts/_tmp
+TMPDIR=$PWD/build/test-artifacts/_tmp make SPEED=1 test
+
+make clean && mkdir -p build/test-artifacts/_tmp
+TMPDIR=$PWD/build/test-artifacts/_tmp make SPEED=1 NATIVE=1 test
+```
+
+These gates are byte-exact against libwebp for the supported decoder scope:
+simple lossy VP8 key frames in the local corpus. They do not claim support for
+the intentionally unsupported features listed above (`VP8X`, alpha, animation,
+lossless `VP8L`, inter frames, or multi-token-partition VP8 streams).
 
 Encoder regression gates live alongside the decoder ones under [scripts/](scripts/) and
 are named `enc_mXX_*.sh`. See [planenc.md](planenc.md) for the encoder milestone plan.
